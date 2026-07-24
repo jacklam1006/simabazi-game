@@ -1,0 +1,18 @@
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+
+# 依赖（如果后续加 Node 工具链）
+node_modules/
+
+# 环境变量
+.env
+.env.local
+
+# 构建产物
+dist/
+build/
