@@ -18,21 +18,48 @@ class UserJourney {
   }
 
   async start() {
-    // 演示模式：直接加载示例命盘（火旺·缺水·文昌入命）
-    // 阶段3 将替换为真实用户输入 + API
+    /**
+     * 演示命盘：癸未年·戊午月·甲寅日·壬申时
+     * 日主 甲木（阳木·参天大树·临官极旺）
+     *
+     * 五行得分（含藏干×0.5权重，午月火令×1.5）：
+     *   木23%  火23%  土24%  金12%  水18%
+     *
+     * 各五行阴阳比例 yangRatio（0=全阴 → 1=全阳）：
+     *   木0.90  火0.62  土0.39  金1.00  水0.57
+     *   →  木区：甲木参天大树  土区：己土圆润丘陵
+     *      金区：庚金刀锋晶柱  火区：丙午熔岩+灯笼混合
+     *
+     * 大运 壬子（水生木·喜用神）→ 蓝色大运光环
+     * 流年 丙午（食神年·创意输出）→ 红色流年粒子雨
+     */
     this.baziData = {
-      wuxing: { 木:22, 火:36, 土:12, 金:17, 水:13 },
-      dayMaster: '丙',
-      dayMasterWx: '火',
+      wuxing:      { 木:23, 火:23, 土:24, 金:12, 水:18 },
+      dayMaster:   '甲',
+      dayMasterWx: '木',
       pillars: {
-        year:  { stem:'甲', branch:'午' },
-        month: { stem:'丙', branch:'子' },
-        day:   { stem:'丙', branch:'寅' },
+        year:  { stem:'癸', branch:'未' },
+        month: { stem:'戊', branch:'午' },
+        day:   { stem:'甲', branch:'寅' },
         hour:  { stem:'壬', branch:'申' },
       },
-      shenshe: ['文昌星', '桃花', '驿马'],
-      favorable: '水',
-      unfavorable: '火',
+      yangRatio: { 木:.90, 火:.62, 土:.39, 金:1.00, 水:.57 },
+      shenshe: ['驿马','红鸾','太极贵人','国印贵人','禄神','天喜',
+                '福星贵人','将星','红艳','德秀贵人','天乙贵人'],
+      favorable:   '金',
+      unfavorable: '水',
+      strength:    '身强',
+      lifePhase:   '临官',
+      dayun: {
+        stem:'壬', branch:'子', wx:'水', yang:true,
+        favorable:true, label:'壬子大运',
+        desc:'水旺生木·贵人相助·智慧扩展期',
+      },
+      liunian: {
+        stem:'丙', branch:'午', wx:'火', yang:true,
+        label:'丙午流年',
+        desc:'食神旺·创意输出·事业表达力强',
+      },
     };
     this._goTo(2);
     setTimeout(() => this._goTo(3), 1800);
@@ -92,8 +119,12 @@ class UserJourney {
 
     // 更新 HUD
     const d = this.baziData;
+    const yr = d.pillars.year;
+    const mo = d.pillars.month;
+    const dy = d.pillars.day;
+    const hr = d.pillars.hour;
     document.getElementById('hud-user').textContent =
-      `${d.dayMaster}日主 · ${d.dayMasterWx}行 · ${d.pillars.year.stem}${d.pillars.year.branch}年生`;
+      `${d.dayMaster}日主（阳木·${d.lifePhase}）· ${yr.stem}${yr.branch} ${mo.stem}${mo.branch} ${dy.stem}${dy.branch} ${hr.stem}${hr.branch}`;
 
     this.sb.buildFromBazi(d);
     setTimeout(() => this._goTo(4), 1200);
@@ -104,37 +135,43 @@ class UserJourney {
     if (!this.baziData) return;
     const d = this.baziData;
 
-    // 根据五行强弱和神煞生成标注点
+    // 根据实际命盘生成精准标注
     const annotations = [
       {
+        position: [-1, 3.8, 0],
+        type: 'fortune',
+        title: `日主·${d.dayMaster}（阳木·${d.lifePhase}）`,
+        content: `你的日主为${d.dayMaster}，属阳木，在日支寅木处于「临官」之位，是八字最旺的状态之一。\n甲木象征参天大树：主进取、领导力强、思想正直、不屈不挠。\n先天优势：逻辑清晰、敢于担当、适合开拓型事业。`,
+      },
+      {
         position: [0.5, 2, 5.5],
+        type: 'neutral',
+        title: `火行中等（${d.wuxing['火']}%）· 月令午火`,
+        content: `火行为甲木的食神/伤官（我生之物），代表才华、创意与表达力。\n月支午火是月令，为本月旺气所在，赋予你较强的表达欲与事业冲劲。\n流年丙午更强化此气，${d.liunian?.desc || ''}。`,
+      },
+      {
+        position: [5.5, 2, -1],
         type: 'danger',
-        title: `火行偏旺（${d.wuxing['火']}%）`,
-        content: `你的命盘火行过旺，容易情绪急躁、决策冲动。\n建议：增加水行调候，可佩戴蓝晶石、海蓝宝减少火燥之气。`,
+        title: `金行偏弱（${d.wuxing['金']}%）· 时支申金`,
+        content: `金行为甲木的七杀/正官（克我之物）。金行偏弱，对强木的约束不足，导致日主过旺难以收敛。\n喜用神正是金行（庚申）：金能制木，给你方向感与纪律性。\n建议佩戴金属类或白色/银色水晶（如白水晶、黄铁矿）补充金气。`,
+      },
+      {
+        position: [-5.5, 2, 2],
+        type: 'fortune',
+        title: `土行最旺（${d.wuxing['土']}%）· 偏财格`,
+        content: `土行为甲木的偏财/正财，命盘中土行最旺（24%），财星有力。\n月干戊土（阳土）为偏财，时支申藏戊土，财气多点分布。\n偏财有力代表：理财能力强、善于把握财富机遇、可能有多渠道收入。`,
       },
       {
         position: [-3.5, 2, -4.5],
         type: 'neutral',
-        title: `水行偏弱（${d.wuxing['水']}%）`,
-        content: `水为你的用神（喜用），水行偏弱影响智慧和财运发挥。\n建议：多接近水源环境，以黑曜石、海蓝宝补水气。`,
+        title: `水行（${d.wuxing['水']}%）· 壬癸双透`,
+        content: `水行为甲木的正印/偏印，代表智慧、学识与贵人扶持。\n命盘中壬（阳水）与癸（阴水）均透出天干，正偏印双现，智识资源丰富。\n大运壬子更强化水气：${d.dayun?.desc || ''}。\n注意：水已充足，切勿再补水，否则水泛木漂，反伤格局。`,
       },
       {
-        position: [0.5, 2.8, -5],
+        position: [0.5, 2.5, -5],
         type: 'fortune',
-        title: '文昌星入命',
-        content: `命格中文昌星有力，代表学习力强、表达清晰、适合内容创业或知识型事业。\n这是你先天的智识优势，善加利用可事半功倍。`,
-      },
-      {
-        position: [5.5, 2, -1],
-        type: 'neutral',
-        title: '桃花旺',
-        content: `命盘显示人际吸引力佳，社交场合容易受欢迎，异性缘较好。\n注意：桃花旺盛时感情易复杂，以粉晶助力正向桃花。`,
-      },
-      {
-        position: [-1, 3.5, 0],
-        type: 'fortune',
-        title: `日主·${d.dayMaster}（${d.dayMasterWx}）`,
-        content: `你的日主为${d.dayMaster}，属${d.dayMasterWx}行。\n${d.dayMaster}代表：光明、热情、直觉敏锐、领导力强。\n核心性格：积极外向，喜欢被看见，有感召力。`,
+        title: '天乙贵人 · 年柱入命',
+        content: `天乙贵人坐年柱（癸未），为命盘中最有力的吉星，主逢凶化吉、贵人相助。\n年柱天乙贵人说明：年少时家庭背景有贵助，祖运有力。\n成年后仍能在关键时刻遇见改变命运的贵人，宜多经营人脉与口碑。`,
       },
     ];
 
