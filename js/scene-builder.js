@@ -27,8 +27,8 @@ class SceneBuilder {
   /* ─── 工具：天干五行/阴阳速查 ───────────────────────── */
   static STEM_WX  = { 甲:'木',乙:'木',丙:'火',丁:'火',戊:'土',己:'土',庚:'金',辛:'金',壬:'水',癸:'水' };
   static STEM_YANG = { 甲:1,乙:0,丙:1,丁:0,戊:1,己:0,庚:1,辛:0,壬:1,癸:0 };
-  static WX_HEX   = { 木:0x6FCF97, 火:0xEB5757, 土:0xF2C94C, 金:0xC0C0D0, 水:0x6EB5FF };
-  static WX_EMI   = { 木:0x1a4a20, 火:0x661100, 土:0x4a3a00, 金:0x2a2a44, 水:0x0a1a3a };
+  static WX_HEX   = { 木:0x3a7a3a, 火:0xcc3300, 土:0xb07840, 金:0x9ab0c8, 水:0x2277cc };
+  static WX_EMI   = { 木:0x0a1f0a, 火:0x550800, 土:0x3d2010, 金:0x1a2840, 水:0x062050 };
 
   /* ─── 初始化 ─────────────────────────────────────────── */
   init() {
@@ -55,16 +55,26 @@ class SceneBuilder {
   }
 
   _setupLights() {
-    this.scene.add(new THREE.AmbientLight(0x1a1a2e, 1.4));
-    const sun = new THREE.DirectionalLight(0xfff0d0, 2.0);
-    sun.position.set(14, 28, 8);
+    // 环境光：更亮，冷调
+    this.scene.add(new THREE.AmbientLight(0x1e2040, 2.2));
+
+    // 主光（暖白，高位）
+    const sun = new THREE.DirectionalLight(0xffeedd, 2.8);
+    sun.position.set(12, 30, 10);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024);
-    Object.assign(sun.shadow.camera, { left:-22, right:22, top:22, bottom:-22, near:1, far:80 });
+    sun.shadow.mapSize.set(2048, 2048);
+    Object.assign(sun.shadow.camera, { left:-24, right:24, top:24, bottom:-24, near:1, far:100 });
     this.scene.add(sun);
-    const fill = new THREE.DirectionalLight(0x3355cc, 0.5);
-    fill.position.set(-12, 6, -12);
+
+    // 侧光（冷蓝，补足暗面）
+    const fill = new THREE.DirectionalLight(0x3366aa, 1.0);
+    fill.position.set(-14, 8, -10);
     this.scene.add(fill);
+
+    // 底光（深紫，浮岛底部光晕）
+    const bot = new THREE.PointLight(0x220044, 2.0, 20);
+    bot.position.set(0, -5, 0);
+    this.scene.add(bot);
   }
 
   /* ─── 场景构建入口 ──────────────────────────────────── */
@@ -125,22 +135,31 @@ class SceneBuilder {
 
   /* ─── 浮空岛基底 ─────────────────────────────────────── */
   _addIsland() {
-    const island=this._mesh(new THREE.CylinderGeometry(8,6.8,1.4,32),
-      { color:0x14141e, roughness:.95, metalness:.1 });
-    island.position.y=-0.7; island.receiveShadow=island.castShadow=true;
+    // 主岛体（深石青色）
+    const island=this._mesh(new THREE.CylinderGeometry(8.2,6.8,1.6,48),
+      { color:0x1a1a28, roughness:.88, metalness:.18 });
+    island.position.y=-0.8; island.receiveShadow=island.castShadow=true;
     island.userData.dyn=true; this.scene.add(island);
 
-    const glow=this._mesh(new THREE.CylinderGeometry(7.8,6.5,.18,32),
-      { color:0x2233cc, emissive:0x1122aa, emissiveIntensity:2, transparent:true, opacity:.45 });
-    glow.position.y=-1.45; glow.userData.dyn=true;
-    this.animated.push({ mesh:glow, type:'pulse', base:2, amp:.6, speed:.8 });
+    // 岛顶面（深蓝灰，让区域颜色更突出）
+    const top=this._mesh(new THREE.CylinderGeometry(8.2,8.2,.08,48),
+      { color:0x22222e, roughness:1, metalness:0 });
+    top.position.y=0; top.receiveShadow=true;
+    top.userData.dyn=true; this.scene.add(top);
+
+    // 底部发光环（更亮的蓝紫）
+    const glow=this._mesh(new THREE.CylinderGeometry(8.0,6.6,.12,48),
+      { color:0x4455ff, emissive:0x3344ee, emissiveIntensity:3.5, transparent:true, opacity:.55 });
+    glow.position.y=-1.62; glow.userData.dyn=true;
+    this.animated.push({ mesh:glow, type:'pulse', base:3.5, amp:1.2, speed:.7 });
     this.scene.add(glow);
 
-    for (let i=0; i<7; i++) {
-      const angle=(i/7)*Math.PI*2+Math.random(), r=4+Math.random()*2.5;
-      const rock=this._mesh(new THREE.IcosahedronGeometry(.25+Math.random()*.35,0),
-        { color:0x101018, roughness:1 });
-      rock.position.set(Math.cos(angle)*r, -1.9-Math.random(), Math.sin(angle)*r);
+    // 悬浮碎石（环绕）
+    for (let i=0; i<10; i++) {
+      const angle=(i/10)*Math.PI*2+Math.random()*.4, r=5.5+Math.random()*2.8;
+      const rock=this._mesh(new THREE.IcosahedronGeometry(.18+Math.random()*.28,0),
+        { color:0x14141e, roughness:1, metalness:.1 });
+      rock.position.set(Math.cos(angle)*r, -1.6-Math.random()*.8, Math.sin(angle)*r);
       rock.userData.dyn=true;
       this.animated.push({ mesh:rock, type:'float', phase:Math.random()*6 });
       this.scene.add(rock);
@@ -221,8 +240,8 @@ class SceneBuilder {
 
   /* ═══════════════════════════════════════════════════════
    * 火区 · 南
-   * yr > 0.55 → 丙火：火山/熔岩，广阔炽热
-   * yr < 0.45 → 丁火：灯笼/烛光，温暖内敛
+   * yr > 0.55 → 丙火：火山 + 熔岩池 + 热焰
+   * yr < 0.45 → 丁火：灯笼群 + 烛台
    * ══════════════════════════════════════════════════════ */
   _addHuoZone(strength, yr) {
     const sc = .55 + strength*1.6;
@@ -231,51 +250,90 @@ class SceneBuilder {
     g.position.set(1, 0, 5.5);
 
     if (isYang) {
-      // 丙火：火山熔岩
-      const gMesh=this._groundPatch(2.8*sc, 0x2a0800);
-      gMesh.material=new THREE.MeshStandardMaterial({ color:0x2a0800, emissive:0x180300, emissiveIntensity:.8, roughness:1 });
-      g.add(gMesh);
-      // 中央火山锥
-      const volcano=this._mesh(new THREE.ConeGeometry(.55*sc, .8*sc, 6),
-        { color:0x880000, emissive:0xff2200, emissiveIntensity:1.2, roughness:.3 });
-      volcano.position.set(0,.4*sc,0); volcano.castShadow=true; g.add(volcano);
-      this.animated.push({ mesh:volcano, type:'pulse', base:1.2, amp:.4, speed:1.1 });
-      // 熔岩晶柱
-      const sN=Math.floor(4+strength*8);
-      for (let i=0; i<sN; i++) {
-        const x=(Math.random()-.5)*5.5, z=(Math.random()-.5)*3.5;
-        const h=(.5+Math.random()*1.1)*sc;
-        const spike=this._mesh(new THREE.ConeGeometry(.13+Math.random()*.09,h,3+Math.floor(Math.random()*3)),
-          { color:Math.random()>.5?0xcc2200:0xff5500, emissive:0x661100, emissiveIntensity:.9, roughness:.25, metalness:.2 });
-        spike.position.set(x,h/2,z); spike.rotation.y=Math.random()*Math.PI; spike.castShadow=true; g.add(spike);
+      // 丙火：火山地面（玄武岩黑）
+      const ground = this._mesh(new THREE.CircleGeometry(3.2*sc, 24),
+        { color:0x0e0600, roughness:1 });
+      ground.rotation.x=-Math.PI/2; ground.position.y=.01; g.add(ground);
+
+      // 熔岩池（地面中心，鲜亮橙红）
+      const lavaPool = this._mesh(new THREE.CircleGeometry(1.1*sc, 24),
+        { color:0xff4400, emissive:0xff3300, emissiveIntensity:4.0, transparent:true, opacity:.9 });
+      lavaPool.rotation.x=-Math.PI/2; lavaPool.position.y=.02;
+      this.animated.push({ mesh:lavaPool, type:'pulse', base:4.0, amp:1.5, speed:1.2 });
+      g.add(lavaPool);
+
+      // 熔岩池外环（深橙）
+      const lavaRing = this._mesh(new THREE.RingGeometry(1.1*sc, 1.4*sc, 24),
+        { color:0xdd2200, emissive:0xcc1100, emissiveIntensity:2.5, transparent:true, opacity:.7, side:THREE.DoubleSide });
+      lavaRing.rotation.x=-Math.PI/2; lavaRing.position.y=.02;
+      this.animated.push({ mesh:lavaRing, type:'ripple', phase:0 });
+      g.add(lavaRing);
+
+      // 火山锥（高、宽底、多段）
+      const vBase = this._mesh(new THREE.CylinderGeometry(.6*sc, 1.5*sc, .5*sc, 8),
+        { color:0x1a0500, roughness:1 });
+      vBase.position.set(0,.25*sc,0); vBase.castShadow=true; g.add(vBase);
+
+      const vMid = this._mesh(new THREE.CylinderGeometry(.25*sc, .6*sc, .7*sc, 7),
+        { color:0x220800, roughness:1 });
+      vMid.position.set(0,.75*sc,0); vMid.castShadow=true; g.add(vMid);
+
+      const vTop = this._mesh(new THREE.ConeGeometry(.25*sc, .55*sc, 7),
+        { color:0xff2200, emissive:0xff1100, emissiveIntensity:2.5, roughness:.5 });
+      vTop.position.set(0,1.28*sc,0); vTop.castShadow=true;
+      this.animated.push({ mesh:vTop, type:'pulse', base:2.5, amp:.8, speed:1.5 });
+      g.add(vTop);
+
+      // 岩浆裂缝线（辐射状扁平长条）
+      for (let i=0; i<6; i++) {
+        const a=(i/6)*Math.PI*2;
+        const crack = this._mesh(new THREE.BoxGeometry(.06, .02, (1.0+Math.random()*.6)*sc),
+          { color:0xff4400, emissive:0xff3000, emissiveIntensity:3.0, roughness:.2 });
+        crack.rotation.y=a; crack.position.set(Math.cos(a)*.9*sc,.02,Math.sin(a)*.9*sc);
+        this.animated.push({ mesh:crack, type:'pulse', base:3.0, amp:1.5, speed:.8+i*.15 });
+        g.add(crack);
       }
-      this._addParticles(g, 0xff3300, 50+Math.floor(strength*75), true);
-      this._addParticles(g, 0xff8800, 25+Math.floor(strength*35), true);
+
+      // 上升火焰粒子
+      this._addParticles(g, 0xff4400, 60+Math.floor(strength*80), true);
+      this._addParticles(g, 0xff8800, 30+Math.floor(strength*40), true);
+
     } else {
-      // 丁火：灯笼 + 烛光
-      g.add(this._groundPatch(2.5*sc, 0x1a0d00));
-      const lN=Math.floor(5+strength*7);
+      // 丁火：暗红地面 + 灯笼阵
+      const ground = this._mesh(new THREE.CircleGeometry(2.8*sc, 24),
+        { color:0x1a0d00, roughness:1 });
+      ground.rotation.x=-Math.PI/2; ground.position.y=.01; g.add(ground);
+
+      const lN=Math.floor(6+strength*8);
       for (let i=0; i<lN; i++) {
         const x=(Math.random()-.5)*5, z=(Math.random()-.5)*3.5;
-        const h=(.5+Math.random()*.6)*sc;
-        // 灯杆
-        const pole=this._mesh(new THREE.CylinderGeometry(.025,.04,h,5),{ color:0x442200, roughness:1 });
+        const h=(.6+Math.random()*.8)*sc;
+        // 灯杆（暗棕木）
+        const pole=this._mesh(new THREE.CylinderGeometry(.022,.038,h,5),{ color:0x3a2010, roughness:1 });
         pole.position.set(x,h/2,z); g.add(pole);
-        // 灯笼球
-        const lantern=this._mesh(new THREE.SphereGeometry(.14+Math.random()*.08,8,8),
-          { color:0xff8800, emissive:0xee5500, emissiveIntensity:1.8, transparent:true, opacity:.85 });
-        lantern.position.set(x,h+.14,z); g.add(lantern);
+        // 灯笼上横架
+        const top=this._mesh(new THREE.CylinderGeometry(.055,.055,.06,5),{ color:0x3a2010, roughness:1 });
+        top.position.set(x,h+.06,z); g.add(top);
+        // 灯笼主体（扁球，强发光）
+        const c=Math.random()>.4?0xff6600:0xff2200;
+        const lantern=this._mesh(new THREE.SphereGeometry(.16+Math.random()*.08,10,8),
+          { color:c, emissive:c, emissiveIntensity:2.5, transparent:true, opacity:.88 });
+        lantern.scale.y=.75; lantern.position.set(x,h-.05,z); g.add(lantern);
         this.animated.push({ mesh:lantern, type:'orbPulse', phase:Math.random()*Math.PI*2 });
+        // 灯笼底穗（细锥）
+        const tassel=this._mesh(new THREE.ConeGeometry(.04,.14,4),
+          { color:0xffaa00, emissive:0xff8800, emissiveIntensity:2.0, transparent:true, opacity:.8 });
+        tassel.position.set(x,h-.22,z); tassel.rotation.z=Math.PI; g.add(tassel);
       }
-      this._addParticles(g, 0xffaa44, 30+Math.floor(strength*45), true);
+      this._addParticles(g, 0xff8833, 35+Math.floor(strength*50), true);
     }
     this._addGroup(g);
   }
 
   /* ═══════════════════════════════════════════════════════
    * 土区 · 西南
-   * yr > 0.55 → 戊土：巍峨山岳，岩石梯台，刚硬
-   * yr < 0.45 → 己土：肥沃田园，圆润丘陵，柔软
+   * yr > 0.55 → 戊土：巍峨山岳，岩石层叠
+   * yr < 0.45 → 己土：肥沃田园，丘陵梯田
    * ══════════════════════════════════════════════════════ */
   _addTuZone(strength, yr) {
     const sc = .55 + strength*1.5;
@@ -283,49 +341,80 @@ class SceneBuilder {
     const g = new THREE.Group();
     g.position.set(-5.5, 0, 2);
 
+    // 地面（统一：深暖棕）
+    const ground = this._mesh(new THREE.CircleGeometry(3.0*sc, 24),
+      { color:0x2a1a08, roughness:1 });
+    ground.rotation.x=-Math.PI/2; ground.position.y=.01; g.add(ground);
+
     if (isYang) {
-      // 戊土：岩石梯台（原版升级）
-      for (let t=0; t<3; t++) {
-        const s=(1-t*.28)*sc;
-        const terrace=this._mesh(new THREE.CylinderGeometry(s, s*1.12, .3, 8),
-          { color:[0xb07840,0xc08a50,0xd09a60][t], roughness:.95 });
-        terrace.position.y=t*.27; terrace.castShadow=terrace.receiveShadow=true; g.add(terrace);
+      // 戊土：山岳——多层递进石台
+      const stoneColors=[0x5a3a18,0x6a4828,0x7a5838,0x8a6848];
+      const layers=4;
+      for (let t=0; t<layers; t++) {
+        const r=(1.4-t*.28)*sc;
+        const h=.28;
+        const terrace=this._mesh(new THREE.CylinderGeometry(r, r*1.1, h, 6+t*2),
+          { color:stoneColors[t], roughness:.92, metalness:.05 });
+        terrace.position.y=t*h; terrace.castShadow=terrace.receiveShadow=true; g.add(terrace);
       }
-      // 石柱群（戊土特征）
-      for (let i=0; i<Math.floor(3+strength*3); i++) {
-        const a=Math.random()*Math.PI*2, r=(.4+Math.random()*.8)*sc;
-        const h=(.3+Math.random()*.6)*sc;
-        const pillar=this._mesh(new THREE.CylinderGeometry(.08+Math.random()*.04, .1+Math.random()*.04, h, 5),
-          { color:0x907060, roughness:1 });
-        pillar.position.set(Math.cos(a)*r, 3*.27+h/2, Math.sin(a)*r); g.add(pillar);
+      // 山顶巨石
+      const peak=this._mesh(new THREE.IcosahedronGeometry(.3*sc,1),
+        { color:0x9a7848, roughness:.85 });
+      peak.position.y=layers*.28+.18; peak.castShadow=true; g.add(peak);
+
+      // 侧面石柱（戊土特征）
+      for (let i=0; i<Math.floor(5+strength*4); i++) {
+        const a=Math.random()*Math.PI*2, r=(.8+Math.random()*.9)*sc;
+        const h=(.25+Math.random()*.55)*sc;
+        const pillar=this._mesh(new THREE.CylinderGeometry(.07+Math.random()*.04, .1+Math.random()*.05, h, 5),
+          { color:0x6a4828, roughness:.95 });
+        pillar.position.set(Math.cos(a)*r, h/2, Math.sin(a)*r);
+        pillar.rotation.z=(Math.random()-.5)*.08; g.add(pillar);
       }
-      // 碎石
-      for (let i=0; i<7; i++) {
-        const a=Math.random()*Math.PI*2, r=(.7+Math.random()*.9)*sc;
-        const p=this._mesh(new THREE.IcosahedronGeometry(.1+Math.random()*.1,0),{ color:0xa07848, roughness:1 });
-        p.position.set(Math.cos(a)*r, 3*.27+.1, Math.sin(a)*r); g.add(p);
+      // 碎石散落
+      for (let i=0; i<10; i++) {
+        const a=Math.random()*Math.PI*2, r=(.6+Math.random()*1.4)*sc;
+        const p=this._mesh(new THREE.IcosahedronGeometry(.07+Math.random()*.1,0),
+          { color:0x7a5838, roughness:1 });
+        p.position.set(Math.cos(a)*r, .04, Math.sin(a)*r); g.add(p);
       }
+
     } else {
-      // 己土：圆润丘陵 + 草丛
-      for (let m=0; m<Math.floor(3+strength*3); m++) {
-        const mx=(Math.random()-.5)*4.5, mz=(Math.random()-.5)*3;
-        const mr=(.5+Math.random()*.5)*sc;
-        const mound=this._mesh(new THREE.SphereGeometry(mr,10,8),
-          { color:Math.random()>.5?0xc8a840:0xdaba50, roughness:.9 });
-        mound.scale.y=.5; mound.position.set(mx, mr*.5, mz); g.add(mound);
+      // 己土：丘陵梯田——用 CylinderGeometry 做真正的梯级山丘
+      const hillCount = Math.floor(3+strength*3);
+      for (let m=0; m<hillCount; m++) {
+        const mx=(Math.random()-.5)*3.6, mz=(Math.random()-.5)*2.8;
+        const baseR=(.5+Math.random()*.45)*sc;
+        const hillH=(.22+Math.random()*.18)*sc;
+        // 丘陵底座
+        const base=this._mesh(new THREE.CylinderGeometry(baseR, baseR*1.2, hillH*.4, 10),
+          { color:0x7a5820, roughness:.95 });
+        base.position.set(mx, hillH*.2, mz); g.add(base);
+        // 丘顶（半球形）
+        const top=this._mesh(new THREE.SphereGeometry(baseR*.85, 10, 8, 0, Math.PI*2, 0, Math.PI/2),
+          { color:0x8a6828, roughness:.9 });
+        top.position.set(mx, hillH*.4, mz); g.add(top);
       }
-      // 草丛簇
-      for (let i=0; i<Math.floor(12+strength*12); i++) {
-        const gx=(Math.random()-.5)*5, gz=(Math.random()-.5)*3.5;
-        const gh=(.12+Math.random()*.2)*sc;
-        const grass=this._mesh(new THREE.CylinderGeometry(.01,.025,gh,4),
-          { color:0x8aaa30, emissive:0x334400, emissiveIntensity:.3, roughness:1 });
-        grass.position.set(gx,gh/2,gz); grass.rotation.z=(Math.random()-.5)*.4; g.add(grass);
+
+      // 金黄稻田纹路（细长矩形，平铺）
+      for (let i=0; i<Math.floor(10+strength*12); i++) {
+        const px=(Math.random()-.5)*5.5, pz=(Math.random()-.5)*3.8;
+        const ph=(.08+Math.random()*.16)*sc;
+        const stalk=this._mesh(new THREE.CylinderGeometry(.012,.018,ph,3),
+          { color:Math.random()>.5?0xc8a020:0xd4a830, emissive:0x403000, emissiveIntensity:.4, roughness:1 });
+        stalk.position.set(px,ph/2,pz); stalk.rotation.z=(Math.random()-.5)*.3; g.add(stalk);
       }
-      // 地面色
-      g.add(this._groundPatch(2.5*sc, 0x9a8030));
+
+      // 小岩块点缀
+      for (let i=0; i<6; i++) {
+        const a=Math.random()*Math.PI*2, r=(.8+Math.random()*1.2)*sc;
+        const p=this._mesh(new THREE.IcosahedronGeometry(.06+Math.random()*.08,0),
+          { color:0x6a4818, roughness:1 });
+        p.position.set(Math.cos(a)*r, .04, Math.sin(a)*r); g.add(p);
+      }
     }
-    this._addParticles(g, 0xF2C94C, 18+Math.floor(strength*28));
+
+    this._addParticles(g, 0xc8a040, 18+Math.floor(strength*28));
     this._addGroup(g);
   }
 
@@ -398,43 +487,77 @@ class SceneBuilder {
     const R = (isYang ? 2.2 : 1.6) * sc;
 
     if (isYang) {
-      // 壬水：宽广水池 + 莲花
+      // 壬水：宽广水池（高亮蓝，确保可见）
       const water=this._mesh(new THREE.CircleGeometry(R,32),
-        { color:0x091e36, emissive:0x06182a, emissiveIntensity:1.2, roughness:0, metalness:.55, transparent:true, opacity:.92 });
+        { color:0x0a4080, emissive:0x1166cc, emissiveIntensity:3.5,
+          roughness:0, metalness:.7, transparent:true, opacity:.95 });
       water.rotation.x=-Math.PI/2; water.position.y=.02; g.add(water);
-      this.animated.push({ mesh:water, type:'pulse', base:1.2, amp:.4, speed:.9 });
-      // 水纹环
-      for (let r=0; r<3; r++) {
-        const ring=this._mesh(new THREE.RingGeometry(R*(.28+r*.26), R*(.31+r*.26), 32),
-          { color:0x6EB5FF, emissive:0x2244aa, emissiveIntensity:1.4, transparent:true, opacity:.28-r*.07, side:THREE.DoubleSide });
-        ring.rotation.x=-Math.PI/2; ring.position.y=.03; g.add(ring);
-        this.animated.push({ mesh:ring, type:'ripple', phase:r*1.3 });
+      this.animated.push({ mesh:water, type:'pulse', base:3.5, amp:1.2, speed:.85 });
+
+      // 水面波纹（亮蓝环）
+      for (let i=0; i<3; i++) {
+        const ring=this._mesh(new THREE.RingGeometry(R*(.22+i*.26), R*(.26+i*.26), 32),
+          { color:0x44aaff, emissive:0x2288ff, emissiveIntensity:2.5,
+            transparent:true, opacity:.5-i*.12, side:THREE.DoubleSide });
+        ring.rotation.x=-Math.PI/2; ring.position.y=.03+i*.01; g.add(ring);
+        this.animated.push({ mesh:ring, type:'ripple', phase:i*1.2 });
       }
-      // 莲花
-      for (let i=0; i<5; i++) {
-        const a=(i/5)*Math.PI*2;
-        const lotus=this._mesh(new THREE.ConeGeometry(.12,.18,6),
-          { color:0xff88aa, emissive:0x881133, emissiveIntensity:.9 });
-        lotus.position.set(Math.cos(a)*R*.62, .16, Math.sin(a)*R*.62); g.add(lotus);
-        this.animated.push({ mesh:lotus, type:'float', phase:i*1.5 });
+
+      // 莲花（放大，明显）
+      for (let i=0; i<6; i++) {
+        const a=(i/6)*Math.PI*2;
+        // 花瓣（4片扁锥组成一朵）
+        for (let p=0; p<4; p++) {
+          const pa=a+(p/4)*Math.PI*2;
+          const petal=this._mesh(new THREE.ConeGeometry(.09,.22,5),
+            { color:0xff99cc, emissive:0xcc3366, emissiveIntensity:1.5 });
+          petal.position.set(
+            Math.cos(a)*R*.58+Math.cos(pa)*.1,
+            .18,
+            Math.sin(a)*R*.58+Math.sin(pa)*.1);
+          petal.rotation.z=Math.PI+Math.sin(pa)*.4;
+          petal.rotation.x=-Math.cos(pa)*.4;
+          g.add(petal);
+        }
+        // 花蕊
+        const pistil=this._mesh(new THREE.SphereGeometry(.06,6,6),
+          { color:0xffee44, emissive:0xddaa00, emissiveIntensity:2.0 });
+        pistil.position.set(Math.cos(a)*R*.58, .3, Math.sin(a)*R*.58);
+        this.animated.push({ mesh:pistil, type:'float', phase:i*1.4 });
+        g.add(pistil);
       }
-      this._addParticles(g, 0x6EB5FF, 32+Math.floor(strength*45));
+
+      // 水面反光闪点
+      this._addParticles(g, 0x88ddff, 35+Math.floor(strength*50));
+      this._addParticles(g, 0xffffff, 12+Math.floor(strength*18));
+
     } else {
-      // 癸水：薄雾水面 + 露滴球
+      // 癸水：雾气水池（亮蓝+银白）
       const mist=this._mesh(new THREE.CircleGeometry(R,24),
-        { color:0x061428, emissive:0x040e1c, emissiveIntensity:.8, roughness:.1, metalness:.4, transparent:true, opacity:.7 });
+        { color:0x083860, emissive:0x1155bb, emissiveIntensity:3.0,
+          roughness:.05, metalness:.6, transparent:true, opacity:.9 });
       mist.rotation.x=-Math.PI/2; mist.position.y=.02; g.add(mist);
-      // 露珠小球
-      for (let i=0; i<Math.floor(8+strength*10); i++) {
-        const a=Math.random()*Math.PI*2, r=Math.random()*R*.9;
-        const dew=this._mesh(new THREE.SphereGeometry(.06+Math.random()*.06,8,8),
-          { color:0x88ccff, emissive:0x1144aa, emissiveIntensity:1.2, transparent:true, opacity:.75, metalness:.5, roughness:0 });
-        dew.position.set(Math.cos(a)*r, .1+Math.random()*.3, Math.sin(a)*r); g.add(dew);
+      this.animated.push({ mesh:mist, type:'pulse', base:3.0, amp:1.0, speed:.7 });
+
+      // 外发光环
+      const outerGlow=this._mesh(new THREE.RingGeometry(R, R*1.2, 32),
+        { color:0x4499ee, emissive:0x3388dd, emissiveIntensity:2.0,
+          transparent:true, opacity:.4, side:THREE.DoubleSide });
+      outerGlow.rotation.x=-Math.PI/2; outerGlow.position.y=.03;
+      this.animated.push({ mesh:outerGlow, type:'ripple', phase:0 });
+      g.add(outerGlow);
+
+      // 露珠（更大更亮）
+      for (let i=0; i<Math.floor(10+strength*12); i++) {
+        const a=Math.random()*Math.PI*2, r=Math.random()*R*.88;
+        const dew=this._mesh(new THREE.SphereGeometry(.08+Math.random()*.08,8,8),
+          { color:0xaaddff, emissive:0x2266cc, emissiveIntensity:2.5,
+            transparent:true, opacity:.85, metalness:.6, roughness:0 });
+        dew.position.set(Math.cos(a)*r, .1+Math.random()*.35, Math.sin(a)*r); g.add(dew);
         this.animated.push({ mesh:dew, type:'float', phase:Math.random()*6 });
       }
-      // 上升雾气粒子
-      this._addParticles(g, 0xaaccff, 25+Math.floor(strength*35));
-      this._addParticles(g, 0xddeeff, 15+Math.floor(strength*20));
+      this._addParticles(g, 0x88ccff, 28+Math.floor(strength*40));
+      this._addParticles(g, 0xddeeff, 15+Math.floor(strength*22));
     }
     this._addGroup(g);
   }
