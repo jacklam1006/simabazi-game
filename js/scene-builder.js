@@ -20,8 +20,11 @@ class SceneBuilder {
     this.clock     = new THREE.Clock();
     this.animated  = [];
     this._orbit    = { dragging:false, lastX:0, lastY:0,
-                       theta:Math.PI*.28, phi:1.05, radius:22 };
+                       theta:Math.PI*.28, phi:1.05, radius:22,
+                       _moved:false }; // 用于区分点击和拖拽
     this._lookAt   = new THREE.Vector3(0, 1.5, 0);
+    this._clickZones = []; // { group, zoneKey }
+    this.onZoneClick = null; // callback(zoneKey)
   }
 
   /* ─── 工具：天干五行/阴阳速查 ───────────────────────── */
@@ -50,6 +53,7 @@ class SceneBuilder {
 
     this._setupLights();
     this._bindControls();
+    this._bindClickDetection();
     window.addEventListener('resize', () => this._onResize());
     return this;
   }
@@ -210,7 +214,7 @@ class SceneBuilder {
           { color:0x6FCF97, roughness:.6, emissive:0x1a4a20, emissiveIntensity:.6 });
         bam.position.set(bx,bh/2,bz); bam.rotation.z=(Math.random()-.5)*.06; bam.castShadow=true; g.add(bam);
       }
-      this._addParticles(g, 0x6FCF97, 35+Math.floor(strength*55));
+        this._addParticles(g, 0x6FCF97, 35+Math.floor(strength*55));
     } else {
       // 乙木：矮树展开冠 + 花朵粒子
       const tN = Math.floor(4+strength*6);
@@ -235,7 +239,7 @@ class SceneBuilder {
       this._addParticles(g, 0xaaeebb, 25+Math.floor(strength*40));
       this._addParticles(g, 0xffaacc, 12+Math.floor(strength*18));
     }
-    this._addGroup(g);
+    this._addGroup(g, 'mu');
   }
 
   /* ═══════════════════════════════════════════════════════
@@ -327,7 +331,7 @@ class SceneBuilder {
       }
       this._addParticles(g, 0xff8833, 35+Math.floor(strength*50), true);
     }
-    this._addGroup(g);
+    this._addGroup(g, 'huo');
   }
 
   /* ═══════════════════════════════════════════════════════
@@ -415,7 +419,7 @@ class SceneBuilder {
     }
 
     this._addParticles(g, 0xc8a040, 18+Math.floor(strength*28));
-    this._addGroup(g);
+    this._addGroup(g, 'tu');
   }
 
   /* ═══════════════════════════════════════════════════════
@@ -471,7 +475,7 @@ class SceneBuilder {
       }
     }
     this._addParticles(g, isYang ? 0xb0b0c8 : 0xf0c0e0, 18+Math.floor(strength*28));
-    this._addGroup(g);
+    this._addGroup(g, 'jin');
   }
 
   /* ═══════════════════════════════════════════════════════
@@ -559,7 +563,7 @@ class SceneBuilder {
       this._addParticles(g, 0x88ccff, 28+Math.floor(strength*40));
       this._addParticles(g, 0xddeeff, 15+Math.floor(strength*22));
     }
-    this._addGroup(g);
+    this._addGroup(g, 'shui');
   }
 
   /* ─── 中央四柱祭坛 · 精准映射四柱天干 ─────────────── */
@@ -841,13 +845,49 @@ class SceneBuilder {
     m.rotation.x=-Math.PI/2; m.position.y=.01; return m;
   }
 
-  _addGroup(g) { g.userData.dyn=true; this.scene.add(g); }
+  _addGroup(g, zoneKey) {
+    g.userData.dyn=true;
+    if (zoneKey) this._registerZone(g, zoneKey);
+    this.scene.add(g);
+  }
+
+  /* ─── 点击检测 ─────────────────────────────────────── */
+  _bindClickDetection() {
+    const el = this.renderer.domElement;
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    el.addEventListener('pointerdown', () => { this._orbit._moved = false; });
+    el.addEventListener('pointermove', () => { this._orbit._moved = true; });
+    el.addEventListener('pointerup', (e) => {
+      if (this._orbit._moved) return; // 拖拽不触发
+      const rect = el.getBoundingClientRect();
+      mouse.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+      mouse.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+      raycaster.setFromCamera(mouse, this.camera);
+
+      for (const {group, zoneKey} of this._clickZones) {
+        const meshes = [];
+        group.traverse(o => { if (o.isMesh) meshes.push(o); });
+        if (raycaster.intersectObjects(meshes).length > 0) {
+          if (this.onZoneClick) this.onZoneClick(zoneKey);
+          return;
+        }
+      }
+    });
+  }
+
+  _registerZone(group, zoneKey) {
+    group.userData.zoneKey = zoneKey;
+    this._clickZones.push({ group, zoneKey });
+  }
 
   _clearDynamic() {
     const rm=[];
     this.scene.traverse(o=>{ if(o.userData.dyn) rm.push(o); });
     rm.forEach(o=>this.scene.remove(o));
     this.animated=[];
+    this._clickZones=[];
   }
 
   _onResize() {
