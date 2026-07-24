@@ -1,12 +1,14 @@
 /**
- * user-journey.js · 用户旅程控制器
+ * user-journey.js · 用户旅程控制器 v2.0
  *
  * 五步流程：
- *  Step 1: 填写生辰信息
+ *  Step 1: 填写生辰信息（真实表单）
  *  Step 2: 推演动画
  *  Step 3: 3D 沙盒揭晓
- *  Step 4: 展示命盘标注
+ *  Step 4: 命盘标注卡
  *  Step 5: 补运任务（产品/咨询）
+ *
+ * 动态引擎：BaziEngine.calculate(year, month, day, hour, minute, gender)
  */
 
 class UserJourney {
@@ -18,51 +20,7 @@ class UserJourney {
   }
 
   async start() {
-    /**
-     * 演示命盘：癸未年·戊午月·甲寅日·壬申时
-     * 日主 甲木（阳木·参天大树·临官极旺）
-     *
-     * 五行得分（含藏干×0.5权重，午月火令×1.5）：
-     *   木23%  火23%  土24%  金12%  水18%
-     *
-     * 各五行阴阳比例 yangRatio（0=全阴 → 1=全阳）：
-     *   木0.90  火0.62  土0.39  金1.00  水0.57
-     *   →  木区：甲木参天大树  土区：己土圆润丘陵
-     *      金区：庚金刀锋晶柱  火区：丙午熔岩+灯笼混合
-     *
-     * 大运 壬子（水生木·喜用神）→ 蓝色大运光环
-     * 流年 丙午（食神年·创意输出）→ 红色流年粒子雨
-     */
-    this.baziData = {
-      wuxing:      { 木:23, 火:23, 土:24, 金:12, 水:18 },
-      dayMaster:   '甲',
-      dayMasterWx: '木',
-      pillars: {
-        year:  { stem:'癸', branch:'未' },
-        month: { stem:'戊', branch:'午' },
-        day:   { stem:'甲', branch:'寅' },
-        hour:  { stem:'壬', branch:'申' },
-      },
-      yangRatio: { 木:.90, 火:.62, 土:.39, 金:1.00, 水:.57 },
-      shenshe: ['驿马','红鸾','太极贵人','国印贵人','禄神','天喜',
-                '福星贵人','将星','红艳','德秀贵人','天乙贵人'],
-      favorable:   '金',
-      unfavorable: '水',
-      strength:    '身强',
-      lifePhase:   '临官',
-      dayun: {
-        stem:'壬', branch:'子', wx:'水', yang:true,
-        favorable:true, label:'壬子大运',
-        desc:'水旺生木·贵人相助·智慧扩展期',
-      },
-      liunian: {
-        stem:'丙', branch:'午', wx:'火', yang:true,
-        label:'丙午流年',
-        desc:'食神旺·创意输出·事业表达力强',
-      },
-    };
-    this._goTo(2);
-    setTimeout(() => this._goTo(3), 1800);
+    this._goTo(1);
   }
 
   _goTo(step) {
@@ -72,114 +30,320 @@ class UserJourney {
        5:()=>this._step5() }[step] || (()=>{}))();
   }
 
-  /* Step 1: 生辰填写（阶段3实现精美版） */
+  /* ── Step 1: 生辰信息输入表单 ── */
   _step1() {
-    document.getElementById('loading-screen').innerHTML = `
-      <div style="text-align:center;padding:40px;max-width:380px">
-        <h1 style="color:#c9a96e;font-size:22px;letter-spacing:5px;margin-bottom:8px">司马八字</h1>
-        <p style="color:rgba(232,224,208,.45);font-size:12px;letter-spacing:2px;margin-bottom:36px">
-          天机已动 · 等待排演</p>
-        <input id="birth-input" type="text"
-          placeholder="出生日期，例：1998年5月3日 午时"
-          style="width:100%;padding:14px 18px;background:rgba(255,255,255,.06);
-          border:1px solid rgba(201,169,110,.3);border-radius:12px;
-          color:#e8e0d0;font-size:14px;outline:none;letter-spacing:1px;margin-bottom:16px">
+    const ls = document.getElementById('loading-screen');
+    ls.style.display = 'flex';
+    ls.innerHTML = `
+      <div style="
+        width:100%; max-width:380px; padding:40px 32px;
+        background:rgba(10,10,18,0.95);
+        border:1px solid rgba(201,169,110,0.2);
+        border-radius:20px;
+        box-shadow:0 0 60px rgba(201,169,110,0.08);
+      ">
+        <!-- 品牌标题 -->
+        <div style="text-align:center;margin-bottom:32px">
+          <h1 style="color:#c9a96e;font-size:22px;letter-spacing:6px;font-weight:300;margin-bottom:6px">
+            司马八字
+          </h1>
+          <p style="color:rgba(232,224,208,0.35);font-size:11px;letter-spacing:3px">
+            天机已动 · 为你推演命格
+          </p>
+        </div>
+
+        <!-- 公历出生日期 -->
+        <div style="margin-bottom:16px">
+          <label style="display:block;font-size:11px;color:rgba(232,224,208,.5);
+                        letter-spacing:2px;margin-bottom:8px">公历出生日期</label>
+          <div style="display:flex;gap:8px">
+            <input id="b-year"  type="number" placeholder="年" min="1900" max="2030"
+              style="${_inputStyle()};flex:2">
+            <input id="b-month" type="number" placeholder="月" min="1" max="12"
+              style="${_inputStyle()};flex:1">
+            <input id="b-day"   type="number" placeholder="日" min="1" max="31"
+              style="${_inputStyle()};flex:1">
+          </div>
+        </div>
+
+        <!-- 出生时辰 -->
+        <div style="margin-bottom:16px">
+          <label style="display:block;font-size:11px;color:rgba(232,224,208,.5);
+                        letter-spacing:2px;margin-bottom:8px">出生时辰（时）</label>
+          <select id="b-hour" style="${_selectStyle()}">
+            <option value="">请选择时辰</option>
+            <option value="23">子时（23:00–01:00）</option>
+            <option value="1">丑时（01:00–03:00）</option>
+            <option value="3">寅时（03:00–05:00）</option>
+            <option value="5">卯时（05:00–07:00）</option>
+            <option value="7">辰时（07:00–09:00）</option>
+            <option value="9">巳时（09:00–11:00）</option>
+            <option value="11">午时（11:00–13:00）</option>
+            <option value="13">未时（13:00–15:00）</option>
+            <option value="15">申时（15:00–17:00）</option>
+            <option value="17">酉时（17:00–19:00）</option>
+            <option value="19">戌时（19:00–21:00）</option>
+            <option value="21">亥时（21:00–23:00）</option>
+          </select>
+        </div>
+
+        <!-- 性别 -->
+        <div style="margin-bottom:28px">
+          <label style="display:block;font-size:11px;color:rgba(232,224,208,.5);
+                        letter-spacing:2px;margin-bottom:10px">性别（影响大运排布）</label>
+          <div style="display:flex;gap:12px" id="gender-toggle">
+            <button onclick="window._journey._setGender('男',this)"
+              id="btn-male"
+              style="${_genderBtnStyle(true)}">
+              乾（男）
+            </button>
+            <button onclick="window._journey._setGender('女',this)"
+              id="btn-female"
+              style="${_genderBtnStyle(false)}">
+              坤（女）
+            </button>
+          </div>
+        </div>
+
+        <!-- 推演按钮 -->
         <button onclick="window._journey.submitBirth()"
-          style="width:100%;padding:14px;
-          background:linear-gradient(135deg,#c9a96e,#a07840);
-          border:none;border-radius:12px;color:#0a0a12;
-          font-size:15px;font-weight:700;letter-spacing:3px;cursor:pointer">
+          style="width:100%;padding:15px;
+          background:linear-gradient(135deg,#c9a96e 0%,#a07840 100%);
+          border:none;border-radius:12px;
+          color:#0a0a12;font-size:15px;font-weight:700;letter-spacing:4px;
+          cursor:pointer;transition:opacity .2s"
+          onmouseover="this.style.opacity='.85'"
+          onmouseout="this.style.opacity='1'">
           推演命格
         </button>
-      </div>`;
+
+        <!-- 错误提示 -->
+        <p id="birth-error" style="
+          text-align:center;margin-top:14px;font-size:12px;
+          color:#eb5757;letter-spacing:1px;min-height:18px"></p>
+      </div>
+    `;
+    // 默认性别：男
+    this._gender = '男';
+  }
+
+  _setGender(g, btn) {
+    this._gender = g;
+    document.getElementById('btn-male').style.cssText   = _genderBtnStyle(g==='男');
+    document.getElementById('btn-female').style.cssText = _genderBtnStyle(g==='女');
   }
 
   async submitBirth() {
-    const v = document.getElementById('birth-input').value;
-    if (!v.trim()) return;
+    const year   = parseInt(document.getElementById('b-year').value);
+    const month  = parseInt(document.getElementById('b-month').value);
+    const day    = parseInt(document.getElementById('b-day').value);
+    const hourEl = document.getElementById('b-hour');
+    const hour   = hourEl.value !== '' ? parseInt(hourEl.value) : -1;
+    const err    = document.getElementById('birth-error');
+
+    // 校验
+    if (!year || year<1900 || year>2030) { err.textContent='请输入正确的年份（1900–2030）'; return; }
+    if (!month || month<1 || month>12)   { err.textContent='请选择正确的月份（1–12）'; return; }
+    if (!day   || day<1   || day>31)     { err.textContent='请输入正确的日期（1–31）'; return; }
+    if (hour === -1)                      { err.textContent='请选择出生时辰'; return; }
+    err.textContent = '';
+
+    // 实际出生小时：子时跨日，23:00 视为当日 23 时
+    const birthHour = hour === 23 ? 23 : hour;
+
     this._goTo(2);
-    setTimeout(() => this._goTo(3), 2200);
+
+    try {
+      // 动态计算八字
+      const data = BaziEngine.calculate(year, month, day, birthHour, 0, this._gender || '男');
+      this.baziData = data;
+      setTimeout(() => this._goTo(3), 1600);
+    } catch(e) {
+      console.error('[BaziEngine] 计算失败', e);
+      // 回退到步骤1，显示错误
+      this._goTo(1);
+      document.getElementById('birth-error').textContent = '排盘失败，请确认日期是否正确：' + e.message;
+    }
   }
 
-  /* Step 2: 推演动画 */
+  /* ── Step 2: 推演动画 ── */
   _step2() {
-    document.getElementById('loading-screen').innerHTML = `
+    const ls = document.getElementById('loading-screen');
+    ls.style.display = 'flex';
+    ls.innerHTML = `
       <div style="text-align:center">
-        <h1 style="color:#c9a96e;font-size:22px;letter-spacing:6px;margin-bottom:16px">
-          推演中…</h1>
-        <p style="color:rgba(232,224,208,.4);font-size:12px;letter-spacing:2px">
-          天干地支排列成型</p>
-      </div>`;
+        <h1 style="color:#c9a96e;font-size:24px;letter-spacing:8px;font-weight:300;margin-bottom:20px">
+          推演中…
+        </h1>
+        <div style="display:flex;gap:12px;justify-content:center;margin-bottom:16px">
+          ${['年','月','日','时'].map(l=>`
+            <div style="width:44px;height:64px;background:rgba(201,169,110,.08);
+                        border:1px solid rgba(201,169,110,.25);border-radius:8px;
+                        display:flex;align-items:center;justify-content:center;
+                        font-size:18px;color:#c9a96e;animation:pulse 1.4s ease-in-out infinite">
+              ${l}
+            </div>`).join('')}
+        </div>
+        <p style="color:rgba(232,224,208,.35);font-size:12px;letter-spacing:2px">
+          天干地支排列成型 · 五行格局浮现
+        </p>
+      </div>
+      <style>
+        @keyframes pulse {
+          0%,100%{opacity:.3;transform:translateY(0)}
+          50%{opacity:1;transform:translateY(-4px)}
+        }
+      </style>
+    `;
   }
 
-  /* Step 3: 揭晓 3D 沙盒 */
+  /* ── Step 3: 揭晓 3D 沙盒 ── */
   _step3() {
     document.getElementById('loading-screen').style.display = 'none';
     document.getElementById('hud').style.display = 'flex';
 
-    // 更新 HUD
     const d = this.baziData;
-    const yr = d.pillars.year;
-    const mo = d.pillars.month;
-    const dy = d.pillars.day;
-    const hr = d.pillars.hour;
+    const { year:yr, month:mo, day:dy, hour:hr } = d.pillars;
+    const yang = d.STEM_YANG?.[d.dayMaster] ?? BaziEngine.STEM_YANG[d.dayMaster];
+    const yinYang = yang ? '阳' : '阴';
+    const wxName  = d.dayMasterWx;
+
     document.getElementById('hud-user').textContent =
-      `${d.dayMaster}日主（阳木·${d.lifePhase}）· ${yr.stem}${yr.branch} ${mo.stem}${mo.branch} ${dy.stem}${dy.branch} ${hr.stem}${hr.branch}`;
+      `${d.dayMaster}日主（${yinYang}${wxName}·${d.lifePhase||''}）` +
+      ` · ${yr.stem}${yr.branch} ${mo.stem}${mo.branch} ${dy.stem}${dy.branch} ${hr.stem}${hr.branch}`;
 
     this.sb.buildFromBazi(d);
     setTimeout(() => this._goTo(4), 1200);
   }
 
-  /* Step 4: 展示命盘标注 */
+  /* ── Step 4: 动态命盘标注卡 ── */
   _step4() {
     if (!this.baziData) return;
     const d = this.baziData;
+    const dm = d.dayMaster;
+    const dmWx = d.dayMasterWx;
 
-    // 根据实际命盘生成精准标注
-    const annotations = [
-      {
-        position: [-1, 3.8, 0],
-        type: 'fortune',
-        title: `日主·${d.dayMaster}（阳木·${d.lifePhase}）`,
-        content: `你的日主为${d.dayMaster}，属阳木，在日支寅木处于「临官」之位，是八字最旺的状态之一。\n甲木象征参天大树：主进取、领导力强、思想正直、不屈不挠。\n先天优势：逻辑清晰、敢于担当、适合开拓型事业。`,
-      },
-      {
-        position: [0.5, 2, 5.5],
-        type: 'neutral',
-        title: `火行中等（${d.wuxing['火']}%）· 月令午火`,
-        content: `火行为甲木的食神/伤官（我生之物），代表才华、创意与表达力。\n月支午火是月令，为本月旺气所在，赋予你较强的表达欲与事业冲劲。\n流年丙午更强化此气，${d.liunian?.desc || ''}。`,
-      },
-      {
-        position: [5.5, 2, -1],
-        type: 'danger',
-        title: `金行偏弱（${d.wuxing['金']}%）· 时支申金`,
-        content: `金行为甲木的七杀/正官（克我之物）。金行偏弱，对强木的约束不足，导致日主过旺难以收敛。\n喜用神正是金行（庚申）：金能制木，给你方向感与纪律性。\n建议佩戴金属类或白色/银色水晶（如白水晶、黄铁矿）补充金气。`,
-      },
-      {
+    // ① 日主标注
+    const annotations = [];
+    annotations.push({
+      position: [-1, 3.8, 0],
+      type: 'fortune',
+      title: `日主·${dm}（${BaziEngine.STEM_YANG[dm]?'阳':'阴'}${dmWx}·${d.lifePhase||''}）`,
+      content: `${d.dayMasterNature || dm+'木命'}\n十二长生：${d.lifePhase||'-'}，先天格局${d.strength}。`,
+    });
+
+    // ② 最旺五行
+    const sorted = Object.entries(d.wuxing).sort((a,b)=>b[1]-a[1]);
+    const topWx  = sorted[0];
+    const botWx  = sorted[sorted.length-1];
+    annotations.push({
+      position: [0.5, 2, 5.5],
+      type: 'neutral',
+      title: `五行最旺：${topWx[0]}行（${topWx[1]}%）`,
+      content: _wuxingDesc(topWx[0], topWx[1], dm),
+    });
+
+    // ③ 喜用神
+    annotations.push({
+      position: [5.5, 2, -1],
+      type: d.strength==='身弱' ? 'fortune' : 'danger',
+      title: `喜用神：${d.favorable}行 · ${d.strength}`,
+      content: _favorableDesc(d.strength, dm, d.favorable, d.unfavorable),
+    });
+
+    // ④ 大运
+    if (d.dayun) {
+      const dy = d.dayun;
+      annotations.push({
         position: [-5.5, 2, 2],
-        type: 'fortune',
-        title: `土行最旺（${d.wuxing['土']}%）· 偏财格`,
-        content: `土行为甲木的偏财/正财，命盘中土行最旺（24%），财星有力。\n月干戊土（阳土）为偏财，时支申藏戊土，财气多点分布。\n偏财有力代表：理财能力强、善于把握财富机遇、可能有多渠道收入。`,
-      },
-      {
+        type: dy.favorable ? 'fortune' : 'neutral',
+        title: `当前大运：${dy.gan}${dy.zhi}（${dy.wx}）`,
+        content: `十神：${dy.shishen}。大运五行为${dy.wx}，` +
+                 (dy.wx === d.favorable ? `正是喜用神，运势大利！` :
+                  dy.wx === d.unfavorable ? `与忌神同行，需谨慎克制。` : `平稳过渡，稳中求进。`),
+      });
+    }
+
+    // ⑤ 神煞亮点
+    const top3stars = (d.shenshe||[]).filter(s=>_GOOD_STARS.includes(s)).slice(0,3);
+    if (top3stars.length) {
+      annotations.push({
         position: [-3.5, 2, -4.5],
-        type: 'neutral',
-        title: `水行（${d.wuxing['水']}%）· 壬癸双透`,
-        content: `水行为甲木的正印/偏印，代表智慧、学识与贵人扶持。\n命盘中壬（阳水）与癸（阴水）均透出天干，正偏印双现，智识资源丰富。\n大运壬子更强化水气：${d.dayun?.desc || ''}。\n注意：水已充足，切勿再补水，否则水泛木漂，反伤格局。`,
-      },
-      {
-        position: [0.5, 2.5, -5],
         type: 'fortune',
-        title: '天乙贵人 · 年柱入命',
-        content: `天乙贵人坐年柱（癸未），为命盘中最有力的吉星，主逢凶化吉、贵人相助。\n年柱天乙贵人说明：年少时家庭背景有贵助，祖运有力。\n成年后仍能在关键时刻遇见改变命运的贵人，宜多经营人脉与口碑。`,
-      },
-    ];
+        title: `吉星入命：${top3stars.join('·')}`,
+        content: top3stars.map(s=>
+          `【${s}】${CONFIG.SHENSHA_3D?.[s]?.desc||'吉星护佑'}`).join('\n'),
+      });
+    }
+
+    // ⑥ 流年
+    if (d.liunian) {
+      const ly = d.liunian;
+      annotations.push({
+        position: [0.5, 2.5, -5],
+        type: 'neutral',
+        title: `流年（${ly.year}）：${ly.gan}${ly.zhi}年`,
+        content: `流年天干 ${ly.gan}（${BaziEngine.STEM_WX[ly.gan]}）与日主关系：` +
+                 `${BaziEngine._shishen(dm, ly.gan)}。\n五行：${ly.wx}行，` +
+                 (ly.wx === d.favorable ? '此年行喜用神，利于布局与突破。' :
+                  ly.wx === d.unfavorable ? '此年行忌神，宜守成而非冒进。' : '此年平稳，步步为营。'),
+      });
+    }
 
     this.anno.buildFromAnalysis(annotations);
   }
 
-  /* Step 5: 补运任务（阶段3实现） */
+  /* ── Step 5: 补运任务（阶段3实现） ── */
   _step5() {
     console.log('[Journey] Step 5 · 补运任务（阶段3实现）');
   }
+}
+
+/* ─── 私有辅助 ─── */
+
+function _inputStyle() {
+  return `padding:12px 14px;background:rgba(255,255,255,.05);
+          border:1px solid rgba(201,169,110,.25);border-radius:10px;
+          color:#e8e0d0;font-size:14px;outline:none;letter-spacing:1px;width:100%;
+          font-family:'PingFang SC','Microsoft YaHei',sans-serif`;
+}
+function _selectStyle() {
+  return `width:100%;padding:12px 14px;background:rgba(255,255,255,.05);
+          border:1px solid rgba(201,169,110,.25);border-radius:10px;
+          color:#e8e0d0;font-size:14px;outline:none;letter-spacing:1px;
+          font-family:'PingFang SC','Microsoft YaHei',sans-serif;
+          -webkit-appearance:none;appearance:none`;
+}
+function _genderBtnStyle(active) {
+  return `flex:1;padding:11px 0;border-radius:10px;font-size:13px;letter-spacing:2px;
+          cursor:pointer;font-family:'PingFang SC','Microsoft YaHei',sans-serif;
+          ${active
+            ? 'background:rgba(201,169,110,.2);border:1px solid rgba(201,169,110,.6);color:#c9a96e;font-weight:600'
+            : 'background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.12);color:rgba(232,224,208,.45)'}`;
+}
+
+const _GOOD_STARS = [
+  '天乙贵人','文昌贵人','太极贵人','福星贵人','国印贵人','德秀贵人',
+  '禄神','将星','天德贵人','月德贵人','天喜','红鸾','金舆','学堂','天医',
+];
+
+function _wuxingDesc(wx, pct, dm) {
+  const M = {
+    木:'木行主生机、创意与拓展，代表生长向上的力量。',
+    火:'火行主热情、才华与表达，代表光明外放的力量。',
+    土:'土行主稳定、踏实与财富积累，代表包容厚实的力量。',
+    金:'金行主纪律、决断与执行力，代表收敛精炼的力量。',
+    水:'水行主智慧、直觉与流动，代表深沉内蓄的力量。',
+  };
+  const rel = BaziEngine._shishen(dm, ({木:'甲',火:'丙',土:'戊',金:'庚',水:'壬'}[wx])||'甲');
+  return `${M[wx]||''}\n在命盘中占比 ${pct}%（最旺五行），与日主关系：${rel}。`;
+}
+
+function _favorableDesc(strength, dm, fav, unf) {
+  const M = {
+    身强:`日主${dm}势力偏强，五行偏旺，需要${fav}行来克制、疏导或泄耗，以达格局平衡。\n忌：${unf}行（助旺日主，锦上添花反为过）。`,
+    身弱:`日主${dm}势力偏弱，五行偏衰，需要${fav}行来滋养、扶持或比助，以达格局平衡。\n忌：${unf}行（克泄日主，雪上加霜）。`,
+    中和:`命盘格局中和平衡，喜${fav}行略微调节，忌${unf}行过旺破局。`,
+  };
+  return M[strength] || `喜用神为${fav}行，忌神为${unf}行。`;
 }
