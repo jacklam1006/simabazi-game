@@ -28,6 +28,7 @@ from bazi_prompt import generate_island_prompt, generate_tripo_short_prompt
 from gemini_enhance import enhance_island_prompt
 from gemini_image import generate_island_image
 from tripo_client import submit_image_to_3d, submit_text_to_3d, get_task_status
+from supabase_storage import download_glb, upload_glb
 
 app = FastAPI(title="司马八字 Island Generator API")
 
@@ -142,6 +143,16 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
             update("tripo_text_processing", 55, tripo_task_id=task_id)
             model_url = await _poll_tripo(task_id, max_wait=240)
 
+        # ── 上传GLB到Supabase Storage（永久保存）──────────
+        update("uploading", 90)
+        try:
+            glb_bytes    = download_glb(model_url)
+            model_url    = upload_glb(glb_bytes)
+            print(f"[Pipeline] 永久URL: {model_url}")
+        except Exception as storage_err:
+            # Storage失败不阻断流程，继续用TripoAI临时URL（5分钟内仍可用）
+            print(f"[Storage ERROR] {storage_err}")
+
         # ── 写缓存 + 完成 ──────────────────────────────────
         _write(CACHE_DIR / f"{cache_key}.json", {
             "model_url": model_url,
@@ -164,12 +175,17 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
 async def generate_island(req: GenerateRequest, background_tasks: BackgroundTasks):
     ck = _cache_key(req.bazi_data)
 
-    # 命中缓存（TripoAI URL 5分钟过期，不使用缓存）
-    # TODO: 未来接入永久存储（Supabase Storage）后可重新启用缓存
-    # if not req.force_regen:
-    #     cached = _read(CACHE_DIR / f"{ck}.json")
-    #     if cached and cached.get("model_url"):
-    #         return { "job_id": f"cached_{ck}", ... }
+    # 命中缓存（URL已永久存储到Supabase，直接返回）
+    if not req.force_regen:
+        cached = _read(CACHE_DIR / f"{ck}.json")
+        if cached and cached.get("model_url"):
+            return {
+                "job_id":    f"cached_{ck}",
+                "source":    "cache",
+                "status":    "completed",
+                "progress":  100,
+                "model_url": cached["model_url"],
+            }
 
     # 新建job
     job_id = str(uuid.uuid4())

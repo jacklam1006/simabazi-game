@@ -52,9 +52,7 @@ const UserState = (() => {
     const cache = get('island_cache') || {};
     const entry = cache[_baziKey(baziData)];
     if (!entry) return null;
-    // TripoAI URL 5分钟过期，4分钟内才使用缓存
-    const age = Date.now() - (entry.savedAt || 0);
-    if (age > 4 * 60 * 1000) return null;
+    // URL 已永久存储到 Supabase Storage，无需过期检查
     return entry.url || null;
   }
 
