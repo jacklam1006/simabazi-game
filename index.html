@@ -44,12 +44,12 @@
     .form-error{color:#EB5757;font-size:11px;text-align:center;margin-top:8px;min-height:16px;letter-spacing:1px}
 
     /* ══ 屏幕2：Loading ══ */
-    #screen-loading{position:fixed;inset:0;z-index:90;background:#080810;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px}
-    .loading-orb{width:120px;height:120px;border-radius:50%;background:radial-gradient(circle,#1a1630,#080810);border:1px solid rgba(201,169,110,.2);display:flex;align-items:center;justify-content:center;animation:orb-pulse 2s ease-in-out infinite}
-    .loading-orb-inner{font-size:48px;animation:orb-float 3s ease-in-out infinite}
+    #screen-loading{position:fixed;inset:0;z-index:90;background:#080810;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:40px 20px 24px;overflow-y:auto;gap:0}
+    .loading-orb{width:88px;height:88px;border-radius:50%;background:radial-gradient(circle,#1a1630,#080810);border:1px solid rgba(201,169,110,.2);display:flex;align-items:center;justify-content:center;animation:orb-pulse 2s ease-in-out infinite;flex-shrink:0}
+    .loading-orb-inner{font-size:36px;animation:orb-float 3s ease-in-out infinite}
     @keyframes orb-pulse{0%,100%{box-shadow:0 0 20px rgba(201,169,110,.1)}50%{box-shadow:0 0 40px rgba(201,169,110,.3)}}
-    @keyframes orb-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
-    .loading-stage-text{font-size:13px;color:#c9a96e;letter-spacing:2px;text-align:center}
+    @keyframes orb-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+    .loading-stage-text{font-size:13px;color:#c9a96e;letter-spacing:2px;text-align:center;margin-top:14px}
     .loading-stage-sub{font-size:11px;color:rgba(232,224,208,.3);letter-spacing:1px;margin-top:4px;text-align:center}
     .progress-wrap{width:200px;height:2px;background:rgba(255,255,255,.08);border-radius:2px}
     .progress-fill{height:100%;background:linear-gradient(90deg,#c9a96e,#e8c87a);border-radius:2px;transition:width .5s ease;width:0%}
@@ -62,6 +62,25 @@
     .l-step.done .l-dot{background:#6FCF97}
     .loading-error{color:#EB5757;font-size:11px;text-align:center;letter-spacing:1px;max-width:260px}
     #loading-retry-btn{display:none;padding:8px 20px;border-radius:8px;border:1px solid rgba(201,169,110,.4);background:transparent;color:#c9a96e;font-size:12px;letter-spacing:2px;cursor:pointer}
+
+    /* ── 八字洞察卡片 ─────────────────────────────── */
+    #insight-carousel{width:100%;max-width:340px;margin-top:20px;cursor:pointer;user-select:none}
+    .insight-card{background:rgba(201,169,110,.05);border:1px solid rgba(201,169,110,.15);border-radius:16px;padding:20px 22px;text-align:center;animation:card-in .5s ease}
+    @keyframes card-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+    .insight-tag{font-size:9px;letter-spacing:3px;color:rgba(201,169,110,.5);margin-bottom:10px}
+    .insight-main{font-size:22px;color:#c9a96e;letter-spacing:4px;margin-bottom:8px;font-weight:300}
+    .insight-sub{font-size:12px;color:rgba(232,224,208,.5);line-height:1.8;letter-spacing:1px}
+    .insight-pillars{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:6px}
+    .insight-pillar{background:rgba(255,255,255,.03);border-radius:8px;padding:8px 4px}
+    .insight-pillar-label{font-size:9px;color:rgba(201,169,110,.4);letter-spacing:1px;margin-bottom:4px}
+    .insight-pillar-gan{font-size:17px;color:#e8e0d0;margin-bottom:2px}
+    .insight-pillar-zhi{font-size:14px;color:rgba(232,224,208,.55)}
+    .insight-dots{display:flex;justify-content:center;gap:6px;margin-top:12px}
+    .insight-dot{width:5px;height:5px;border-radius:50%;background:rgba(201,169,110,.2);transition:background .3s}
+    .insight-dot.active{background:#c9a96e}
+    /* 预估时间 + 提示 */
+    #loading-eta{font-size:10px;color:rgba(232,224,208,.25);letter-spacing:1px;margin-top:16px;text-align:center}
+    #loading-hint{font-size:9px;color:rgba(232,224,208,.18);letter-spacing:2px;margin-top:6px;text-align:center}
 
     /* ══ 屏幕3：3D命盘 ══ */
     #screen-island{position:fixed;inset:0;z-index:10}
@@ -479,6 +498,16 @@
   </div>
   <div class="loading-error hidden" id="loading-error-text"></div>
   <button id="loading-retry-btn" data-i18n="loading.retry_btn" onclick="App.retryGenerate()">重新生成</button>
+
+  <!-- ── 八字洞察卡片 ── -->
+  <div id="insight-carousel" class="hidden" onclick="InsightCards.next()">
+    <div class="insight-card" id="insight-card-content"><!-- populated by JS --></div>
+    <div class="insight-dots" id="insight-dots"></div>
+  </div>
+
+  <!-- ── 预估时间 + 提示 ── -->
+  <div id="loading-eta" class="hidden"></div>
+  <div id="loading-hint" class="hidden">📵 请勿锁屏，保持页面开启</div>
 </div>
 
 <!-- ══ 屏幕3：3D命盘 ══ -->

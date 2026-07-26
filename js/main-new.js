@@ -159,15 +159,23 @@ const App = (() => {
     document.getElementById('loading-error-text')?.classList.add('hidden');
     const btn = document.getElementById('loading-retry-btn');
     if (btn) btn.style.display = 'none';
+    // 先隐藏卡片区（生成开始后才显示）
+    document.getElementById('insight-carousel')?.classList.add('hidden');
+    document.getElementById('loading-eta')?.classList.add('hidden');
+    document.getElementById('loading-hint')?.classList.add('hidden');
   }
 
   function _startGenerate() {
+    // 启动八字洞察卡片（2s后出现，避免与初始UI冲突）
+    setTimeout(() => { InsightCards.start(_baziData); }, 2000);
+
     IslandLoader.generateIsland(_baziData, {
       onProgress(stage, pct) { _applyStage(stage, pct); },
       onComplete(modelUrl) {
         _lastModelUrl = modelUrl;
         _setLoadingStep(5);
         _setProgress(100);
+        InsightCards.stop(); // 停止卡片轮播
         const _t2 = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
         _setStageText(_t2('stage.done.t'), _t2('stage.done.s'));
 
@@ -204,6 +212,7 @@ const App = (() => {
         }, 800);
       },
       onError(err) {
+        InsightCards.stop();
         AudioManager.playSfx('error');
         const _t3 = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
         _showLoadingError(_t3('loading.fail_title') + '：' + (err || _t3('loading.fail_sub')));
@@ -488,4 +497,174 @@ const App = (() => {
     _getBirthInfo: () => _birthInfo,
     _getLastUrl:   () => _lastModelUrl,
   };
+})();
+
+/* ═══════════════════════════════════════════════════════════
+   InsightCards — 生成等待期间的八字洞察卡片轮播
+   ═══════════════════════════════════════════════════════════ */
+const InsightCards = (() => {
+  let _cards = [];
+  let _idx   = 0;
+  let _timer = null;
+  let _etaTimer = null;
+  let _startTs  = 0;
+  const TOTAL_MS = 150000; // 预计 2.5 分钟
+
+  // 五行色
+  const WX_COLOR = { 木:'#7ECB8F', 火:'#E87040', 土:'#C9A96E', 金:'#D4C48A', 水:'#5B9BD5' };
+
+  function _build(bazi) {
+    if (!bazi) return [];
+    const _t  = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+    const isZh = (typeof Lang !== 'undefined') ? Lang.current() === 'zh' : true;
+    const p   = bazi.pillars || {};
+    const dm  = bazi.dayMaster || '';
+    const dmWx= bazi.dayMasterWx || '';
+    const dmNature = bazi.dayMasterNature || '';
+    const wx  = bazi.wuxing || {};
+    const fav = bazi.favorable || [];
+    const nayin = bazi.nayin || {};
+
+    // Card 0: 日主
+    const col = WX_COLOR[dmWx] || '#c9a96e';
+    const cards = [];
+    cards.push(`
+      <div class="insight-tag">${isZh ? '你的日主' : 'DAY MASTER'}</div>
+      <div class="insight-main" style="color:${col};font-size:36px">${dm}</div>
+      <div class="insight-sub">${dmWx}${isZh?'行':'&nbsp;·&nbsp;'}${dmNature}</div>
+    `);
+
+    // Card 1: 四柱
+    const pillarLabels = isZh
+      ? ['年柱','月柱','日柱','时柱']
+      : ['Year','Month','Day','Hour'];
+    const pKeys = ['year','month','day','hour'];
+    const pillarsHTML = pKeys.map((k,i) => {
+      const stem  = p[k]?.stem  || '—';
+      const branch= p[k]?.branch|| '—';
+      return `<div class="insight-pillar">
+        <div class="insight-pillar-label">${pillarLabels[i]}</div>
+        <div class="insight-pillar-gan">${stem}</div>
+        <div class="insight-pillar-zhi">${branch}</div>
+      </div>`;
+    }).join('');
+    cards.push(`
+      <div class="insight-tag">${isZh ? '四柱八字' : 'FOUR PILLARS'}</div>
+      <div class="insight-pillars">${pillarsHTML}</div>
+    `);
+
+    // Card 2: 五行分布
+    const wxEntries = Object.entries(wx).filter(([,v])=>v>0)
+      .sort(([,a],[,b])=>b-a);
+    const wxBars = wxEntries.map(([el, cnt]) => {
+      const pct = Math.min(100, cnt * 20);
+      return `<div style="margin:4px 0">
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:rgba(232,224,208,.5);margin-bottom:3px">
+          <span style="color:${WX_COLOR[el]||'#c9a96e'}">${el}</span><span>${cnt}</span>
+        </div>
+        <div style="height:3px;background:rgba(255,255,255,.08);border-radius:2px">
+          <div style="height:100%;width:${pct}%;background:${WX_COLOR[el]||'#c9a96e'};border-radius:2px;transition:width 1s ease"></div>
+        </div>
+      </div>`;
+    }).join('');
+    cards.push(`
+      <div class="insight-tag">${isZh ? '五行分布' : 'FIVE ELEMENTS'}</div>
+      <div style="width:100%">${wxBars}</div>
+    `);
+
+    // Card 3: 喜用神
+    if (fav.length) {
+      const favHTML = fav.map(f =>
+        `<span style="color:${WX_COLOR[f]||'#c9a96e'};font-size:20px;margin:0 6px">${f}</span>`
+      ).join('');
+      cards.push(`
+        <div class="insight-tag">${isZh ? '喜用神' : 'FAVORABLE ELEMENTS'}</div>
+        <div class="insight-main" style="font-size:14px;color:rgba(232,224,208,.5);margin-bottom:8px">
+          ${isZh ? '有利于你的五行能量' : 'Elements that benefit you'}
+        </div>
+        <div style="margin-top:4px">${favHTML}</div>
+      `);
+    }
+
+    // Card 4: 纳音（如有）
+    if (nayin.day) {
+      cards.push(`
+        <div class="insight-tag">${isZh ? '日柱纳音' : 'NAYIN SOUND'}</div>
+        <div class="insight-main" style="font-size:22px">${nayin.day}</div>
+        <div class="insight-sub">${isZh ? '纳音五行象征你的命运底色' : 'Your destiny\'s elemental resonance'}</div>
+      `);
+    }
+
+    return cards;
+  }
+
+  function _render() {
+    const el = document.getElementById('insight-card-content');
+    if (!el || !_cards.length) return;
+    el.innerHTML = _cards[_idx];
+    // 重播动画
+    el.parentElement.style.animation = 'none';
+    requestAnimationFrame(() => { el.parentElement.style.animation = ''; });
+    // dots
+    const dots = document.getElementById('insight-dots');
+    if (dots) {
+      dots.innerHTML = _cards.map((_,i) =>
+        `<div class="insight-dot${i===_idx?' active':''}"></div>`
+      ).join('');
+    }
+  }
+
+  function _updateEta() {
+    const el = document.getElementById('loading-eta');
+    if (!el) return;
+    const elapsed = Date.now() - _startTs;
+    const remain  = Math.max(0, TOTAL_MS - elapsed);
+    const mins    = Math.floor(remain / 60000);
+    const secs    = Math.floor((remain % 60000) / 1000);
+    const isZh = (typeof Lang !== 'undefined') ? Lang.current() === 'zh' : true;
+    el.textContent = isZh
+      ? `预计还需 ${mins > 0 ? mins+'分' : ''}${secs}秒`
+      : `Est. ${mins > 0 ? mins+'m ' : ''}${secs}s remaining`;
+  }
+
+  function start(baziData) {
+    _cards = _build(baziData);
+    _idx   = 0;
+    if (!_cards.length) return;
+
+    document.getElementById('insight-carousel')?.classList.remove('hidden');
+    document.getElementById('loading-eta')?.classList.remove('hidden');
+    document.getElementById('loading-hint')?.classList.remove('hidden');
+
+    _render();
+
+    // 每 30s 自动切换
+    clearInterval(_timer);
+    _timer = setInterval(() => { _idx = (_idx + 1) % _cards.length; _render(); }, 30000);
+
+    // 倒计时
+    _startTs = Date.now();
+    _updateEta();
+    clearInterval(_etaTimer);
+    _etaTimer = setInterval(_updateEta, 1000);
+  }
+
+  function stop() {
+    clearInterval(_timer);
+    clearInterval(_etaTimer);
+    document.getElementById('insight-carousel')?.classList.add('hidden');
+    document.getElementById('loading-eta')?.classList.add('hidden');
+    document.getElementById('loading-hint')?.classList.add('hidden');
+  }
+
+  function next() {
+    if (!_cards.length) return;
+    _idx = (_idx + 1) % _cards.length;
+    _render();
+    // 重置自动切换计时
+    clearInterval(_timer);
+    _timer = setInterval(() => { _idx = (_idx + 1) % _cards.length; _render(); }, 30000);
+  }
+
+  return { start, stop, next };
 })();

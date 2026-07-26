@@ -134,106 +134,148 @@ const AudioManager = (() => {
   }
 
   // ════════════════════════════════════════════════════════
-  // ── BGM 场景1：天命序章（表单页）──────────────────────
-  //    神秘宁静：C 五行低鸣和弦 + 慢速五声旋律
+  // ── 简易混响（延迟叠加模拟空间感） ──────────────────────
+  function _reverb(src, wet = 0.35) {
+    if (!_ctx) return src;
+    const delay1 = _ctx.createDelay(0.5);
+    const delay2 = _ctx.createDelay(0.5);
+    const fb1    = _ctx.createGain();
+    const fb2    = _ctx.createGain();
+    const mix    = _ctx.createGain();
+    delay1.delayTime.value = 0.13;
+    delay2.delayTime.value = 0.23;
+    fb1.gain.value = 0.28;
+    fb2.gain.value = 0.20;
+    mix.gain.value = wet;
+    src.connect(delay1); delay1.connect(fb1); fb1.connect(delay1);
+    src.connect(delay2); delay2.connect(fb2); fb2.connect(delay2);
+    delay1.connect(mix); delay2.connect(mix);
+    mix.connect(_bgmBus);
+  }
+
+  // ── BGM 场景1：心净如水（表单页）─────────────────────
+  //    治愈风：颂钵低鸣 + 极慢五声旋律 + 混响空间
   // ════════════════════════════════════════════════════════
   function _bgmForm() {
-    // 低音持续和弦
+    // 颂钵风 drone：极软正弦叠层，带微颤
     const bed = [
-      { freq: F.C2, type: 'triangle', vol: 0.15, detune:  0,  vib: 0.06, vd: F.C2*0.004 },
-      { freq: F.G2, type: 'triangle', vol: 0.09, detune:  4,  vib: 0.05, vd: F.G2*0.004 },
-      { freq: F.C3, type: 'sine',     vol: 0.06, detune: -3,  vib: 0.08, vd: F.C3*0.003 },
-      { freq: F.E3, type: 'sine',     vol: 0.04, detune:  6,  vib: 0.07, vd: F.E3*0.003 },
+      { freq: F.C2, type: 'sine', vol: 0.10, detune:  0,  vib: 0.04, vd: F.C2*0.003 },
+      { freq: F.G2, type: 'sine', vol: 0.07, detune:  3,  vib: 0.03, vd: F.G2*0.003 },
+      { freq: F.C3, type: 'sine', vol: 0.05, detune: -2,  vib: 0.05, vd: F.C3*0.002 },
+      { freq: F.E3, type: 'sine', vol: 0.03, detune:  5,  vib: 0.04, vd: F.E3*0.002 },
     ];
     bed.forEach(n => {
       const node = _bgmOsc(n.type, n.freq, n.detune);
-      _ramp(node.g.gain, n.vol, 3.0);
-      _lfo(n.vib, n.vd, node.osc.frequency); // 频率微颤（振音）
+      _ramp(node.g.gain, n.vol, 5.0);   // 极慢淡入
+      _lfo(n.vib, n.vd, node.osc.frequency);
+      _reverb(node.g, 0.4);
     });
 
-    // 慢速五声旋律音，每 9~13 秒一个
-    const melSeq = [F.C4, F.E4, F.G4, F.A4, F.G4, F.E4, F.C4, F.A3, F.C4];
+    // 极慢五声旋律：每 12~18 秒出现一个长音
+    const melSeq = [F.G4, F.E4, F.C4, F.A3, F.G3, F.A3, F.C4, F.E4, F.G4, F.A4];
     let mIdx = 0;
     function _sched() {
-      _note(melSeq[mIdx % melSeq.length], 0.07, 0.6, 4.0);
+      _note(melSeq[mIdx % melSeq.length], 0.055, 1.2, 6.0, 'sine');
       mIdx++;
-      _later(_sched, 9000 + Math.random() * 4000);
+      _later(_sched, 12000 + Math.random() * 6000);
     }
-    _later(_sched, 4000);
+    _later(_sched, 6000);
+
+    // 轻柔泛音点缀：随机高泛音，极轻
+    const overtones = [F.C5, F.E5, F.G5, F.A5];
+    function _overtone() {
+      _note(overtones[Math.floor(Math.random() * overtones.length)], 0.025, 0.8, 5.0, 'sine');
+      _later(_overtone, 16000 + Math.random() * 10000);
+    }
+    _later(_overtone, 10000);
   }
 
   // ════════════════════════════════════════════════════════
-  // ── BGM 场景2：天机运转（Loading 页）─────────────────
-  //    宇宙期待感：低频底噪 + 层层上升脉冲
+  // ── BGM 场景2：气息流转（Loading 页）──────────────────
+  //    温柔期待：柔和上升 + 呼吸感脉冲，不紧张
   // ════════════════════════════════════════════════════════
   function _bgmLoading() {
-    // 低频底噪
-    const r1 = _bgmOsc('sine',     F.C1, 0);
-    const r2 = _bgmOsc('triangle', F.C2, -6);
-    _ramp(r1.g.gain, 0.18, 2.0);
-    _ramp(r2.g.gain, 0.09, 2.5);
-    _lfo(0.09, F.C1 * 0.005, r1.osc.frequency);
+    // 柔和底音
+    const r1 = _bgmOsc('sine', F.C2, 0);
+    const r2 = _bgmOsc('sine', F.G2, -4);
+    _ramp(r1.g.gain, 0.12, 3.0);
+    _ramp(r2.g.gain, 0.07, 4.0);
+    _lfo(0.07, F.C2 * 0.004, r1.osc.frequency);
+    _reverb(r1.g, 0.35);
 
-    // 上升脉冲序列
-    const pulseSeq = [F.C3, F.E3, F.G3, F.C4, F.E4, F.G4, F.C5];
+    // 呼吸感：音量缓慢起伏
+    const breathGain = _ctx.createGain();
+    breathGain.gain.value = 0.8;
+    _lfo(0.12, 0.15, breathGain.gain);
+
+    // 柔和上升序列：每隔 3s 一个长音，温柔不急迫
+    const riseSeq = [F.C3, F.E3, F.G3, F.A3, F.C4, F.E4, F.G4];
     let pIdx = 0;
     function _pulse() {
-      const freq = pulseSeq[Math.min(pIdx, pulseSeq.length - 1)];
+      const freq = riseSeq[Math.min(pIdx, riseSeq.length - 1)];
       pIdx++;
-      _note(freq, 0.17, 0.05, 1.8, 'sine');
-      _later(_pulse, pIdx < pulseSeq.length ? 2800 : 4500);
+      _note(freq, 0.10, 0.8, 3.5, 'sine');
+      if (pIdx < riseSeq.length) {
+        _later(_pulse, 3200);
+      } else {
+        // 到顶后循环轻音
+        _later(function _top() {
+          _note(riseSeq[Math.floor(Math.random() * 3) + 4], 0.06, 1.0, 4.0, 'sine');
+          _later(_top, 5000 + Math.random() * 3000);
+        }, 3000);
+      }
     }
-    _later(_pulse, 1200);
+    _later(_pulse, 1500);
   }
 
   // ════════════════════════════════════════════════════════
-  // ── BGM 场景3：命格世界（岛屿页）──────────────────────
-  //    东方玄幻：低音 drone + 五声琶音 + 高音灵铃
+  // ── BGM 场景3：灵境（岛屿页）──────────────────────────
+  //    治愈自然：暖音 drone + 慢速琶音 + 水晶灵铃
   // ════════════════════════════════════════════════════════
   function _bgmIsland() {
-    // 持续低音 drone
+    // 温暖 drone 层
     const drones = [
-      { freq: F.C2, type: 'triangle', vol: 0.11, detune:  0, vib: 0.05, vd: F.C2*0.004 },
-      { freq: F.G2, type: 'triangle', vol: 0.07, detune:  4, vib: 0.04, vd: F.G2*0.004 },
-      { freq: F.C3, type: 'sine',     vol: 0.05, detune: -2, vib: 0.06, vd: F.C3*0.003 },
+      { freq: F.C2, type: 'sine', vol: 0.09, detune:  0, vib: 0.04, vd: F.C2*0.003 },
+      { freq: F.G2, type: 'sine', vol: 0.06, detune:  3, vib: 0.03, vd: F.G2*0.003 },
+      { freq: F.C3, type: 'sine', vol: 0.04, detune: -2, vib: 0.05, vd: F.C3*0.002 },
     ];
     drones.forEach(n => {
       const node = _bgmOsc(n.type, n.freq, n.detune);
-      _ramp(node.g.gain, n.vol, 2.5);
+      _ramp(node.g.gain, n.vol, 4.0);
       _lfo(n.vib, n.vd, node.osc.frequency);
+      _reverb(node.g, 0.45);
     });
 
-    // 五声琶音：每 0.8s 一音，循环
+    // 慢速五声琶音：每 2s 一音，极柔
     const arpSeq = [F.C4, F.E4, F.G4, F.A4, F.C5, F.A4, F.G4, F.E4];
     let aIdx = 0;
     function _arp() {
-      const freq = arpSeq[aIdx % arpSeq.length];
-      aIdx++;
-      // 微偏音让声音更有机感
       const osc = _ctx.createOscillator();
       const g   = _ctx.createGain();
-      osc.type           = 'triangle';
-      osc.frequency.value = freq;
-      osc.detune.value   = (Math.random() - 0.5) * 5;
+      osc.type            = 'sine';
+      osc.frequency.value = arpSeq[aIdx % arpSeq.length];
+      osc.detune.value    = (Math.random() - 0.5) * 4;
+      aIdx++;
       const t = _ctx.currentTime;
       g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(0.10, t + 0.04);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 2.2);
+      g.gain.linearRampToValueAtTime(0.07, t + 0.3);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 3.5);
       osc.connect(g); g.connect(_bgmBus);
-      osc.start(t); osc.stop(t + 2.5);
-      _later(_arp, 800);
+      osc.start(t); osc.stop(t + 4.0);
+      _reverb(g, 0.3);
+      _later(_arp, 2000 + Math.random() * 400);
     }
-    _later(_arp, 1500);
+    _later(_arp, 2000);
 
-    // 高音灵铃：每 5~10s 随机出现
-    const chimeSeq = [F.C5, F.E5, F.G5, F.A5, F.C6, F.G5, F.E5];
+    // 水晶灵铃：每 7~14s 随机出现，极长衰减
+    const chimeSeq = [F.C5, F.E5, F.G5, F.A5, F.C6];
     let cIdx = 0;
     function _chime() {
-      _note(chimeSeq[cIdx % chimeSeq.length], 0.06, 0.02, 3.5, 'sine');
+      _note(chimeSeq[cIdx % chimeSeq.length], 0.045, 0.03, 5.5, 'sine');
       cIdx++;
-      _later(_chime, 5000 + Math.random() * 5000);
+      _later(_chime, 7000 + Math.random() * 7000);
     }
-    _later(_chime, 3500);
+    _later(_chime, 4000);
   }
 
   // ════════════════════════════════════════════════════════
