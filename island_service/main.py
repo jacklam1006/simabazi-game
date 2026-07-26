@@ -108,8 +108,10 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
             update("image_ready", 35)
         except Exception as img_err:
             # Gemini失败 → 跳过图生3D，直接用文生3D
+            err_msg = str(img_err)
+            print(f"[Gemini ERROR] {err_msg}")   # Render日志可见
             update("image_failed_fallback", 35,
-                   warning=f"Gemini生图失败，改用文生3D: {img_err}")
+                   warning=f"Gemini生图失败: {err_msg[:200]}")
 
         # ── 阶段3：TripoAI 图生3D（优先）或 文生3D（兜底）─
         update("converting_to_3d", 40)

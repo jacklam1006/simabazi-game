@@ -45,13 +45,13 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
             "parts": [{"text": enhanced_prompt}]
         }],
         "generationConfig": {
-            "responseModalities": ["IMAGE", "TEXT"],
-            "responseMimeType": "image/png",
+            "responseModalities": ["IMAGE"],
         }
     }
 
-    resp = requests.post(url, json=payload, timeout=60)
-    resp.raise_for_status()
+    resp = requests.post(url, json=payload, timeout=90)
+    if not resp.ok:
+        raise RuntimeError(f"Gemini API错误 {resp.status_code}: {resp.text[:300]}")
 
     data = resp.json()
 
@@ -61,4 +61,4 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
             img_b64 = part['inlineData']['data']
             return base64.b64decode(img_b64)
 
-    raise RuntimeError(f"Gemini未返回图像数据: {data}")
+    raise RuntimeError(f"Gemini未返回图像数据: {str(data)[:300]}")
