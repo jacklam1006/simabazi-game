@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from bazi_prompt import generate_island_prompt
+from gemini_enhance import enhance_island_prompt
 from gemini_image import generate_island_image
 from tripo_client import submit_image_to_3d, submit_text_to_3d, get_task_status
 
@@ -89,12 +90,17 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
         _write(job_path, data)
 
     try:
-        # ── 阶段1：生成提示词 ──────────────────────────────
+        # ── 阶段1：规则引擎生成基础提示词 ─────────────────
         update("generating_prompt", 5)
         prompt = generate_island_prompt(bazi_data)
-        update("prompt_ready", 10)
+        update("prompt_ready", 8)
 
-        # ── 阶段2：Gemini生成2D命盘岛图像 ─────────────────
+        # ── 阶段1.5：Gemini 3.5 Flash 深度分析优化 ────────
+        update("enhancing_prompt", 10)
+        prompt = enhance_island_prompt(prompt, bazi_data)
+        update("prompt_enhanced", 15)
+
+        # ── 阶段2：Nano Banana Pro 生成2D命盘岛图像 ───────
         update("generating_image", 15)
         image_bytes = None
         try:

@@ -9,11 +9,9 @@ import requests
 
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 
-# Gemini 图像生成模型（用户确认后填入正确model名）
-# 常见选项：
-#   gemini-2.0-flash-preview-image-generation
-#   imagen-3.0-generate-002
-GEMINI_IMAGE_MODEL = os.environ.get('GEMINI_IMAGE_MODEL', 'gemini-2.0-flash-preview-image-generation')
+# Nano Banana Pro（Gemini 3 Pro Image）— 高保真4K岛屿图像生成
+# 备选：gemini-3-pro-image-preview（预览版）
+GEMINI_IMAGE_MODEL = os.environ.get('GEMINI_IMAGE_MODEL', 'gemini-3-pro-image')
 
 
 def generate_island_image(prompt: str) -> bytes:
