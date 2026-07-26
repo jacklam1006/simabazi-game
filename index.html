@@ -2,265 +2,410 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#080810">
+  <link rel="manifest" href="/manifest.json">
   <title>司马八字 · 命盘沙盒</title>
   <style>
-    * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-    body {
-      background:#0a0a12; color:#e8e0d0;
-      font-family:'PingFang SC','Noto Serif SC','Microsoft YaHei',sans-serif;
-      height:100vh; overflow:hidden;
-    }
-    #canvas-container { position:fixed; inset:0; }
+    *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+    body{background:#080810;color:#e8e0d0;font-family:'PingFang SC','Noto Serif SC','Microsoft YaHei',sans-serif;height:100vh;overflow:hidden}
+    .hidden{display:none!important}
+    canvas{display:block}
 
-    /* ── 加载屏 ── */
-    #loading-screen {
-      position:fixed; inset:0; background:#0a0a12;
-      display:flex; flex-direction:column; align-items:center; justify-content:center;
-      z-index:200;
+    /* ══ 屏幕1：输入表单 ══ */
+    #screen-form{
+      position:fixed;inset:0;z-index:100;
+      background:radial-gradient(ellipse at 50% 60%,#12102a 0%,#080810 100%);
+      display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;
     }
+    .form-logo{text-align:center;margin-bottom:32px}
+    .form-logo h1{font-size:26px;letter-spacing:8px;color:#c9a96e;font-weight:300}
+    .form-logo p{font-size:11px;color:rgba(232,224,208,.35);letter-spacing:3px;margin-top:6px}
+    .form-card{width:100%;max-width:360px;background:rgba(255,255,255,.04);border:1px solid rgba(201,169,110,.2);border-radius:16px;padding:28px 24px}
+    .form-row{margin-bottom:18px}
+    .form-label{font-size:10px;color:rgba(201,169,110,.7);letter-spacing:2px;margin-bottom:8px;display:block}
+    .form-inputs-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+    .form-input{
+      width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);
+      border-radius:8px;color:#e8e0d0;font-size:15px;padding:10px 12px;text-align:center;
+      outline:none;transition:border-color .2s;-webkit-appearance:none;
+    }
+    .form-input:focus{border-color:rgba(201,169,110,.5)}
+    .form-input::placeholder{color:rgba(232,224,208,.25);font-size:12px}
+    select.form-input{cursor:pointer;text-align:left;padding-left:10px}
+    .gender-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .gender-btn{padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:rgba(232,224,208,.5);font-size:13px;cursor:pointer;transition:all .2s;letter-spacing:2px}
+    .gender-btn.active{background:rgba(201,169,110,.15);border-color:rgba(201,169,110,.5);color:#c9a96e}
+    .form-submit{width:100%;margin-top:8px;padding:14px;border-radius:12px;border:none;background:linear-gradient(135deg,#c9a96e,#a07840);color:#080810;font-size:14px;font-weight:700;letter-spacing:4px;cursor:pointer;transition:opacity .2s}
+    .form-submit:hover{opacity:.85}
+    .form-note{text-align:center;margin-top:12px;font-size:10px;color:rgba(232,224,208,.25);letter-spacing:1px}
+    .form-error{color:#EB5757;font-size:11px;text-align:center;margin-top:8px;min-height:16px;letter-spacing:1px}
 
-    /* ── 顶部 HUD ── */
-    #hud {
-      position:fixed; top:0; left:0; right:0; z-index:50;
-      padding:12px 20px;
-      display:none; justify-content:space-between; align-items:center;
-      background:linear-gradient(to bottom,rgba(10,10,18,.92),transparent);
+    /* ══ 屏幕2：Loading ══ */
+    #screen-loading{position:fixed;inset:0;z-index:90;background:#080810;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px}
+    .loading-orb{width:120px;height:120px;border-radius:50%;background:radial-gradient(circle,#1a1630,#080810);border:1px solid rgba(201,169,110,.2);display:flex;align-items:center;justify-content:center;animation:orb-pulse 2s ease-in-out infinite}
+    .loading-orb-inner{font-size:48px;animation:orb-float 3s ease-in-out infinite}
+    @keyframes orb-pulse{0%,100%{box-shadow:0 0 20px rgba(201,169,110,.1)}50%{box-shadow:0 0 40px rgba(201,169,110,.3)}}
+    @keyframes orb-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+    .loading-stage-text{font-size:13px;color:#c9a96e;letter-spacing:2px;text-align:center}
+    .loading-stage-sub{font-size:11px;color:rgba(232,224,208,.3);letter-spacing:1px;margin-top:4px;text-align:center}
+    .progress-wrap{width:200px;height:2px;background:rgba(255,255,255,.08);border-radius:2px}
+    .progress-fill{height:100%;background:linear-gradient(90deg,#c9a96e,#e8c87a);border-radius:2px;transition:width .5s ease;width:0%}
+    .loading-steps{display:flex;flex-direction:column;gap:8px;width:260px}
+    .l-step{display:flex;align-items:center;gap:10px;font-size:11px;color:rgba(232,224,208,.3);letter-spacing:1px;transition:color .3s}
+    .l-step.active{color:rgba(201,169,110,.8)}
+    .l-step.done{color:rgba(111,207,151,.7)}
+    .l-dot{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.15);flex-shrink:0;transition:background .3s}
+    .l-step.active .l-dot{background:#c9a96e;box-shadow:0 0 6px #c9a96e}
+    .l-step.done .l-dot{background:#6FCF97}
+    .loading-error{color:#EB5757;font-size:11px;text-align:center;letter-spacing:1px;max-width:260px}
+    #loading-retry-btn{display:none;padding:8px 20px;border-radius:8px;border:1px solid rgba(201,169,110,.4);background:transparent;color:#c9a96e;font-size:12px;letter-spacing:2px;cursor:pointer}
+
+    /* ══ 屏幕3：3D命盘 ══ */
+    #screen-island{position:fixed;inset:0;z-index:10}
+    #canvas-container{position:fixed;inset:0}
+
+    /* HUD */
+    #hud{position:fixed;top:0;left:0;right:0;z-index:50;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(to bottom,rgba(8,8,16,.9),transparent);pointer-events:none}
+    #hud-title{font-size:12px;letter-spacing:4px;color:#c9a96e;font-weight:500}
+    #hud-right{display:flex;align-items:center;gap:10px;pointer-events:auto}
+    #hud-spirit{font-size:11px;color:rgba(201,169,110,.8);letter-spacing:1px}
+    #hud-task-btn{background:rgba(201,169,110,.12);border:1px solid rgba(201,169,110,.25);border-radius:16px;padding:4px 12px;color:#c9a96e;font-size:11px;letter-spacing:1px;cursor:pointer;position:relative}
+    .task-badge{position:absolute;top:-4px;right:-4px;width:14px;height:14px;border-radius:50%;background:#EB5757;font-size:9px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700}
+    /* 音频开关按钮 */
+    .audio-btn{width:28px;height:28px;border-radius:50%;background:rgba(201,169,110,.1);border:1px solid rgba(201,169,110,.2);color:rgba(201,169,110,.75);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s;line-height:1;padding:0}
+    .audio-btn:hover{background:rgba(201,169,110,.2);border-color:rgba(201,169,110,.45)}
+    .audio-btn.off{color:rgba(232,224,208,.2);border-color:rgba(255,255,255,.08)}
+
+    /* ════════════════════════════════════════════
+       视觉特效系统 — UIEffects
+    ════════════════════════════════════════════ */
+
+    /* ── 通用按钮基础：所有按钮支持 ripple ── */
+    button,.gender-btn{position:relative;overflow:hidden}
+
+    /* ── 按钮按压缩放（全局 :active）── */
+    button:active,.gender-btn:active{transform:scale(.95)}
+    .form-submit:active{transform:scale(.97)}
+    .audio-btn:active{transform:scale(.88)}
+
+    /* ── 波纹（Ripple）── */
+    .fx-ripple{
+      position:absolute;
+      width:4px;height:4px;
+      margin:-2px 0 0 -2px;
+      border-radius:50%;
+      background:rgba(201,169,110,.55);
       pointer-events:none;
+      animation:fx-ripple-expand .52s cubic-bezier(.2,.6,.4,1) forwards;
     }
-    #hud-title { font-size:13px; letter-spacing:4px; color:#c9a96e; font-weight:500; }
-    #hud-user  { font-size:11px; color:rgba(232,224,208,.5); letter-spacing:1px; }
+    @keyframes fx-ripple-expand{
+      to{width:var(--r,80px);height:var(--r,80px);margin:calc(var(--r,80px)/-2) 0 0 calc(var(--r,80px)/-2);opacity:0}
+    }
 
-    /* ── 八字表 Panel（底部，可折叠）── */
-    #bazi-table-wrap {
-      position:fixed; bottom:0; left:0; right:0; z-index:60;
-      display:none;
-      flex-direction:column; align-items:center;
+    /* ── 提交按钮本体闪光 ── */
+    @keyframes fx-btn-burst{
+      0%  {transform:scale(1);   filter:brightness(1)}
+      25% {transform:scale(.96); filter:brightness(1.4)}
+      60% {transform:scale(1.03);filter:brightness(1.2)}
+      100%{transform:scale(1);   filter:brightness(1)}
     }
-    #bazi-table-toggle {
-      background:rgba(201,169,110,.15); border:1px solid rgba(201,169,110,.3);
-      border-radius:8px 8px 0 0; padding:5px 24px;
-      color:#c9a96e; font-size:11px; letter-spacing:3px; cursor:pointer;
-      border-bottom:none; outline:none;
-    }
-    #bazi-table-panel {
-      width:100%; max-width:680px;
-      background:rgba(10,10,20,.95);
-      border-top:1px solid rgba(201,169,110,.25);
-      padding:14px 16px 12px;
-      transition:max-height .35s ease; overflow:hidden;
-      max-height:0; /* collapsed by default */
-    }
-    #bazi-table-panel.open { max-height:240px; }
+    .fx-btn-burst{animation:fx-btn-burst .38s ease!important}
 
-    /* 四柱表格 */
-    .bazi-grid {
-      display:grid; grid-template-columns:repeat(4,1fr);
-      gap:0; border:1px solid rgba(201,169,110,.2); border-radius:8px;
-      overflow:hidden; margin-bottom:10px;
+    /* ── 粒子（Spark）── */
+    .fx-spark{
+      position:fixed;
+      pointer-events:none;
+      z-index:9999;
+      animation:fx-spark-fly .45s ease forwards;
+      transform-origin:center;
     }
-    .bazi-col { display:flex; flex-direction:column; }
-    .bazi-col:not(:last-child) { border-right:1px solid rgba(201,169,110,.15); }
-    .bazi-cell {
-      padding:5px 4px; text-align:center; font-size:12px;
-      border-bottom:1px solid rgba(201,169,110,.1);
+    @keyframes fx-spark-fly{
+      0%  {transform:translate(0,0) scale(1);opacity:1}
+      100%{transform:translate(var(--tx),var(--ty)) scale(0);opacity:0}
     }
-    .bazi-cell:last-child { border-bottom:none; }
-    .bazi-cell.head { font-size:10px; color:rgba(232,224,208,.4); letter-spacing:1px; background:rgba(201,169,110,.06); }
-    .bazi-cell.stem { font-size:20px; font-weight:600; }
-    .bazi-cell.branch { font-size:17px; }
-    .bazi-cell.shishen { font-size:10px; color:rgba(201,169,110,.8); }
-    .bazi-cell.nayin { font-size:9px; color:rgba(232,224,208,.4); }
-    .bazi-cell.day-col { background:rgba(201,169,110,.08); }
 
-    /* 命盘要素条 */
-    .bazi-meta {
-      display:flex; flex-wrap:wrap; gap:8px; align-items:center;
-      font-size:10px; color:rgba(232,224,208,.45);
+    /* ── 岛屿标签点击脉冲环 ── */
+    @keyframes fx-label-pulse{
+      0%  {box-shadow:0 0 0 0 rgba(201,169,110,.8)}
+      60% {box-shadow:0 0 0 12px rgba(201,169,110,.15)}
+      100%{box-shadow:0 0 0 16px rgba(201,169,110,0)}
     }
-    .meta-tag {
-      background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1);
-      border-radius:4px; padding:2px 8px; letter-spacing:1px; font-size:10px;
-    }
-    .meta-tag.good { border-color:rgba(111,207,151,.4); color:rgba(111,207,151,.9); }
-    .meta-tag.warn { border-color:rgba(235,87,87,.4); color:rgba(235,87,87,.85); }
-    .meta-tag.gold { border-color:rgba(201,169,110,.4); color:#c9a96e; }
+    .fx-label-pulse{animation:fx-label-pulse .5s ease forwards!important}
 
-    /* 五行强弱条 */
-    .wx-mini { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
-    .wx-bar-wrap { display:flex; align-items:center; gap:4px; }
-    .wx-label { font-size:10px; width:14px; }
-    .wx-track { width:48px; height:5px; background:rgba(255,255,255,.08); border-radius:3px; overflow:hidden; }
-    .wx-fill  { height:100%; border-radius:3px; }
-    .wx-pct   { font-size:9px; opacity:.5; width:24px; }
+    /* ── 音频按钮旋转 ── */
+    @keyframes fx-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+    .fx-spin{animation:fx-spin .35s ease!important}
 
-    /* ── 区域分析面板（右侧滑入）── */
-    #zone-panel {
-      position:fixed; top:0; right:0; bottom:0; width:min(340px,90vw);
-      background:rgba(8,8,18,.96);
-      border-left:1px solid rgba(201,169,110,.2);
-      z-index:80; padding:24px 20px 24px;
-      transform:translateX(100%); transition:transform .3s ease;
-      overflow-y:auto; display:flex; flex-direction:column; gap:14px;
+    /* ── 任务徽标弹跳 ── */
+    @keyframes fx-badge-pop{
+      0%  {transform:scale(1)}
+      45% {transform:scale(1.7)}
+      70% {transform:scale(.85)}
+      100%{transform:scale(1)}
     }
-    #zone-panel.open { transform:translateX(0); }
-    #zone-panel-close {
-      position:absolute; top:16px; right:16px;
-      background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12);
-      border-radius:6px; width:28px; height:28px; color:#e8e0d0;
-      font-size:14px; cursor:pointer; display:flex; align-items:center; justify-content:center;
+    .fx-badge-pop{animation:fx-badge-pop .4s ease!important}
+
+    /* ── 任务完成纸屑 ── */
+    .fx-confetti{
+      position:fixed;
+      pointer-events:none;
+      z-index:9998;
+      animation:fx-confetti-fall 1s ease-in forwards;
     }
-    .zone-panel-badge {
-      display:inline-flex; align-items:center; gap:6px;
-      padding:4px 10px; border-radius:20px; font-size:11px; font-weight:600;
+    @keyframes fx-confetti-fall{
+      0%  {transform:translate(0,0) rotate(0deg);opacity:1}
+      100%{transform:translate(var(--sway),var(--fall)) rotate(720deg);opacity:0}
+    }
+
+    /* ── 灵气浮字 ── */
+    .fx-float-text{
+      position:fixed;
+      font-size:13px;
+      font-weight:700;
       letter-spacing:1px;
+      pointer-events:none;
+      z-index:9997;
+      transform:translateX(-50%);
+      animation:fx-float-up .9s ease forwards;
     }
-    .badge-good { background:rgba(111,207,151,.12); border:1px solid rgba(111,207,151,.4); color:#6FCF97; }
-    .badge-warn { background:rgba(235,87,87,.12); border:1px solid rgba(235,87,87,.4); color:#EB5757; }
-    .badge-neutral { background:rgba(201,169,110,.1); border:1px solid rgba(201,169,110,.3); color:#c9a96e; }
+    @keyframes fx-float-up{
+      0%  {transform:translateX(-50%) translateY(0);opacity:1}
+      100%{transform:translateX(-50%) translateY(-40px);opacity:0}
+    }
 
-    .zone-panel-title { font-size:18px; font-weight:600; letter-spacing:2px; color:#e8e0d0; line-height:1.3; }
-    .zone-panel-subtitle { font-size:12px; color:rgba(232,224,208,.4); letter-spacing:1px; margin-top:2px; }
+    /* 底部八字表 */
+    #bazi-table-wrap{position:fixed;bottom:0;left:0;right:0;z-index:60;display:flex;flex-direction:column;align-items:center}
+    #bazi-table-toggle{background:rgba(201,169,110,.12);border:1px solid rgba(201,169,110,.25);border-radius:8px 8px 0 0;border-bottom:none;padding:5px 24px;color:#c9a96e;font-size:11px;letter-spacing:3px;cursor:pointer;outline:none}
+    #bazi-table-panel{width:100%;max-width:680px;background:rgba(8,8,20,.97);border-top:1px solid rgba(201,169,110,.2);padding:14px 16px 12px;overflow:hidden;max-height:0;transition:max-height .35s ease}
+    #bazi-table-panel.open{max-height:260px}
+    .bazi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border:1px solid rgba(201,169,110,.2);border-radius:8px;overflow:hidden;margin-bottom:10px}
+    .bazi-col{display:flex;flex-direction:column}
+    .bazi-col:not(:last-child){border-right:1px solid rgba(201,169,110,.1)}
+    .bazi-cell{padding:5px 4px;text-align:center;font-size:12px;border-bottom:1px solid rgba(201,169,110,.08)}
+    .bazi-cell:last-child{border-bottom:none}
+    .bazi-cell.head{font-size:10px;color:rgba(232,224,208,.35);letter-spacing:1px;background:rgba(201,169,110,.05)}
+    .bazi-cell.stem{font-size:20px;font-weight:600}
+    .bazi-cell.branch{font-size:17px}
+    .bazi-cell.shishen{font-size:10px;color:rgba(201,169,110,.75)}
+    .bazi-cell.nayin{font-size:9px;color:rgba(232,224,208,.35)}
+    .bazi-cell.day-col{background:rgba(201,169,110,.07)}
+    .bazi-meta{display:flex;flex-wrap:wrap;gap:6px;font-size:10px;color:rgba(232,224,208,.4)}
+    .meta-tag{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:4px;padding:2px 8px;letter-spacing:1px}
+    .meta-tag.good{border-color:rgba(111,207,151,.35);color:rgba(111,207,151,.85)}
+    .meta-tag.warn{border-color:rgba(235,87,87,.35);color:rgba(235,87,87,.8)}
+    .meta-tag.gold{border-color:rgba(201,169,110,.4);color:#c9a96e}
 
-    .zone-section { display:flex; flex-direction:column; gap:6px; }
-    .zone-section-title {
-      font-size:10px; letter-spacing:2px; color:rgba(201,169,110,.6);
-      text-transform:uppercase; padding-bottom:4px;
-      border-bottom:1px solid rgba(201,169,110,.12);
+    /* 3D岛屿标注 */
+    .island-label{pointer-events:auto;cursor:pointer;user-select:none}
+    .pillar-label{
+      background:rgba(8,8,20,.88);border:1px solid rgba(201,169,110,.3);
+      border-radius:8px;padding:6px 10px;text-align:center;
+      transition:transform .2s,border-color .2s;
     }
-    .zone-section-body { font-size:13px; color:rgba(232,224,208,.75); line-height:1.8; }
+    .pillar-label:hover{transform:scale(1.05);border-color:rgba(201,169,110,.7)}
+    .day-label{border-color:rgba(201,169,110,.6);background:rgba(20,15,40,.92)}
+    .label-title{font-size:9px;color:rgba(201,169,110,.6);letter-spacing:2px;margin-bottom:2px}
+    .label-stem{font-size:18px;font-weight:700;line-height:1}
+    .label-branch{font-size:14px;color:rgba(232,224,208,.8);margin-top:2px}
+    .label-nayin{font-size:8px;color:rgba(232,224,208,.3);margin-top:2px;letter-spacing:1px}
+    .shensha-label{
+      background:rgba(8,8,20,.85);border-radius:20px;
+      padding:4px 10px;display:flex;align-items:center;gap:5px;
+      font-size:11px;transition:transform .2s;
+    }
+    .shensha-label:hover{transform:scale(1.1)}
+    .ss-good{border:1px solid rgba(111,207,151,.4);color:rgba(111,207,151,.9)}
+    .ss-warn{border:1px solid rgba(235,87,87,.4);color:rgba(235,87,87,.9)}
+    .ss-neutral{border:1px solid rgba(201,169,110,.3);color:#c9a96e}
+    .kongwang-label{background:rgba(8,8,20,.85);border:1px solid rgba(235,87,87,.3);border-radius:6px;padding:4px 10px;font-size:10px;color:rgba(232,224,208,.5);letter-spacing:1px}
 
-    .insight-item {
-      display:flex; align-items:flex-start; gap:8px;
-      padding:8px 10px; border-radius:8px; font-size:12px; line-height:1.6;
-    }
-    .insight-good { background:rgba(111,207,151,.07); border:1px solid rgba(111,207,151,.2); }
-    .insight-warn { background:rgba(235,87,87,.07); border:1px solid rgba(235,87,87,.2); }
-    .insight-icon { font-size:14px; flex-shrink:0; margin-top:1px; }
+    /* 右侧分析面板 */
+    #zone-panel{position:fixed;top:0;right:0;bottom:0;width:min(340px,90vw);background:rgba(6,6,16,.97);border-left:1px solid rgba(201,169,110,.15);z-index:80;padding:24px 20px;transform:translateX(100%);transition:transform .3s ease;overflow-y:auto;display:flex;flex-direction:column;gap:14px}
+    #zone-panel.open{transform:translateX(0)}
+    #zone-panel-close{position:absolute;top:14px;right:14px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:6px;width:28px;height:28px;color:#e8e0d0;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+    .zone-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:1px}
+    .badge-good{background:rgba(111,207,151,.1);border:1px solid rgba(111,207,151,.35);color:#6FCF97}
+    .badge-warn{background:rgba(235,87,87,.1);border:1px solid rgba(235,87,87,.35);color:#EB5757}
+    .badge-neutral{background:rgba(201,169,110,.08);border:1px solid rgba(201,169,110,.25);color:#c9a96e}
+    .zone-title{font-size:18px;font-weight:600;letter-spacing:2px;color:#e8e0d0}
+    .zone-subtitle{font-size:11px;color:rgba(232,224,208,.35);letter-spacing:1px;margin-top:2px}
+    .zone-section{display:flex;flex-direction:column;gap:6px}
+    .zone-section-title{font-size:10px;letter-spacing:2px;color:rgba(201,169,110,.55);padding-bottom:4px;border-bottom:1px solid rgba(201,169,110,.1)}
+    .zone-section-body{font-size:13px;color:rgba(232,224,208,.7);line-height:1.8}
+    .insight-item{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border-radius:8px;font-size:12px;line-height:1.6}
+    .insight-good{background:rgba(111,207,151,.06);border:1px solid rgba(111,207,151,.15)}
+    .insight-warn{background:rgba(235,87,87,.06);border:1px solid rgba(235,87,87,.15)}
+    .insight-icon{font-size:14px;flex-shrink:0;margin-top:1px}
 
-    /* ── 报告按钮 ── */
-    #report-btn {
-      position:fixed; bottom:72px; right:18px; z-index:70;
-      background:linear-gradient(135deg,#c9a96e,#a07840);
-      border:none; border-radius:22px; padding:10px 20px;
-      color:#0a0a12; font-size:12px; font-weight:700; letter-spacing:3px;
-      cursor:pointer; box-shadow:0 4px 24px rgba(201,169,110,.3);
-      display:none; transition:opacity .2s;
-    }
-    #report-btn:hover { opacity:.85; }
+    /* 任务面板 */
+    #task-panel{position:fixed;top:0;left:0;bottom:0;width:min(320px,88vw);background:rgba(6,6,16,.97);border-right:1px solid rgba(201,169,110,.15);z-index:80;padding:20px 16px;transform:translateX(-100%);transition:transform .3s ease;overflow-y:auto}
+    #task-panel.open{transform:translateX(0)}
+    #task-panel-close{position:absolute;top:14px;right:14px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:6px;width:28px;height:28px;color:#e8e0d0;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+    #task-panel h3{font-size:12px;letter-spacing:4px;color:#c9a96e;font-weight:300;margin-bottom:16px;margin-top:2px}
 
-    /* ── 报告 Modal ── */
-    #report-modal {
-      position:fixed; inset:0; z-index:100;
-      background:rgba(6,6,14,.97);
-      display:none; flex-direction:column;
-      overflow-y:auto;
-    }
-    #report-modal.open { display:flex; }
-    .report-header {
-      position:sticky; top:0;
-      background:rgba(6,6,14,.95);
-      border-bottom:1px solid rgba(201,169,110,.2);
-      padding:16px 20px; display:flex; align-items:center; justify-content:space-between;
-      z-index:2;
-    }
-    .report-header h2 { font-size:16px; letter-spacing:4px; color:#c9a96e; font-weight:300; }
-    #report-close {
-      background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12);
-      border-radius:6px; width:32px; height:32px; color:#e8e0d0;
-      font-size:16px; cursor:pointer; display:flex; align-items:center; justify-content:center;
-    }
-    .report-body { padding:20px; max-width:700px; margin:0 auto; width:100%; }
-    .report-section {
-      margin-bottom:28px;
-      border:1px solid rgba(201,169,110,.12); border-radius:12px;
-      overflow:hidden;
-    }
-    .report-section-head {
-      background:rgba(201,169,110,.06); padding:12px 16px;
-      font-size:12px; color:#c9a96e; letter-spacing:3px;
-      border-bottom:1px solid rgba(201,169,110,.12);
-    }
-    .report-section-body { padding:16px; font-size:13px; color:rgba(232,224,208,.75); line-height:1.9; }
+    /* 报告按钮 */
+    #report-btn{position:fixed;bottom:68px;right:16px;z-index:70;background:linear-gradient(135deg,#c9a96e,#a07840);border:none;border-radius:22px;padding:10px 18px;color:#080810;font-size:12px;font-weight:700;letter-spacing:3px;cursor:pointer;box-shadow:0 4px 20px rgba(201,169,110,.25)}
 
-    .four-pillar-table {
-      display:grid; grid-template-columns:repeat(4,1fr);
-      border:1px solid rgba(201,169,110,.2); border-radius:8px; overflow:hidden;
-      margin:12px 0;
-    }
-    .fp-col { display:flex; flex-direction:column; }
-    .fp-col:not(:last-child){ border-right:1px solid rgba(201,169,110,.12); }
-    .fp-cell {
-      padding:8px 6px; text-align:center;
-      border-bottom:1px solid rgba(201,169,110,.08);
-      font-size:12px;
-    }
-    .fp-cell:last-child { border-bottom:none; }
-    .fp-cell.hd { font-size:10px; color:rgba(232,224,208,.35); background:rgba(201,169,110,.04); }
-    .fp-cell.s { font-size:22px; font-weight:700; }
-    .fp-cell.b { font-size:18px; }
-    .fp-cell.day-main { background:rgba(201,169,110,.07); }
-
-    /* ── 禁止 3D canvas 下面元素出现时的闪动 ── */
-    canvas { display:block; }
+    /* 报告Modal */
+    #report-modal{position:fixed;inset:0;z-index:100;background:rgba(6,6,14,.98);display:none;flex-direction:column;overflow-y:auto}
+    #report-modal.open{display:flex}
+    .report-header{position:sticky;top:0;background:rgba(6,6,14,.96);border-bottom:1px solid rgba(201,169,110,.15);padding:16px 20px;display:flex;align-items:center;justify-content:space-between;z-index:2}
+    .report-header h2{font-size:15px;letter-spacing:4px;color:#c9a96e;font-weight:300}
+    #report-close{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:6px;width:30px;height:30px;color:#e8e0d0;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+    .report-body{padding:20px;max-width:680px;margin:0 auto;width:100%}
+    .report-section{margin-bottom:24px;border:1px solid rgba(201,169,110,.1);border-radius:12px;overflow:hidden}
+    .report-section-head{background:rgba(201,169,110,.05);padding:12px 16px;font-size:11px;color:#c9a96e;letter-spacing:3px;border-bottom:1px solid rgba(201,169,110,.1)}
+    .report-section-body{padding:16px;font-size:13px;color:rgba(232,224,208,.7);line-height:1.9}
   </style>
 </head>
 <body>
 
-<!-- 加载/输入屏 -->
-<div id="loading-screen">
-  <div style="text-align:center;padding:40px 24px">
-    <h1 style="color:#c9a96e;font-size:22px;letter-spacing:6px;font-weight:300;margin-bottom:8px">司马八字</h1>
-    <p style="color:rgba(232,224,208,.35);font-size:11px;letter-spacing:3px;margin-bottom:2px">天机已动 · 为你推演命格</p>
+<!-- ══ 屏幕1：输入表单 ══ -->
+<div id="screen-form">
+  <div class="form-logo">
+    <h1>司马八字</h1>
+    <p>天机已动 · 为你推演命格</p>
+  </div>
+  <div class="form-card">
+    <div class="form-row">
+      <label class="form-label">出生日期</label>
+      <div class="form-inputs-row">
+        <input class="form-input" id="inp-year"  type="number" placeholder="年" min="1920" max="2010">
+        <input class="form-input" id="inp-month" type="number" placeholder="月" min="1" max="12">
+        <input class="form-input" id="inp-day"   type="number" placeholder="日" min="1" max="31">
+      </div>
+    </div>
+    <div class="form-row">
+      <label class="form-label">出生时辰</label>
+      <select class="form-input" id="inp-hour">
+        <option value="23">子时 23:00–01:00</option>
+        <option value="1">丑时 01:00–03:00</option>
+        <option value="3">寅时 03:00–05:00</option>
+        <option value="5">卯时 05:00–07:00</option>
+        <option value="7">辰时 07:00–09:00</option>
+        <option value="9">巳时 09:00–11:00</option>
+        <option value="11" selected>午时 11:00–13:00</option>
+        <option value="13">未时 13:00–15:00</option>
+        <option value="15">申时 15:00–17:00</option>
+        <option value="17">酉时 17:00–19:00</option>
+        <option value="19">戌时 19:00–21:00</option>
+        <option value="21">亥时 21:00–23:00</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label class="form-label">性别</label>
+      <div class="gender-row">
+        <button class="gender-btn active" id="btn-male"   onclick="App.setGender('男')">♂ 男</button>
+        <button class="gender-btn"        id="btn-female" onclick="App.setGender('女')">♀ 女</button>
+      </div>
+    </div>
+    <div class="form-error" id="form-error"></div>
+    <button class="form-submit" onclick="App.submit()">推演我的命盘</button>
+    <p class="form-note">· 所有计算在本地完成，不上传个人信息 ·</p>
   </div>
 </div>
 
-<!-- 3D 画布 -->
-<div id="canvas-container"></div>
-
-<!-- 顶部 HUD -->
-<div id="hud">
-  <div id="hud-title">命盘沙盒</div>
-  <div id="hud-user">— · —</div>
-</div>
-
-<!-- 八字表（底部折叠） -->
-<div id="bazi-table-wrap">
-  <button id="bazi-table-toggle" onclick="window._journey.toggleBaziTable()">八字命盘 ∧</button>
-  <div id="bazi-table-panel">
-    <div id="bazi-table-inner"><!-- 由 JS 填充 --></div>
+<!-- ══ 屏幕2：Loading ══ -->
+<div id="screen-loading" class="hidden">
+  <div class="loading-orb"><div class="loading-orb-inner">🏝️</div></div>
+  <div>
+    <div class="loading-stage-text" id="loading-stage-text">正在推算命盘...</div>
+    <div class="loading-stage-sub"  id="loading-stage-sub">天机运转，请稍候</div>
   </div>
-</div>
-
-<!-- 区域分析面板（右侧） -->
-<div id="zone-panel">
-  <button id="zone-panel-close" onclick="window._journey.closeZonePanel()">×</button>
-  <div id="zone-panel-content"></div>
-</div>
-
-<!-- 完整报告按钮 -->
-<button id="report-btn" onclick="window._journey.showReport()">查看完整命盘报告</button>
-
-<!-- 完整报告 Modal -->
-<div id="report-modal">
-  <div class="report-header">
-    <h2>完整命盘报告</h2>
-    <button id="report-close" onclick="window._journey.closeReport()">×</button>
+  <div class="progress-wrap"><div class="progress-fill" id="progress-fill"></div></div>
+  <div class="loading-steps">
+    <div class="l-step active" id="step-1"><div class="l-dot"></div><span>推算四柱八字</span></div>
+    <div class="l-step"        id="step-2"><div class="l-dot"></div><span>生成命盘提示词</span></div>
+    <div class="l-step"        id="step-3"><div class="l-dot"></div><span>AI绘制命盘岛屿</span></div>
+    <div class="l-step"        id="step-4"><div class="l-dot"></div><span>转化为3D模型</span></div>
+    <div class="l-step"        id="step-5"><div class="l-dot"></div><span>加载你的命盘世界</span></div>
   </div>
-  <div class="report-body" id="report-body"><!-- 由 JS 填充 --></div>
+  <div class="loading-error hidden" id="loading-error-text"></div>
+  <button id="loading-retry-btn" onclick="App.retryGenerate()">重新生成</button>
 </div>
 
-<!-- Three.js -->
+<!-- ══ 屏幕3：3D命盘 ══ -->
+<div id="screen-island" class="hidden">
+
+  <div id="canvas-container"></div>
+
+  <!-- HUD -->
+  <div id="hud">
+    <div id="hud-title">命盘沙盒</div>
+    <div id="hud-right">
+      <div id="hud-spirit">✦ 0 灵气</div>
+      <button class="audio-btn" id="btn-bgm" title="背景音乐" onclick="App.toggleBgm(this)">♪</button>
+      <button class="audio-btn" id="btn-sfx" title="音效"     onclick="App.toggleSfx(this)">🔔</button>
+      <button id="hud-task-btn" onclick="App.toggleTaskPanel()">
+        任务
+        <span class="task-badge hidden" id="task-badge">0</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- 任务面板（左滑入） -->
+  <div id="task-panel">
+    <button id="task-panel-close" onclick="App.toggleTaskPanel()">×</button>
+    <h3>任务 · 成就</h3>
+    <div id="task-panel-body"></div>
+  </div>
+
+  <!-- 底部八字表 -->
+  <div id="bazi-table-wrap">
+    <button id="bazi-table-toggle" onclick="App.toggleBaziTable()">八字命盘 ∧</button>
+    <div id="bazi-table-panel">
+      <div id="bazi-table-inner"></div>
+    </div>
+  </div>
+
+  <!-- 右侧分析面板 -->
+  <div id="zone-panel">
+    <button id="zone-panel-close" onclick="App.closeZonePanel()">×</button>
+    <div id="zone-panel-content"></div>
+  </div>
+
+  <!-- 报告按钮 -->
+  <button id="report-btn" onclick="App.showReport()">查看完整报告</button>
+
+  <!-- 报告Modal -->
+  <div id="report-modal">
+    <div class="report-header">
+      <h2>完整命盘报告</h2>
+      <button id="report-close" onclick="App.closeReport()">×</button>
+    </div>
+    <div class="report-body" id="report-body"></div>
+  </div>
+
+</div>
+
+<!-- ══ CDN 脚本 ══ -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<!-- lunar-javascript -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/renderers/CSS2DRenderer.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lunar-javascript/lunar.js"></script>
-<!-- 核心模块 -->
+
+<!-- ══ 应用脚本 ══ -->
+<script src="js/audio.js"></script>
+<script src="js/effects.js"></script>
 <script src="js/config.js"></script>
 <script src="js/bazi-engine.js"></script>
-<script src="js/scene-builder.js"></script>
-<script src="js/annotation.js"></script>
-<script src="js/user-journey.js"></script>
-<script src="js/main.js"></script>
+<script src="js/user-state.js"></script>
+<script src="js/island-loader.js"></script>
+<script src="js/island-annotate.js"></script>
+<script src="js/island-decorations.js"></script>
+<script src="js/analysis.js"></script>
+<script src="js/tasks.js"></script>
+<script src="js/main-new.js"></script>
 
+<!-- PWA Service Worker -->
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+</script>
 </body>
 </html>

@@ -5,6 +5,7 @@
 
 const CONFIG = {
   API_BASE: 'https://simabazi-api.onrender.com',
+  ISLAND_API_BASE: 'https://simabazi-island.onrender.com',
 
   // 五行颜色（3D hex + CSS）
   WUXING_COLORS: {

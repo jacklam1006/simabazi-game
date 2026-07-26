@@ -16,3 +16,7 @@ node_modules/
 # 构建产物
 dist/
 build/
+
+# Python
+__pycache__/
+*.pyc
