@@ -80,8 +80,7 @@ def submit_image_to_3d(
 # ── 文字 → 3D模型（备用）────────────────────────────────────
 def submit_text_to_3d(
     prompt: str,
-    model: str = 'P1-20260311',
-    face_limit: int = 15000
+    model: str = 'v3.1-20260211',
 ) -> str:
     resp = requests.post(
         f'{BASE_URL}/generation/text-to-model',
@@ -89,7 +88,6 @@ def submit_text_to_3d(
         json={
             'prompt': prompt,
             'model': model,
-            'face_limit': face_limit,
         },
         timeout=30
     )
