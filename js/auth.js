@@ -5,8 +5,8 @@
  * AuthUI      — 弹窗 UI 控制器（登录弹窗/注册弹窗/忘记密码）
  *
  * 依赖：
- *   window.CONFIG.SUPABASE_URL / SUPABASE_ANON_KEY
- *   window.CONFIG.ISLAND_API_BASE（用于 /auth/check-email）
+ *   CONFIG.SUPABASE_URL / SUPABASE_ANON_KEY
+ *   CONFIG.ISLAND_API_BASE（用于 /auth/check-email）
  */
 
 /* ════════════════════════════════════════════════
@@ -44,8 +44,8 @@ const AuthManager = (() => {
 
   // ── 初始化 ─────────────────────────────────────────────
   function init() {
-    const url = window.CONFIG?.SUPABASE_URL;
-    const key = window.CONFIG?.SUPABASE_ANON_KEY;
+    const url = CONFIG?.SUPABASE_URL;
+    const key = CONFIG?.SUPABASE_ANON_KEY;
     if (!url || !key) { console.warn('[Auth] Supabase 未配置 — 缺少 URL 或 ANON_KEY'); return; }
 
     // 检查 Supabase SDK 是否加载成功
@@ -161,7 +161,7 @@ const AuthManager = (() => {
   // ── 检查邮箱是否已注册 ──────────────────────────────────
   async function checkEmailExists(email) {
     try {
-      const base = window.CONFIG?.ISLAND_API_BASE || 'https://simabazi-island.onrender.com';
+      const base = CONFIG?.ISLAND_API_BASE || 'https://simabazi-island.onrender.com';
       const resp = await fetch(base + '/auth/check-email', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
