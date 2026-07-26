@@ -1,18 +1,25 @@
 services:
+  # ── 岛屿生成后端（FastAPI + Gemini + TripoAI）────────────────
   - type: web
     name: simabazi-island
     runtime: python
+    region: singapore
     rootDir: island_service
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: GEMINI_API_KEY
-        sync: false          # 在Render Dashboard手动填入
+        sync: false
       - key: GEMINI_IMAGE_MODEL
         value: gemini-2.0-flash-preview-image-generation
       - key: TRIPO_API_KEY
-        sync: false          # 在Render Dashboard手动填入
+        sync: false
     disk:
       name: island-cache
       mountPath: /opt/render/project/src/island_service
       sizeGB: 1
+
+  # ── 未来扩展服务在此继续添加 ──────────────────────────────────
+  # - type: web
+  #   name: simabazi-xxx
+  #   ...
