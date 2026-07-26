@@ -46,9 +46,20 @@ const AuthManager = (() => {
   function init() {
     const url = window.CONFIG?.SUPABASE_URL;
     const key = window.CONFIG?.SUPABASE_ANON_KEY;
-    if (!url || !key) { console.warn('[Auth] Supabase 未配置'); return; }
+    if (!url || !key) { console.warn('[Auth] Supabase 未配置 — 缺少 URL 或 ANON_KEY'); return; }
 
-    _sb = supabase.createClient(url, key);
+    // 检查 Supabase SDK 是否加载成功
+    if (typeof supabase === 'undefined' || typeof supabase.createClient !== 'function') {
+      console.error('[Auth] Supabase SDK 未加载，请检查网络或 CDN');
+      return;
+    }
+
+    try {
+      _sb = supabase.createClient(url, key);
+    } catch (e) {
+      console.error('[Auth] Supabase 客户端初始化失败:', e);
+      return;
+    }
 
     _sb.auth.onAuthStateChange((event, session) => {
       _user = session?.user ?? null;
@@ -58,12 +69,12 @@ const AuthManager = (() => {
     _sb.auth.getSession().then(({ data }) => {
       _user = data.session?.user ?? null;
       AuthUI._onAuthChange(_user);
-    });
+    }).catch(e => console.warn('[Auth] getSession 失败:', e));
   }
 
   // ── 登录 ────────────────────────────────────────────────
   async function login(email, password) {
-    if (!_sb) throw new Error('Supabase 未初始化');
+    if (!_sb) throw new Error('网络或配置问题，请刷新页面后重试');
     const { data, error } = await _sb.auth.signInWithPassword({ email, password });
     if (error) throw error;
     return data;
@@ -71,7 +82,7 @@ const AuthManager = (() => {
 
   // ── 注册（含用户资料）──────────────────────────────────
   async function registerWithProfile({ email, password, displayName, country, phoneCode, phone }) {
-    if (!_sb) throw new Error('Supabase 未初始化');
+    if (!_sb) throw new Error('网络或配置问题，请刷新页面后重试');
     const { data, error } = await _sb.auth.signUp({ email, password });
     if (error) throw error;
 
