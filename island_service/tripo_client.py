@@ -82,16 +82,21 @@ def submit_text_to_3d(
     prompt: str,
     model: str = 'v3.1-20260211',
 ) -> str:
+    # TripoAI prompt 上限约1000字符
+    safe_prompt = prompt[:900] if len(prompt) > 900 else prompt
+    payload = {
+        'prompt': safe_prompt,
+        'model': model,
+    }
+    print(f"[TripoAI text-to-3D] prompt({len(safe_prompt)}chars): {safe_prompt[:100]}...")
     resp = requests.post(
         f'{BASE_URL}/generation/text-to-model',
         headers=_headers(),
-        json={
-            'prompt': prompt,
-            'model': model,
-        },
+        json=payload,
         timeout=30
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(f"TripoAI 400错误: {resp.text[:300]}")
     data = resp.json()
     if data.get('code') != 0:
         raise RuntimeError(f"TripoAI text-to-3D提交失败: {data}")
