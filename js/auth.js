@@ -89,13 +89,14 @@ const AuthManager = (() => {
     const userId = data.user?.id;
     if (userId) {
       // 写入 profiles 表（忽略失败，不阻断注册流程）
-      await _sb.from('profiles').upsert({
+      const { error: profileErr } = await _sb.from('profiles').upsert({
         id:           userId,
         display_name: displayName || '',
         country:      country     || 'CN',
         phone_code:   phoneCode   || '+86',
         phone:        phone       || '',
-      }).catch(e => console.warn('[Auth] profile upsert:', e.message));
+      });
+      if (profileErr) console.warn('[Auth] profile upsert:', profileErr.message);
     }
     return data;
   }
