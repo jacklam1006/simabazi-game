@@ -141,6 +141,10 @@ const I18N = {
     'reg.skip':            '稍后再说',
     'reg.have_account':    '已有账户？',
     'reg.login_link':      '直接登录',
+    'reg.success_title':   '注册成功！',
+    'reg.success_desc':    '验证邮件已发送至',
+    'reg.success_note':    '请点击邮件中的链接完成验证\n未收到可检查垃圾邮件文件夹',
+    'reg.success_ok':      '好的，去查收',
 
     // ── 我的岛屿 ──────────────────────────────
     'islands.title':       '我的岛屿',
@@ -316,6 +320,10 @@ const I18N = {
     'reg.skip':            'Skip for now',
     'reg.have_account':    'Have an account?',
     'reg.login_link':      'Sign in',
+    'reg.success_title':   'Account Created!',
+    'reg.success_desc':    'Verification email sent to',
+    'reg.success_note':    'Click the link in the email to confirm your account.\nCheck spam if you don\'t see it.',
+    'reg.success_ok':      'Got it, check email',
 
     // ── My Islands ────────────────────────────
     'islands.title':       'My Islands',

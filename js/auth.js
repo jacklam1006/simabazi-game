@@ -216,11 +216,16 @@ const AuthUI = (() => {
   // ── 显示注册弹窗（生成后）──────────────────────────────
   function showRegister(opts = {}) {
     _showOverlay('reg-modal-overlay');
-    _populateCountrySelect();
+    // 确保显示表单视图，隐藏成功视图
+    document.getElementById('reg-form-view')?.classList.remove('hidden');
+    document.getElementById('reg-success-view')?.classList.add('hidden');
     _setVal('reg-name',  opts.name  || '');
     _setVal('reg-email', opts.email || '');
     _clearError('reg-error');
   }
+
+  // ── 清除字段错误（输入时调用）──────────────────────────
+  function clearFieldErr(id) { _clearError(id); }
 
   // ── 隐藏所有弹窗 ────────────────────────────────────────
   function hideModal() {
@@ -284,30 +289,36 @@ const AuthUI = (() => {
   async function doRegister() {
     const name     = _getVal('reg-name');
     const email    = _getVal('reg-email');
-    const country  = _getVal('reg-country');
-    const phoneCode= document.getElementById('reg-phone-code')?.textContent?.trim() || '+86';
-    const phone    = _getVal('reg-phone');
     const password = _getVal('reg-password');
 
     const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
-    if (!name)                     { _setError('reg-error', _t('auth_err.nickname'));   return; }
+    if (!name)                        { _setError('reg-error', _t('auth_err.nickname'));   return; }
     if (!email || !email.includes('@')) { _setError('reg-error', _t('auth_err.valid_email')); return; }
     if (!password || password.length < 6) { _setError('reg-error', _t('auth_err.short_pass')); return; }
 
     const btn = document.getElementById('reg-submit-btn');
     _setLoading(btn, true, _t('reg.creating'));
     try {
-      await AuthManager.registerWithProfile({ email, password, displayName: name, country, phoneCode, phone });
-      hideModal();
+      await AuthManager.registerWithProfile({ email, password, displayName: name });
       _clearError('reg-error');
       _saveCurrentIsland(name);
+      // 显示注册成功引导页
+      _showRegSuccess(email);
     } catch (e) {
-      const msg = _friendlyError(e);
-      _setError('reg-error', msg);
+      _setError('reg-error', _friendlyError(e));
     } finally {
       const _t2 = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
       _setLoading(btn, false, _t2('reg.submit'));
     }
+  }
+
+  // ── 注册成功引导 ────────────────────────────────────────
+  function _showRegSuccess(email) {
+    document.getElementById('reg-form-view')?.classList.add('hidden');
+    const sv = document.getElementById('reg-success-view');
+    if (sv) sv.classList.remove('hidden');
+    const emailEl = document.getElementById('reg-success-email');
+    if (emailEl) emailEl.textContent = email;
   }
 
   // ── 国家码同步 ──────────────────────────────────────────
@@ -471,7 +482,7 @@ const AuthUI = (() => {
     showLogin, showForgotPassword, backToLogin,
     showRegister, hideModal, skipReg, showLoginFromReg,
     doLogin, doForgotPassword, doRegister,
-    onCountryChange, onMainEmailBlur,
+    clearFieldErr, onMainEmailBlur,
     showMyIslands,
     _onAuthChange,
   };
