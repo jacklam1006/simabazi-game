@@ -3,7 +3,7 @@
  * 离线缓存静态资源，GLB文件不缓存（太大）
  */
 
-const CACHE_NAME = 'smb-v3';
+const CACHE_NAME = 'smb-v4';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -25,7 +25,13 @@ const STATIC_ASSETS = [
 
 self.addEventListener('install', e => {
   e.waitUntil(
-    caches.open(CACHE_NAME).then(c => c.addAll(STATIC_ASSETS)).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME).then(cache =>
+      Promise.all(
+        STATIC_ASSETS.map(url =>
+          cache.add(url).catch(err => console.warn('[SW] 缓存失败，跳过:', url, err))
+        )
+      )
+    ).then(() => self.skipWaiting())
   );
 });
 
@@ -55,6 +61,6 @@ self.addEventListener('fetch', e => {
 
   // 本地静态资源：缓存优先
   e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request))
+    caches.match(e.request).then(cached => cached || fetch(e.request).catch(() => new Response('', { status: 503 })))
   );
 });

@@ -9,7 +9,7 @@ const CONFIG = {
 
   // ── Supabase 用户系统配置（在 Supabase 控制台获取）────────
   // 注意：ANON KEY 是公开安全的（只能读写自己的数据），可以放在前端
-  SUPABASE_URL:      'https://tqytpsjanvxtqjxyomf.supabase.co',
+  SUPABASE_URL:      'https://tqytpsjanvxhtqjxyomf.supabase.co',
   SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRxeXRwc2phbnZ4aHRxanh5b21mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUwNDU5ODUsImV4cCI6MjEwMDYyMTk4NX0.GDfMc7JXu0C2lozaF0qpXdDCS8_iaypqa38HynmzFfc',
 
   // 五行颜色（3D hex + CSS）
