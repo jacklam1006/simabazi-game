@@ -3,14 +3,16 @@
  * 离线缓存静态资源，GLB文件不缓存（太大）
  */
 
-const CACHE_NAME = 'smb-v2';
+const CACHE_NAME = 'smb-v3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
+  '/js/i18n.js',
   '/js/audio.js',
   '/js/effects.js',
   '/js/config.js',
+  '/js/auth.js',
   '/js/bazi-engine.js',
   '/js/user-state.js',
   '/js/island-loader.js',
