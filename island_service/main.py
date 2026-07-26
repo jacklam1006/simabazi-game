@@ -164,17 +164,12 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
 async def generate_island(req: GenerateRequest, background_tasks: BackgroundTasks):
     ck = _cache_key(req.bazi_data)
 
-    # 命中缓存
-    if not req.force_regen:
-        cached = _read(CACHE_DIR / f"{ck}.json")
-        if cached and cached.get("model_url"):
-            return {
-                "job_id": f"cached_{ck}",
-                "source": "cache",
-                "status": "completed",
-                "progress": 100,
-                "model_url": cached["model_url"],
-            }
+    # 命中缓存（TripoAI URL 5分钟过期，不使用缓存）
+    # TODO: 未来接入永久存储（Supabase Storage）后可重新启用缓存
+    # if not req.force_regen:
+    #     cached = _read(CACHE_DIR / f"{ck}.json")
+    #     if cached and cached.get("model_url"):
+    #         return { "job_id": f"cached_{ck}", ... }
 
     # 新建job
     job_id = str(uuid.uuid4())

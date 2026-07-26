@@ -50,7 +50,12 @@ const UserState = (() => {
 
   function getIslandUrl(baziData) {
     const cache = get('island_cache') || {};
-    return cache[_baziKey(baziData)]?.url || null;
+    const entry = cache[_baziKey(baziData)];
+    if (!entry) return null;
+    // TripoAI URL 5分钟过期，4分钟内才使用缓存
+    const age = Date.now() - (entry.savedAt || 0);
+    if (age > 4 * 60 * 1000) return null;
+    return entry.url || null;
   }
 
   // ── 灵气值 ────────────────────────────────────────────────
