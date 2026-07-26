@@ -58,6 +58,9 @@ class GenerateRequest(BaseModel):
     bazi_data: dict          # 前端BaziEngine.calculate()的完整结果
     force_regen: bool = False
 
+class CheckEmailRequest(BaseModel):
+    email: str
+
 
 # ── TripoAI 轮询（含超时）────────────────────────────────────
 async def _poll_tripo(task_id: str, max_wait: int = 180) -> str:
@@ -231,6 +234,39 @@ def health():
 @app.get("/ping")
 def ping():
     return {"pong": True}
+
+
+# ── 端点5：检查邮箱是否已注册 ───────────────────────────────
+@app.post("/auth/check-email")
+async def check_email_endpoint(req: CheckEmailRequest):
+    """检查邮箱是否已注册（主页表单用，判断新老用户）"""
+    email = req.email.strip().lower()
+    if not email or "@" not in email:
+        return {"exists": False}
+
+    service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+    supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    if not service_key or not supabase_url:
+        return {"exists": False}
+
+    try:
+        resp = requests.get(
+            f"{supabase_url}/auth/v1/admin/users",
+            headers={
+                "Authorization": f"Bearer {service_key}",
+                "apikey": service_key,
+            },
+            params={"page": 1, "per_page": 1000},
+            timeout=10,
+        )
+        if not resp.ok:
+            return {"exists": False}
+        users = resp.json().get("users", [])
+        exists = any(u.get("email", "").lower() == email for u in users)
+        return {"exists": exists}
+    except Exception as e:
+        print(f"[check-email ERROR] {e}")
+        return {"exists": False}
 
 
 # ── 本地运行 ─────────────────────────────────────────────────

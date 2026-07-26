@@ -10,6 +10,7 @@ const App = (() => {
   let _gender        = '男';
   let _baziData      = null;
   let _birthInfo     = null;
+  let _lastModelUrl  = null;
   let _baziTableOpen = false;
   let _taskPanelOpen = false;
 
@@ -157,6 +158,7 @@ const App = (() => {
     IslandLoader.generateIsland(_baziData, {
       onProgress(stage, pct) { _applyStage(stage, pct); },
       onComplete(modelUrl) {
+        _lastModelUrl = modelUrl;
         _setLoadingStep(5);
         _setProgress(100);
         _setStageText('命盘世界已就绪', '欢迎踏入你的命格宇宙');
@@ -164,20 +166,33 @@ const App = (() => {
         AudioManager.playSfx('island_ready');
         AudioManager.setScene('screen-island');
 
-        // 自动保存到用户账户（仅登录用户）
+        // 已登录用户：自动保存岛屿
         if (typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn()) {
-          AuthManager.saveIsland({
-            baziData:  _baziData,
-            modelUrl:  modelUrl,
-            baziHash:  null,
-            birthInfo: _birthInfo,
-            name:      '命盘岛屿 ' + new Date().toLocaleDateString('zh-CN'),
+          AuthManager.getProfile().then(profile => {
+            const displayName = profile?.display_name || AuthManager.currentUser()?.email || '我';
+            AuthManager.saveIsland({
+              baziData:  _baziData,
+              modelUrl:  modelUrl,
+              baziHash:  null,
+              birthInfo: _birthInfo,
+              name:      displayName + ' 的命盘',
+            }).catch(() => {});
           }).catch(() => {});
         }
 
         setTimeout(() => {
           _showScreen('screen-island');
           _onIslandReady();
+
+          // 未登录用户：延迟2秒弹出注册提示
+          if (typeof AuthManager !== 'undefined' && !AuthManager.isLoggedIn()) {
+            setTimeout(() => {
+              AuthUI.showRegister({
+                name:  document.getElementById('inp-name')?.value?.trim()  || '',
+                email: document.getElementById('inp-email')?.value?.trim() || '',
+              });
+            }, 2000);
+          }
         }, 800);
       },
       onError(err) {
@@ -422,84 +437,10 @@ const App = (() => {
       AuthManager.init();
     }
 
-    // ── 登录弹窗交互 ──────────────────────────────────
-    let _authMode = 'login'; // 'login' | 'register'
-
-    function _setAuthMode(mode) {
-      _authMode = mode;
-      const title  = document.getElementById('auth-modal-title');
-      const submit = document.getElementById('auth-submit-btn');
-      const link   = document.getElementById('auth-switch-link');
-      if (title)  title.textContent  = mode === 'login' ? '登录账户' : '注册账户';
-      if (submit) submit.textContent = mode === 'login' ? '登 录' : '注 册';
-      if (link)   link.textContent   = mode === 'login' ? '没有账户？点击注册' : '已有账户？点击登录';
-      document.getElementById('auth-error-msg').textContent = '';
-    }
-
-    document.getElementById('auth-login-btn')?.addEventListener('click', () => {
-      _setAuthMode('login');
-      document.getElementById('auth-modal-overlay').classList.remove('hidden');
-    });
-
-    document.getElementById('auth-modal-close')?.addEventListener('click', () => {
-      document.getElementById('auth-modal-overlay').classList.add('hidden');
-    });
-
-    document.getElementById('auth-switch-link')?.addEventListener('click', () => {
-      _setAuthMode(_authMode === 'login' ? 'register' : 'login');
-    });
-
-    document.getElementById('auth-logout-btn')?.addEventListener('click', () => {
-      AuthManager.logout();
-    });
-
-    document.getElementById('auth-submit-btn')?.addEventListener('click', async () => {
-      const email    = document.getElementById('auth-email').value.trim();
-      const password = document.getElementById('auth-password').value;
-      const errEl    = document.getElementById('auth-error-msg');
-      const btn      = document.getElementById('auth-submit-btn');
-
-      if (!email || !password) { errEl.textContent = '请填写邮箱和密码'; return; }
-
-      btn.disabled = true;
-      btn.textContent = '处理中...';
-      errEl.textContent = '';
-
-      try {
-        if (_authMode === 'login') {
-          await AuthManager.login(email, password);
-        } else {
-          await AuthManager.register(email, password);
-        }
-        document.getElementById('auth-modal-overlay').classList.add('hidden');
-      } catch (err) {
-        errEl.textContent = err.message || '操作失败，请重试';
-      } finally {
-        btn.disabled = false;
-        _setAuthMode(_authMode);
-      }
-    });
-
-    // ── 我的岛屿面板 ──────────────────────────────────
-    document.getElementById('auth-my-islands-btn')?.addEventListener('click', async () => {
-      const panel = document.getElementById('my-islands-panel');
-      const list  = document.getElementById('my-islands-list');
-      panel.classList.remove('hidden');
-      list.innerHTML = '<div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">加载中...</div>';
-
-      const islands = await AuthManager.getMyIslands();
-      if (!islands.length) {
-        list.innerHTML = '<div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">暂无保存的岛屿</div>';
-        return;
-      }
-
-      list.innerHTML = islands.map(isl => `
-        <div class="island-card" onclick="window.open('${isl.model_url}','_blank')">
-          <div class="island-card-name">${isl.name}</div>
-          <div class="island-card-meta">${new Date(isl.created_at).toLocaleDateString('zh-CN')} · ${isl.gender || ''} · ${isl.birth_year || ''}年</div>
-        </div>
-      `).join('');
-    });
+    // ── 顶部栏按钮（逻辑已移至 AuthUI）──────────────
+    document.getElementById('auth-login-btn')?.addEventListener('click', () => AuthUI.showLogin());
+    document.getElementById('auth-logout-btn')?.addEventListener('click', () => AuthManager.logout());
+    document.getElementById('auth-my-islands-btn')?.addEventListener('click', () => AuthUI.showMyIslands());
   });
 
   // ── 公开接口 ──────────────────────────────────────────────
@@ -508,5 +449,9 @@ const App = (() => {
     toggleBaziTable, toggleTaskPanel,
     closeZonePanel, showReport, closeReport,
     toggleBgm, toggleSfx,
+    // AuthUI 内部调用（勿删）
+    _getBaziData:  () => _baziData,
+    _getBirthInfo: () => _birthInfo,
+    _getLastUrl:   () => _lastModelUrl,
   };
 })();
