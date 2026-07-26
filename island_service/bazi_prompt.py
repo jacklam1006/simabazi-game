@@ -249,6 +249,44 @@ STYLE REQUIREMENTS: low-poly geometric style like premium mobile game art, clean
     return prompt.strip()
 
 
+# ── TripoAI 专用短提示词（text-to-model 限制约500字）──────────
+DAY_MASTER_SHORT = {
+    '甲': 'ancient towering pine tree island, lush green forest terrain',
+    '乙': 'flowering vine island with willow trees and wildflower meadows',
+    '丙': 'volcanic island with lava streams, blazing sun above, scorched terrain',
+    '丁': 'lantern-lit island with glowing candles and red silk banners',
+    '戊': 'massive mountain peak island with rocky cliffs and stone terraces',
+    '己': 'fertile farm island with rice terraces and garden pavilion',
+    '庚': 'metallic blade island with steel spires and silver rock formations',
+    '辛': 'crystal gem island with quartz clusters and pearl formations',
+    '壬': 'waterfall island with large deep pool and rushing water channels',
+    '癸': 'misty rain island with lotus pools and dew-covered moss stones',
+}
+
+def generate_tripo_short_prompt(bazi_data: dict) -> str:
+    """
+    生成适合 TripoAI text-to-model 的短提示词（<400字符）
+    text-to-3D 需要简洁聚焦的描述，不需要长篇细节
+    """
+    dm = bazi_data.get('dayMaster', '甲')
+    core_desc = DAY_MASTER_SHORT.get(dm, 'mystical floating island with ancient trees')
+
+    # 取最强五行
+    wx = bazi_data.get('wuxing', {})
+    dominant = max(wx, key=wx.get) if wx else '木'
+    wx_map = {'木': 'forest and wood', '火': 'fire and lava', '土': 'earth and stone',
+              '金': 'crystal and metal', '水': 'water and mist'}
+    wx_desc = wx_map.get(dominant, 'natural elements')
+
+    prompt = (
+        f"Low-poly stylized Chinese mythology floating island: {core_desc}. "
+        f"Dominant element: {wx_desc}. "
+        f"Sphere-shaped island with rocky underside, dark starry cosmos background, "
+        f"fantasy game art style, dramatic lighting, high quality 3D render."
+    )
+    return prompt[:450]  # 硬限制450字符
+
+
 # ── 测试用例（命盘：2001-06-24 未时，日主戊土）────────────────
 if __name__ == '__main__':
     sample_data = {

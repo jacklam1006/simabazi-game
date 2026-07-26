@@ -24,7 +24,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from bazi_prompt import generate_island_prompt
+from bazi_prompt import generate_island_prompt, generate_tripo_short_prompt
 from gemini_enhance import enhance_island_prompt
 from gemini_image import generate_island_image
 from tripo_client import submit_image_to_3d, submit_text_to_3d, get_task_status
@@ -97,7 +97,12 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
 
         # ── 阶段1.5：Gemini 3.5 Flash 深度分析优化 ────────
         update("enhancing_prompt", 10)
-        prompt = enhance_island_prompt(prompt, bazi_data)
+        enhanced = enhance_island_prompt(prompt, bazi_data)
+        if enhanced != prompt:
+            print(f"[Gemini Enhance] 成功，长度 {len(prompt)} → {len(enhanced)}")
+        else:
+            print(f"[Gemini Enhance] 静默失败或跳过，使用原始提示词（{len(prompt)}字）")
+        prompt = enhanced
         update("prompt_enhanced", 15)
 
         # ── 阶段2：Nano Banana Pro 生成2D命盘岛图像 ───────
@@ -130,8 +135,10 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
                 image_bytes = None   # 触发下方文生3D路径
 
         if not model_url:
-            # 兜底路径：直接文生3D（prompt → 3D）
-            task_id = submit_text_to_3d(prompt)
+            # 兜底路径：text-to-3D 用专用短提示词（长提示词会被TripoAI 400拒绝）
+            short_prompt = generate_tripo_short_prompt(bazi_data)
+            print(f"[TripoAI fallback] 短提示词({len(short_prompt)}字): {short_prompt}")
+            task_id = submit_text_to_3d(short_prompt)
             update("tripo_text_processing", 55, tripo_task_id=task_id)
             model_url = await _poll_tripo(task_id, max_wait=240)
 
