@@ -322,27 +322,27 @@
 
     <!-- 登录视图 -->
     <div id="auth-view-login">
-      <h2>欢迎回来</h2>
+      <h2 data-i18n="login.title">欢迎回来</h2>
       <div class="auth-error" id="auth-login-error"></div>
-      <input class="auth-input" id="auth-login-email" type="email" placeholder="邮箱地址" autocomplete="email">
-      <input class="auth-input" id="auth-login-password" type="password" placeholder="密码" autocomplete="current-password">
-      <button class="auth-btn-primary" id="auth-login-submit-btn" onclick="AuthUI.doLogin()">登 录</button>
-      <button class="auth-btn-secondary" onclick="AuthUI.hideModal()">取 消</button>
+      <input class="auth-input" id="auth-login-email" type="email" data-i18n-ph="login.email_ph" placeholder="邮箱地址" autocomplete="email">
+      <input class="auth-input" id="auth-login-password" type="password" data-i18n-ph="login.pass_ph" placeholder="密码" autocomplete="current-password">
+      <button class="auth-btn-primary" id="auth-login-submit-btn" data-i18n="login.submit" onclick="AuthUI.doLogin()">登 录</button>
+      <button class="auth-btn-secondary" data-i18n="login.cancel" onclick="AuthUI.hideModal()">取 消</button>
       <div class="auth-switch">
-        <span onclick="AuthUI.showForgotPassword()">忘记密码？</span>
+        <span data-i18n="login.forgot" onclick="AuthUI.showForgotPassword()">忘记密码？</span>
       </div>
     </div>
 
     <!-- 忘记密码视图 -->
     <div id="auth-view-forgot" class="hidden">
-      <h2>重置密码</h2>
-      <p class="auth-desc">重置链接将发送到你注册时使用的邮箱</p>
+      <h2 data-i18n="forgot.title">重置密码</h2>
+      <p class="auth-desc" data-i18n="forgot.desc">重置链接将发送到你注册时使用的邮箱</p>
       <div class="auth-error" id="auth-forgot-error"></div>
-      <div class="auth-success hidden" id="auth-forgot-success">✓ 重置链接已发送，请查收邮件</div>
-      <input class="auth-input" id="auth-forgot-email" type="email" placeholder="注册时使用的邮箱">
-      <button class="auth-btn-primary" id="auth-forgot-submit-btn" onclick="AuthUI.doForgotPassword()">发送重置链接</button>
+      <div class="auth-success hidden" id="auth-forgot-success" data-i18n="forgot.success">✓ 重置链接已发送，请查收邮件</div>
+      <input class="auth-input" id="auth-forgot-email" type="email" data-i18n-ph="forgot.email_ph" placeholder="注册时使用的邮箱">
+      <button class="auth-btn-primary" id="auth-forgot-submit-btn" data-i18n="forgot.submit" onclick="AuthUI.doForgotPassword()">发送重置链接</button>
       <div class="auth-switch">
-        <span onclick="AuthUI.backToLogin()">← 返回登录</span>
+        <span data-i18n="forgot.back" onclick="AuthUI.backToLogin()">← 返回登录</span>
       </div>
     </div>
 
@@ -353,21 +353,21 @@
 <div id="reg-modal-overlay" class="hidden">
   <div id="reg-modal">
     <div class="reg-island-icon">🏝️</div>
-    <h2>命盘岛屿已生成</h2>
-    <p class="auth-desc">注册账户，永久保存你的3D命盘<br>并在任何设备上访问</p>
+    <h2 data-i18n="reg.title">命盘岛屿已生成</h2>
+    <p class="auth-desc" data-i18n="reg.desc">注册账户，永久保存你的3D命盘<br>并在任何设备上访问</p>
     <div class="auth-error" id="reg-error"></div>
-    <input class="auth-input" id="reg-name" type="text" placeholder="昵称 *" maxlength="20">
-    <input class="auth-input" id="reg-email" type="email" placeholder="邮箱地址 *" autocomplete="email">
+    <input class="auth-input" id="reg-name" type="text" data-i18n-ph="reg.name_ph" placeholder="昵称 *" maxlength="20">
+    <input class="auth-input" id="reg-email" type="email" data-i18n-ph="reg.email_ph" placeholder="邮箱地址 *" autocomplete="email">
     <select class="auth-input" id="reg-country" onchange="AuthUI.onCountryChange()"></select>
     <div class="phone-row">
       <div class="phone-code-badge" id="reg-phone-code">+86</div>
-      <input class="auth-input" id="reg-phone" type="tel" placeholder="手机号码（选填）" style="flex:1;margin-bottom:0">
+      <input class="auth-input" id="reg-phone" type="tel" data-i18n-ph="reg.phone_ph" placeholder="手机号码（选填）" style="flex:1;margin-bottom:0">
     </div>
-    <input class="auth-input" id="reg-password" type="password" placeholder="设置密码（至少6位）*" autocomplete="new-password">
-    <button class="auth-btn-primary" id="reg-submit-btn" onclick="AuthUI.doRegister()">创建账户 · 永久保存</button>
-    <button class="auth-btn-secondary" onclick="AuthUI.skipReg()" style="margin-top:4px">稍后再说</button>
+    <input class="auth-input" id="reg-password" type="password" data-i18n-ph="reg.pass_ph" placeholder="设置密码（至少6位）*" autocomplete="new-password">
+    <button class="auth-btn-primary" id="reg-submit-btn" data-i18n="reg.submit" onclick="AuthUI.doRegister()">创建账户 · 永久保存</button>
+    <button class="auth-btn-secondary" data-i18n="reg.skip" onclick="AuthUI.skipReg()" style="margin-top:4px">稍后再说</button>
     <div class="auth-switch">
-      已有账户？<span onclick="AuthUI.showLoginFromReg()">直接登录</span>
+      <span data-i18n="reg.have_account">已有账户？</span><span data-i18n="reg.login_link" onclick="AuthUI.showLoginFromReg()">直接登录</span>
     </div>
   </div>
 </div>
@@ -375,73 +375,62 @@
 <!-- ══ 顶部用户状态栏 ══ -->
 <div id="auth-bar">
   <span id="auth-user-info" class="hidden"></span>
-  <button id="auth-my-islands-btn" class="auth-bar-btn hidden">我的岛屿</button>
-  <button id="auth-login-btn" class="auth-bar-btn">登录 / 注册</button>
-  <button id="auth-logout-btn" class="auth-bar-btn hidden">退出</button>
+  <button id="auth-my-islands-btn" class="auth-bar-btn hidden" data-i18n="bar.my_islands">我的岛屿</button>
+  <button id="auth-login-btn" class="auth-bar-btn" data-i18n="bar.login">登录 / 注册</button>
+  <button id="auth-logout-btn" class="auth-bar-btn hidden" data-i18n="bar.logout">退出</button>
+  <button id="lang-toggle-btn" class="auth-bar-btn" onclick="Lang.toggle()" title="切换语言 / Switch Language">EN</button>
 </div>
 
 <!-- ══ 我的岛屿面板 ══ -->
 <div id="my-islands-panel" class="hidden">
   <div id="my-islands-inner">
-    <h2>我的岛屿</h2>
-    <div id="my-islands-list"><div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">加载中...</div></div>
-    <button class="auth-btn-secondary" onclick="document.getElementById('my-islands-panel').classList.add('hidden')" style="margin-top:16px">关 闭</button>
+    <h2 data-i18n="islands.title">我的岛屿</h2>
+    <div id="my-islands-list"><div style="color:rgba(232,224,208,.4);text-align:center;padding:20px" data-i18n="islands.loading">加载中...</div></div>
+    <button class="auth-btn-secondary" data-i18n="islands.close" onclick="document.getElementById('my-islands-panel').classList.add('hidden')" style="margin-top:16px">关 闭</button>
   </div>
 </div>
 
 <!-- ══ 屏幕1：输入表单 ══ -->
 <div id="screen-form">
   <div class="form-logo">
-    <h1>司马八字</h1>
-    <p>天机已动 · 为你推演命格</p>
+    <h1 data-i18n="form.title">司马八字</h1>
+    <p data-i18n="form.subtitle">天机已动 · 为你推演命格</p>
   </div>
   <div class="form-card">
     <div class="form-row">
-      <label class="form-label">出生日期</label>
+      <label class="form-label" data-i18n="form.birth_date">出生日期</label>
       <div class="form-inputs-row">
-        <input class="form-input" id="inp-year"  type="number" placeholder="年" min="1920" max="2010">
-        <input class="form-input" id="inp-month" type="number" placeholder="月" min="1" max="12">
-        <input class="form-input" id="inp-day"   type="number" placeholder="日" min="1" max="31">
+        <input class="form-input" id="inp-year"  type="number" data-i18n-ph="ph.year"  placeholder="年" min="1920" max="2010">
+        <input class="form-input" id="inp-month" type="number" data-i18n-ph="ph.month" placeholder="月" min="1" max="12">
+        <input class="form-input" id="inp-day"   type="number" data-i18n-ph="ph.day"   placeholder="日" min="1" max="31">
       </div>
     </div>
     <div class="form-row">
-      <label class="form-label">出生时辰</label>
-      <select class="form-input" id="inp-hour">
-        <option value="23">子时 23:00–01:00</option>
-        <option value="1">丑时 01:00–03:00</option>
-        <option value="3">寅时 03:00–05:00</option>
-        <option value="5">卯时 05:00–07:00</option>
-        <option value="7">辰时 07:00–09:00</option>
-        <option value="9">巳时 09:00–11:00</option>
-        <option value="11" selected>午时 11:00–13:00</option>
-        <option value="13">未时 13:00–15:00</option>
-        <option value="15">申时 15:00–17:00</option>
-        <option value="17">酉时 17:00–19:00</option>
-        <option value="19">戌时 19:00–21:00</option>
-        <option value="21">亥时 21:00–23:00</option>
-      </select>
+      <label class="form-label" data-i18n="form.birth_hour">出生时辰</label>
+      <!-- 时辰选项由 Lang.apply() 动态填充 -->
+      <select class="form-input" id="inp-hour"></select>
     </div>
     <div class="form-row">
-      <label class="form-label">性别</label>
+      <label class="form-label" data-i18n="form.gender">性别</label>
       <div class="gender-row">
-        <button class="gender-btn active" id="btn-male"   onclick="App.setGender('男')">♂ 男</button>
-        <button class="gender-btn"        id="btn-female" onclick="App.setGender('女')">♀ 女</button>
+        <button class="gender-btn active" id="btn-male"   data-i18n="form.gender_male"   onclick="App.setGender('男')">♂ 男</button>
+        <button class="gender-btn"        id="btn-female" data-i18n="form.gender_female" onclick="App.setGender('女')">♀ 女</button>
       </div>
     </div>
-    <div class="form-divider">· 可选 · 注册账户保存记录</div>
+    <div class="form-divider" data-i18n="form.opt_divider">· 可选 · 注册账户保存记录</div>
     <div class="form-row">
-      <label class="form-label">昵称</label>
-      <input class="form-input" id="inp-name" type="text" placeholder="你的名字或昵称（选填）" maxlength="20">
+      <label class="form-label" data-i18n="form.nickname">昵称</label>
+      <input class="form-input" id="inp-name" type="text" data-i18n-ph="ph.nickname" placeholder="你的名字或昵称（选填）" maxlength="20">
     </div>
     <div class="form-row">
-      <label class="form-label">邮箱</label>
-      <input class="form-input" id="inp-email" type="email" placeholder="your@email.com（选填）" onblur="AuthUI.onMainEmailBlur()">
+      <label class="form-label" data-i18n="form.email">邮箱</label>
+      <input class="form-input" id="inp-email" type="email" data-i18n-ph="ph.email" placeholder="your@email.com（选填）" onblur="AuthUI.onMainEmailBlur()">
       <div id="email-status"></div>
     </div>
     <div class="form-error" id="form-error"></div>
-    <button class="form-submit" onclick="App.submit()">推演我的命盘</button>
-    <div class="form-login-link">已有账户？<span onclick="AuthUI.showLogin()">直接登录</span></div>
-    <p class="form-note">· 所有计算在本地完成，不上传个人信息 ·</p>
+    <button class="form-submit" data-i18n="form.submit" onclick="App.submit()">推演我的命盘</button>
+    <div class="form-login-link"><span data-i18n="form.have_account">已有账户？</span><span data-i18n="form.login_link" onclick="AuthUI.showLogin()">直接登录</span></div>
+    <p class="form-note" data-i18n="form.note">· 所有计算在本地完成，不上传个人信息 ·</p>
   </div>
 </div>
 
@@ -449,19 +438,19 @@
 <div id="screen-loading" class="hidden">
   <div class="loading-orb"><div class="loading-orb-inner">🏝️</div></div>
   <div>
-    <div class="loading-stage-text" id="loading-stage-text">正在推算命盘...</div>
-    <div class="loading-stage-sub"  id="loading-stage-sub">天机运转，请稍候</div>
+    <div class="loading-stage-text" id="loading-stage-text" data-i18n="loading.title">正在推算命盘...</div>
+    <div class="loading-stage-sub"  id="loading-stage-sub"  data-i18n="loading.sub">天机运转，请稍候</div>
   </div>
   <div class="progress-wrap"><div class="progress-fill" id="progress-fill"></div></div>
   <div class="loading-steps">
-    <div class="l-step active" id="step-1"><div class="l-dot"></div><span>推算四柱八字</span></div>
-    <div class="l-step"        id="step-2"><div class="l-dot"></div><span>生成命盘提示词</span></div>
-    <div class="l-step"        id="step-3"><div class="l-dot"></div><span>AI绘制命盘岛屿</span></div>
-    <div class="l-step"        id="step-4"><div class="l-dot"></div><span>转化为3D模型</span></div>
-    <div class="l-step"        id="step-5"><div class="l-dot"></div><span>加载你的命盘世界</span></div>
+    <div class="l-step active" id="step-1"><div class="l-dot"></div><span data-i18n="loading.step1">推算四柱八字</span></div>
+    <div class="l-step"        id="step-2"><div class="l-dot"></div><span data-i18n="loading.step2">生成命盘提示词</span></div>
+    <div class="l-step"        id="step-3"><div class="l-dot"></div><span data-i18n="loading.step3">AI绘制命盘岛屿</span></div>
+    <div class="l-step"        id="step-4"><div class="l-dot"></div><span data-i18n="loading.step4">转化为3D模型</span></div>
+    <div class="l-step"        id="step-5"><div class="l-dot"></div><span data-i18n="loading.step5">加载你的命盘世界</span></div>
   </div>
   <div class="loading-error hidden" id="loading-error-text"></div>
-  <button id="loading-retry-btn" onclick="App.retryGenerate()">重新生成</button>
+  <button id="loading-retry-btn" data-i18n="loading.retry_btn" onclick="App.retryGenerate()">重新生成</button>
 </div>
 
 <!-- ══ 屏幕3：3D命盘 ══ -->
@@ -471,13 +460,13 @@
 
   <!-- HUD -->
   <div id="hud">
-    <div id="hud-title">命盘沙盒</div>
+    <div id="hud-title" data-i18n="hud.title">命盘沙盒</div>
     <div id="hud-right">
       <div id="hud-spirit">✦ 0 灵气</div>
       <button class="audio-btn" id="btn-bgm" title="背景音乐" onclick="App.toggleBgm(this)">♪</button>
       <button class="audio-btn" id="btn-sfx" title="音效"     onclick="App.toggleSfx(this)">🔔</button>
       <button id="hud-task-btn" onclick="App.toggleTaskPanel()">
-        任务
+        <span data-i18n="hud.tasks">任务</span>
         <span class="task-badge hidden" id="task-badge">0</span>
       </button>
     </div>
@@ -505,12 +494,12 @@
   </div>
 
   <!-- 报告按钮 -->
-  <button id="report-btn" onclick="App.showReport()">查看完整报告</button>
+  <button id="report-btn" data-i18n="report.btn" onclick="App.showReport()">查看完整报告</button>
 
   <!-- 报告Modal -->
   <div id="report-modal">
     <div class="report-header">
-      <h2>完整命盘报告</h2>
+      <h2 data-i18n="report.title">完整命盘报告</h2>
       <button id="report-close" onclick="App.closeReport()">×</button>
     </div>
     <div class="report-body" id="report-body"></div>
@@ -528,6 +517,7 @@
 <!-- ══ 应用脚本 ══ -->
 <!-- Supabase JS SDK -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="js/i18n.js"></script>
 <script src="js/audio.js"></script>
 <script src="js/effects.js"></script>
 <script src="js/config.js"></script>
@@ -546,6 +536,17 @@
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   }
+</script>
+
+<!-- 语言初始化：在所有模块加载后执行 -->
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    // 初始化语言切换按钮状态
+    const langBtn = document.getElementById('lang-toggle-btn');
+    if (langBtn) langBtn.textContent = Lang.getLang() === 'zh' ? 'EN' : '中';
+    // 应用当前语言到全部 data-i18n 元素（含时辰下拉框）
+    Lang.apply();
+  });
 </script>
 </body>
 </html>

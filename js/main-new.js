@@ -14,23 +14,26 @@ const App = (() => {
   let _baziTableOpen = false;
   let _taskPanelOpen = false;
 
-  // ── Stage → UI 映射 ────────────────────────────────────
-  const STAGE_MAP = {
-    queued            : { step:1, pct:5,  text:'提交生成任务...',      sub:'天机运转，请稍候' },
-    generating_prompt : { step:2, pct:8,  text:'解析命盘元素...',        sub:'识别日主·五行·神煞·空亡' },
-    prompt_ready      : { step:2, pct:10, text:'命盘解析完成',            sub:'正在启动AI深度分析' },
-    enhancing_prompt  : { step:2, pct:12, text:'Gemini 3.5 精准分析中...', sub:'八字命局深度运算，提炼视觉意境' },
-    prompt_enhanced   : { step:2, pct:15, text:'命局意境已提炼',          sub:'即将调用 Nano Banana Pro 绘图' },
-    generating_image  : { step:3, pct:20, text:'Nano Banana Pro 绘制中...', sub:'高保真命盘图像生成（约30秒）' },
-    image_ready       : { step:3, pct:40, text:'命盘图像已生成',       sub:'即将转化为3D模型' },
-    converting_to_3d  : { step:4, pct:45, text:'提交3D生成任务...',   sub:'TripoAI 接收图像' },
-    tripo_processing  : { step:4, pct:null,text:'3D模型生成中...',    sub:'TripoAI 转化中（约60-120秒）' },
-    image_failed_fallback  : { step:3, pct:38, text:'切换至文字生成模式...',  sub:'AI绘图暂时繁忙，自动切换' },
-    tripo_fallback         : { step:4, pct:50, text:'3D转换中（备用通道）...', sub:'正在使用备用生成方式' },
-    tripo_text_processing  : { step:4, pct:null,text:'3D模型生成中...',        sub:'TripoAI 转化中（约60-120秒）' },
-    completed         : { step:5, pct:95, text:'命盘已成型，加载中...', sub:'即将进入你的命盘世界' },
-    error             : { step:null,pct:null,text:'生成失败',sub:'' },
-  };
+  // ── Stage → UI 映射（动态，支持 i18n）──────────────────
+  function _getStageMap() {
+    const _t = (k) => (typeof Lang !== 'undefined') ? Lang.t(k) : k;
+    return {
+      queued                : { step:1, pct:5,    text:_t('stage.queued.t'),       sub:_t('stage.queued.s') },
+      generating_prompt     : { step:2, pct:8,    text:_t('stage.gen_prompt.t'),   sub:_t('stage.gen_prompt.s') },
+      prompt_ready          : { step:2, pct:10,   text:_t('stage.prompt_ready.t'), sub:_t('stage.prompt_ready.s') },
+      enhancing_prompt      : { step:2, pct:12,   text:_t('stage.enhance.t'),      sub:_t('stage.enhance.s') },
+      prompt_enhanced       : { step:2, pct:15,   text:_t('stage.enhanced.t'),     sub:_t('stage.enhanced.s') },
+      generating_image      : { step:3, pct:20,   text:_t('stage.gen_image.t'),    sub:_t('stage.gen_image.s') },
+      image_ready           : { step:3, pct:40,   text:_t('stage.image_ready.t'),  sub:_t('stage.image_ready.s') },
+      converting_to_3d      : { step:4, pct:45,   text:_t('stage.to_3d.t'),        sub:_t('stage.to_3d.s') },
+      tripo_processing      : { step:4, pct:null, text:_t('stage.tripo.t'),         sub:_t('stage.tripo.s') },
+      image_failed_fallback : { step:3, pct:38,   text:_t('stage.img_fallback.t'), sub:_t('stage.img_fallback.s') },
+      tripo_fallback        : { step:4, pct:50,   text:_t('stage.tripo_fb.t'),     sub:_t('stage.tripo_fb.s') },
+      tripo_text_processing : { step:4, pct:null, text:_t('stage.tripo_text.t'),   sub:_t('stage.tripo_text.s') },
+      completed             : { step:5, pct:95,   text:_t('stage.completed.t'),    sub:_t('stage.completed.s') },
+      error                 : { step:null, pct:null, text:_t('stage.error.t'),      sub:_t('stage.error.s') },
+    };
+  }
 
   // ── 屏幕切换 ─────────────────────────────────────────────
   function _showScreen(id) {
@@ -62,7 +65,8 @@ const App = (() => {
   }
 
   function _applyStage(stage, progress) {
-    const info = STAGE_MAP[stage] || STAGE_MAP.queued;
+    const map  = _getStageMap();
+    const info = map[stage] || map.queued;
     _setStageText(info.text, info.sub);
     if (info.step) _setLoadingStep(info.step);
     const pct = info.pct !== null ? info.pct : progress;
@@ -74,7 +78,8 @@ const App = (() => {
     const btnEl = document.getElementById('loading-retry-btn');
     if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
     if (btnEl) btnEl.style.display = 'block';
-    _setStageText('生成失败', '请稍后重试');
+    const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+    _setStageText(_t('loading.fail_title'), _t('loading.fail_sub'));
   }
 
   // ── 性别选择 ─────────────────────────────────────────────
@@ -93,14 +98,15 @@ const App = (() => {
     const hour  = parseInt(document.getElementById('inp-hour').value);
     const errEl = document.getElementById('form-error');
 
+    const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
     if (!year || year < 1900 || year > 2010) {
-      if (errEl) errEl.textContent = '请输入有效的出生年份（1900-2010）'; return;
+      if (errEl) errEl.textContent = _t('err.year'); return;
     }
     if (!month || month < 1 || month > 12) {
-      if (errEl) errEl.textContent = '请输入有效的月份（1-12）'; return;
+      if (errEl) errEl.textContent = _t('err.month'); return;
     }
     if (!day || day < 1 || day > 31) {
-      if (errEl) errEl.textContent = '请输入有效的日期（1-31）'; return;
+      if (errEl) errEl.textContent = _t('err.day'); return;
     }
     if (errEl) errEl.textContent = '';
 
@@ -110,7 +116,7 @@ const App = (() => {
     try {
       _baziData = BaziEngine.calculate(year, month, day, hour, 0, _gender);
     } catch (e) {
-      if (errEl) errEl.textContent = '八字计算失败：' + e.message; return;
+      if (errEl) errEl.textContent = _t('err.calc_fail') + e.message; return;
     }
 
     // 保存档案
@@ -134,15 +140,16 @@ const App = (() => {
 
     // 更新HUD
     const dayMaster = _baziData.pillars?.day?.stem || '';
-    document.getElementById('hud-spirit').textContent = '✦ ' + UserState.getSpirit() + ' 灵气';
+    _refreshSpirit();
 
     // 开始生成
     _startGenerate();
   }
 
   function _resetLoadingUI() {
+    const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
     _setProgress(5);
-    _setStageText('正在推算命盘...', '天机运转，请稍候');
+    _setStageText(_t('loading.title'), _t('loading.sub'));
     for (let i = 1; i <= 5; i++) {
       const el = document.getElementById('step-' + i);
       if (!el) continue;
@@ -161,7 +168,8 @@ const App = (() => {
         _lastModelUrl = modelUrl;
         _setLoadingStep(5);
         _setProgress(100);
-        _setStageText('命盘世界已就绪', '欢迎踏入你的命格宇宙');
+        const _t2 = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+        _setStageText(_t2('stage.done.t'), _t2('stage.done.s'));
 
         AudioManager.playSfx('island_ready');
         AudioManager.setScene('screen-island');
@@ -197,7 +205,8 @@ const App = (() => {
       },
       onError(err) {
         AudioManager.playSfx('error');
-        _showLoadingError('生成失败：' + (err || '请检查网络后重试'));
+        const _t3 = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+        _showLoadingError(_t3('loading.fail_title') + '：' + (err || _t3('loading.fail_sub')));
       }
     });
   }
@@ -265,7 +274,8 @@ const App = (() => {
 
   function _refreshSpirit() {
     const el = document.getElementById('hud-spirit');
-    if (el) el.textContent = '✦ ' + UserState.getSpirit() + ' 灵气';
+    const spiritWord = (typeof Lang !== 'undefined') ? Lang.t('hud.spirit') : '灵气';
+    if (el) el.textContent = '✦ ' + UserState.getSpirit() + ' ' + spiritWord;
   }
 
   function _refreshTaskUI() {
@@ -286,8 +296,14 @@ const App = (() => {
     const container = document.getElementById('bazi-table-inner');
     if (!container || !data) return;
 
+    const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
     const cols   = ['year','month','day','hour'];
-    const labels = { year:'年柱', month:'月柱', day:'日柱', hour:'时柱' };
+    const labels = {
+      year:  _t('bazi.year'),
+      month: _t('bazi.month'),
+      day:   _t('bazi.day'),
+      hour:  _t('bazi.hour'),
+    };
     const p  = data.pillars  || {};
     const ss = data.tenGods  || {};
 
@@ -307,7 +323,7 @@ const App = (() => {
         <div class="bazi-cell head${dc}">${labels[col]}</div>
         <div class="bazi-cell stem${dc}" style="color:${color}">${pillar.stem||'—'}</div>
         <div class="bazi-cell branch${dc}">${pillar.branch||'—'}</div>
-        <div class="bazi-cell shishen${dc}">${isDay ? '日主' : (ss[col]||'—')}</div>
+        <div class="bazi-cell shishen${dc}">${isDay ? _t('bazi.day_master') : (ss[col]||'—')}</div>
         <div class="bazi-cell nayin${dc}">${(data.nayin||{})[col]||''}</div>
       </div>`;
     });
@@ -315,11 +331,11 @@ const App = (() => {
 
     let metaHtml = '<div class="bazi-meta">';
     if (data.kongwang?.length) {
-      metaHtml += `<span class="meta-tag warn">空亡：${data.kongwang.join('、')}</span>`;
+      metaHtml += `<span class="meta-tag warn">${_t('bazi.kongwang')}：${data.kongwang.join('、')}</span>`;
     }
     if (data.wuxing) {
       const top = Object.entries(data.wuxing).sort((a,b)=>b[1]-a[1])[0];
-      if (top) metaHtml += `<span class="meta-tag gold">旺：${top[0]}</span>`;
+      if (top) metaHtml += `<span class="meta-tag gold">${_t('bazi.dominant')}：${top[0]}</span>`;
     }
     (data.shenshe||[]).slice(0,4).forEach(s => {
       const good = ['将星','禄神','红鸾','天乙','文昌'].includes(s);
@@ -336,7 +352,10 @@ const App = (() => {
     _baziTableOpen = !_baziTableOpen;
     document.getElementById('bazi-table-panel')?.classList.toggle('open', _baziTableOpen);
     const btn = document.getElementById('bazi-table-toggle');
-    if (btn) btn.textContent = _baziTableOpen ? '八字命盘 ∨' : '八字命盘 ∧';
+    if (btn) {
+      const _t4 = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+      btn.textContent = _baziTableOpen ? _t4('bazi.toggle_open') : _t4('bazi.toggle_shut');
+    }
     AudioManager.playSfx(_baziTableOpen ? 'panel_open' : 'panel_close');
   }
 
@@ -441,6 +460,21 @@ const App = (() => {
     document.getElementById('auth-login-btn')?.addEventListener('click', () => AuthUI.showLogin());
     document.getElementById('auth-logout-btn')?.addEventListener('click', () => AuthManager.logout());
     document.getElementById('auth-my-islands-btn')?.addEventListener('click', () => AuthUI.showMyIslands());
+
+    // ── 语言切换：刷新动态内容 ────────────────────
+    window.addEventListener('langChanged', () => {
+      // 八字表（已渲染时重绘）
+      if (_baziData) _renderBaziTable(_baziData);
+      // 八字表切换按钮
+      const toggleBtn = document.getElementById('bazi-table-toggle');
+      if (toggleBtn) {
+        toggleBtn.textContent = _baziTableOpen
+          ? Lang.t('bazi.toggle_open')
+          : Lang.t('bazi.toggle_shut');
+      }
+      // 灵气文字
+      _refreshSpirit();
+    });
   });
 
   // ── 公开接口 ──────────────────────────────────────────────

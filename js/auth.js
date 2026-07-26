@@ -230,10 +230,11 @@ const AuthUI = (() => {
   async function doLogin() {
     const email = _getVal('auth-login-email');
     const pass  = _getVal('auth-login-password');
-    if (!email || !pass) { _setError('auth-login-error', '请填写邮箱和密码'); return; }
+    const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+    if (!email || !pass) { _setError('auth-login-error', _t('auth_err.fill')); return; }
 
     const btn = document.getElementById('auth-login-submit-btn');
-    _setLoading(btn, true, '登录中...');
+    _setLoading(btn, true, _t('login.loading'));
     try {
       await AuthManager.login(email, pass);
       hideModal();
@@ -241,17 +242,19 @@ const AuthUI = (() => {
     } catch (e) {
       _setError('auth-login-error', _friendlyError(e));
     } finally {
-      _setLoading(btn, false, '登 录');
+      const _t2 = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+      _setLoading(btn, false, _t2('login.submit'));
     }
   }
 
   // ── 提交忘记密码 ────────────────────────────────────────
   async function doForgotPassword() {
     const email = _getVal('auth-forgot-email');
-    if (!email) { _setError('auth-forgot-error', '请填写邮箱'); return; }
+    const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+    if (!email) { _setError('auth-forgot-error', _t('auth_err.fill_email')); return; }
 
     const btn = document.getElementById('auth-forgot-submit-btn');
-    _setLoading(btn, true, '发送中...');
+    _setLoading(btn, true, _t('forgot.sending'));
     try {
       await AuthManager.sendPasswordReset(email);
       _clearError('auth-forgot-error');
@@ -260,7 +263,8 @@ const AuthUI = (() => {
     } catch (e) {
       _setError('auth-forgot-error', _friendlyError(e));
     } finally {
-      _setLoading(btn, false, '发送重置链接');
+      const _t3 = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+      _setLoading(btn, false, _t3('forgot.submit'));
     }
   }
 
@@ -273,12 +277,13 @@ const AuthUI = (() => {
     const phone    = _getVal('reg-phone');
     const password = _getVal('reg-password');
 
-    if (!name)                     { _setError('reg-error', '请填写昵称');       return; }
-    if (!email || !email.includes('@')) { _setError('reg-error', '请填写有效邮箱'); return; }
-    if (!password || password.length < 6) { _setError('reg-error', '密码至少6位'); return; }
+    const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+    if (!name)                     { _setError('reg-error', _t('auth_err.nickname'));   return; }
+    if (!email || !email.includes('@')) { _setError('reg-error', _t('auth_err.valid_email')); return; }
+    if (!password || password.length < 6) { _setError('reg-error', _t('auth_err.short_pass')); return; }
 
     const btn = document.getElementById('reg-submit-btn');
-    _setLoading(btn, true, '创建中...');
+    _setLoading(btn, true, _t('reg.creating'));
     try {
       await AuthManager.registerWithProfile({ email, password, displayName: name, country, phoneCode, phone });
       hideModal();
@@ -288,7 +293,8 @@ const AuthUI = (() => {
       const msg = _friendlyError(e);
       _setError('reg-error', msg);
     } finally {
-      _setLoading(btn, false, '创建账户 · 永久保存');
+      const _t2 = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+      _setLoading(btn, false, _t2('reg.submit'));
     }
   }
 
@@ -337,11 +343,12 @@ const AuthUI = (() => {
     const list  = document.getElementById('my-islands-list');
     if (!panel) return;
     panel.classList.remove('hidden');
-    list.innerHTML = '<div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">加载中...</div>';
+    const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+    list.innerHTML = `<div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">${_t('islands.loading')}</div>`;
 
     const islands = await AuthManager.getMyIslands();
     if (!islands.length) {
-      list.innerHTML = '<div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">暂无保存的岛屿</div>';
+      list.innerHTML = `<div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">${_t('islands.empty')}</div>`;
       return;
     }
     list.innerHTML = islands.map(isl => `
@@ -364,18 +371,20 @@ const AuthUI = (() => {
     if (!status) return;
     if (!email || !email.includes('@')) { status.innerHTML = ''; return; }
 
-    status.innerHTML = '<span style="color:rgba(232,224,208,.35);font-size:10px;letter-spacing:1px">检查中...</span>';
+    const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+    status.innerHTML = `<span style="color:rgba(232,224,208,.35);font-size:10px;letter-spacing:1px">${_t('email.checking')}</span>`;
     clearTimeout(_emailTimer);
     _emailTimer = setTimeout(async () => {
       const exists = await AuthManager.checkEmailExists(email);
+      const _t2 = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
       if (exists) {
         status.innerHTML = `<span style="color:#c9a96e;font-size:10px;letter-spacing:1px">
-          该邮箱已注册 →
+          ${_t2('email.exists_pre')}
           <span onclick="AuthUI.showLogin({prefillEmail:'${email.replace(/'/g,"\\'")}'})"
-                style="text-decoration:underline;cursor:pointer">点此登录</span>
+                style="text-decoration:underline;cursor:pointer">${_t2('email.login_here')}</span>
         </span>`;
       } else {
-        status.innerHTML = '<span style="color:rgba(111,207,151,.7);font-size:10px;letter-spacing:1px">✓ 可以注册</span>';
+        status.innerHTML = `<span style="color:rgba(111,207,151,.7);font-size:10px;letter-spacing:1px">${_t2('email.available')}</span>`;
       }
     }, 600);
   }
@@ -435,13 +444,14 @@ const AuthUI = (() => {
 
   function _friendlyError(e) {
     const msg = e?.message || String(e);
-    if (msg.includes('Invalid login credentials'))         return '邮箱或密码错误';
-    if (msg.includes('Email not confirmed'))               return '请先验证邮箱再登录';
+    const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+    if (msg.includes('Invalid login credentials'))         return _t('auth_err.invalid');
+    if (msg.includes('Email not confirmed'))               return _t('auth_err.unconfirm');
     if (msg.includes('User already registered') ||
-        msg.includes('already registered'))                return '该邮箱已注册，请直接登录';
-    if (msg.includes('Password should be at least 6'))    return '密码至少需要6位';
-    if (msg.includes('Unable to validate email'))         return '邮箱格式不正确';
-    if (msg.includes('rate limit') || msg.includes('too many')) return '请求过于频繁，请稍后再试';
+        msg.includes('already registered'))                return _t('auth_err.exists');
+    if (msg.includes('Password should be at least 6'))    return _t('auth_err.weak_pass');
+    if (msg.includes('Unable to validate email'))         return _t('auth_err.bad_email');
+    if (msg.includes('rate limit') || msg.includes('too many')) return _t('auth_err.rate');
     return msg;
   }
 
