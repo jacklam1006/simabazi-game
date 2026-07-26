@@ -69,7 +69,7 @@ async def _poll_tripo(task_id: str, max_wait: int = 180) -> str:
 
         if status == "success":
             # TripoAI v3：output.model 是GLB下载链接
-            url = result.get("output", {}).get("model")
+            url = result.get("output", {}).get("model_url")
             if not url:
                 raise RuntimeError(f"TripoAI返回成功但无model字段: {result}")
             return url
@@ -122,7 +122,7 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
             try:
                 task_id = submit_image_to_3d(image_bytes)
                 update("tripo_processing", 45, tripo_task_id=task_id)
-                model_url = await _poll_tripo(task_id, max_wait=150)
+                model_url = await _poll_tripo(task_id, max_wait=300)
             except Exception as tripo_err:
                 # image-to-3D失败 → 降级为文生3D
                 update("tripo_fallback", 50,
@@ -133,7 +133,7 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
             # 兜底路径：直接文生3D（prompt → 3D）
             task_id = submit_text_to_3d(prompt)
             update("tripo_text_processing", 55, tripo_task_id=task_id)
-            model_url = await _poll_tripo(task_id, max_wait=150)
+            model_url = await _poll_tripo(task_id, max_wait=240)
 
         # ── 写缓存 + 完成 ──────────────────────────────────
         _write(CACHE_DIR / f"{cache_key}.json", {

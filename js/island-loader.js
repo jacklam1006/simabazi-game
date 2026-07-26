@@ -10,8 +10,8 @@
 const IslandLoader = (() => {
 
   const API_BASE     = window.ISLAND_API_BASE || 'https://simabazi-island.onrender.com';
-  const POLL_MS      = 3000;
-  const MAX_WAIT_MS  = 180000;
+  const POLL_MS      = 4000;
+  const MAX_WAIT_MS  = 600000;  // 10分钟，3D生成本身就慢
 
   let _scene        = null;
   let _camera       = null;
