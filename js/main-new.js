@@ -16,9 +16,11 @@ const App = (() => {
   // ── Stage → UI 映射 ────────────────────────────────────
   const STAGE_MAP = {
     queued            : { step:1, pct:5,  text:'提交生成任务...',      sub:'天机运转，请稍候' },
-    generating_prompt : { step:2, pct:10, text:'生成命盘提示词...',    sub:'解析八字元素与神煞' },
-    prompt_ready      : { step:2, pct:15, text:'提示词已就绪',         sub:'即将调用AI绘图' },
-    generating_image  : { step:3, pct:20, text:'AI绘制命盘岛屿...',   sub:'Gemini 创作中（约30秒）' },
+    generating_prompt : { step:2, pct:8,  text:'解析命盘元素...',        sub:'识别日主·五行·神煞·空亡' },
+    prompt_ready      : { step:2, pct:10, text:'命盘解析完成',            sub:'正在启动AI深度分析' },
+    enhancing_prompt  : { step:2, pct:12, text:'Gemini 3.5 精准分析中...', sub:'八字命局深度运算，提炼视觉意境' },
+    prompt_enhanced   : { step:2, pct:15, text:'命局意境已提炼',          sub:'即将调用 Nano Banana Pro 绘图' },
+    generating_image  : { step:3, pct:20, text:'Nano Banana Pro 绘制中...', sub:'高保真命盘图像生成（约30秒）' },
     image_ready       : { step:3, pct:40, text:'命盘图像已生成',       sub:'即将转化为3D模型' },
     converting_to_3d  : { step:4, pct:45, text:'提交3D生成任务...',   sub:'TripoAI 接收图像' },
     tripo_processing  : { step:4, pct:null,text:'3D模型生成中...',    sub:'TripoAI 转化中（约60-120秒）' },
@@ -161,6 +163,17 @@ const App = (() => {
 
         AudioManager.playSfx('island_ready');
         AudioManager.setScene('screen-island');
+
+        // 自动保存到用户账户（仅登录用户）
+        if (typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn()) {
+          AuthManager.saveIsland({
+            baziData:  _baziData,
+            modelUrl:  modelUrl,
+            baziHash:  null,
+            birthInfo: _birthInfo,
+            name:      '命盘岛屿 ' + new Date().toLocaleDateString('zh-CN'),
+          }).catch(() => {});
+        }
 
         setTimeout(() => {
           _showScreen('screen-island');
@@ -403,6 +416,90 @@ const App = (() => {
     // 立即唤醒后端，然后每14分钟保活一次
     _keepAlive();
     setInterval(_keepAlive, 14 * 60 * 1000);
+
+    // ── 初始化用户认证系统 ────────────────────────────
+    if (typeof AuthManager !== 'undefined') {
+      AuthManager.init();
+    }
+
+    // ── 登录弹窗交互 ──────────────────────────────────
+    let _authMode = 'login'; // 'login' | 'register'
+
+    function _setAuthMode(mode) {
+      _authMode = mode;
+      const title  = document.getElementById('auth-modal-title');
+      const submit = document.getElementById('auth-submit-btn');
+      const link   = document.getElementById('auth-switch-link');
+      if (title)  title.textContent  = mode === 'login' ? '登录账户' : '注册账户';
+      if (submit) submit.textContent = mode === 'login' ? '登 录' : '注 册';
+      if (link)   link.textContent   = mode === 'login' ? '没有账户？点击注册' : '已有账户？点击登录';
+      document.getElementById('auth-error-msg').textContent = '';
+    }
+
+    document.getElementById('auth-login-btn')?.addEventListener('click', () => {
+      _setAuthMode('login');
+      document.getElementById('auth-modal-overlay').classList.remove('hidden');
+    });
+
+    document.getElementById('auth-modal-close')?.addEventListener('click', () => {
+      document.getElementById('auth-modal-overlay').classList.add('hidden');
+    });
+
+    document.getElementById('auth-switch-link')?.addEventListener('click', () => {
+      _setAuthMode(_authMode === 'login' ? 'register' : 'login');
+    });
+
+    document.getElementById('auth-logout-btn')?.addEventListener('click', () => {
+      AuthManager.logout();
+    });
+
+    document.getElementById('auth-submit-btn')?.addEventListener('click', async () => {
+      const email    = document.getElementById('auth-email').value.trim();
+      const password = document.getElementById('auth-password').value;
+      const errEl    = document.getElementById('auth-error-msg');
+      const btn      = document.getElementById('auth-submit-btn');
+
+      if (!email || !password) { errEl.textContent = '请填写邮箱和密码'; return; }
+
+      btn.disabled = true;
+      btn.textContent = '处理中...';
+      errEl.textContent = '';
+
+      try {
+        if (_authMode === 'login') {
+          await AuthManager.login(email, password);
+        } else {
+          await AuthManager.register(email, password);
+        }
+        document.getElementById('auth-modal-overlay').classList.add('hidden');
+      } catch (err) {
+        errEl.textContent = err.message || '操作失败，请重试';
+      } finally {
+        btn.disabled = false;
+        _setAuthMode(_authMode);
+      }
+    });
+
+    // ── 我的岛屿面板 ──────────────────────────────────
+    document.getElementById('auth-my-islands-btn')?.addEventListener('click', async () => {
+      const panel = document.getElementById('my-islands-panel');
+      const list  = document.getElementById('my-islands-list');
+      panel.classList.remove('hidden');
+      list.innerHTML = '<div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">加载中...</div>';
+
+      const islands = await AuthManager.getMyIslands();
+      if (!islands.length) {
+        list.innerHTML = '<div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">暂无保存的岛屿</div>';
+        return;
+      }
+
+      list.innerHTML = islands.map(isl => `
+        <div class="island-card" onclick="window.open('${isl.model_url}','_blank')">
+          <div class="island-card-name">${isl.name}</div>
+          <div class="island-card-meta">${new Date(isl.created_at).toLocaleDateString('zh-CN')} · ${isl.gender || ''} · ${isl.birth_year || ''}年</div>
+        </div>
+      `).join('');
+    });
   });
 
   // ── 公开接口 ──────────────────────────────────────────────
