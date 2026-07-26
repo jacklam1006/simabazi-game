@@ -428,9 +428,9 @@
     <div class="form-row">
       <label class="form-label" data-i18n="form.birth_date">出生日期</label>
       <div class="form-inputs-row">
-        <input class="form-input" id="inp-year"  type="number" data-i18n-ph="ph.year"  placeholder="年" min="1920" max="2010">
-        <input class="form-input" id="inp-month" type="number" data-i18n-ph="ph.month" placeholder="月" min="1" max="12">
-        <input class="form-input" id="inp-day"   type="number" data-i18n-ph="ph.day"   placeholder="日" min="1" max="31">
+        <select class="form-input" id="inp-year"></select>
+        <select class="form-input" id="inp-month"></select>
+        <select class="form-input" id="inp-day"></select>
       </div>
     </div>
     <div class="form-row">
@@ -566,14 +566,58 @@
   }
 </script>
 
-<!-- 语言初始化：在所有模块加载后执行 -->
+<!-- 语言初始化 + 年月日下拉填充 -->
 <script>
+  function _buildDateSelects() {
+    const lang = (typeof Lang !== 'undefined') ? Lang.getLang() : 'zh';
+    const isCN = lang !== 'en';
+
+    // ── 年份 2024 → 1920 ──
+    const ySel = document.getElementById('inp-year');
+    if (ySel && ySel.options.length <= 1) {
+      ySel.innerHTML = `<option value="">${isCN ? '年份' : 'Year'}</option>`;
+      for (let y = 2024; y >= 1920; y--) {
+        ySel.innerHTML += `<option value="${y}">${y}${isCN ? '年' : ''}</option>`;
+      }
+    }
+
+    // ── 月份 1-12 ──
+    const mSel = document.getElementById('inp-month');
+    const mNames = isCN
+      ? ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月']
+      : ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    if (mSel && mSel.options.length <= 1) {
+      mSel.innerHTML = `<option value="">${isCN ? '月份' : 'Month'}</option>`;
+      mNames.forEach((n, i) => {
+        mSel.innerHTML += `<option value="${i+1}">${n}</option>`;
+      });
+    }
+
+    // ── 日期 1-31 ──
+    const dSel = document.getElementById('inp-day');
+    if (dSel && dSel.options.length <= 1) {
+      dSel.innerHTML = `<option value="">${isCN ? '日期' : 'Day'}</option>`;
+      for (let d = 1; d <= 31; d++) {
+        dSel.innerHTML += `<option value="${d}">${d}${isCN ? '日' : ''}</option>`;
+      }
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', () => {
-    // 初始化语言切换按钮状态
     const langBtn = document.getElementById('lang-toggle-btn');
     if (langBtn) langBtn.textContent = Lang.getLang() === 'zh' ? 'EN' : '中';
-    // 应用当前语言到全部 data-i18n 元素（含时辰下拉框）
     Lang.apply();
+    _buildDateSelects();
+  });
+
+  // 语言切换时重建年月日选项
+  window.addEventListener('langChanged', () => {
+    // 清空强制重建
+    ['inp-year','inp-month','inp-day'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = '';
+    });
+    _buildDateSelects();
   });
 </script>
 </body>

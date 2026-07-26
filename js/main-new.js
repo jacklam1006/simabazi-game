@@ -99,7 +99,7 @@ const App = (() => {
     const errEl = document.getElementById('form-error');
 
     const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
-    if (!year || year < 1900 || year > 2010) {
+    if (!year || year < 1900 || year > 2024) {
       if (errEl) errEl.textContent = _t('err.year'); return;
     }
     if (!month || month < 1 || month > 12) {
