@@ -1,66 +1,59 @@
 /**
  * 司马八字 · Service Worker sw.js
- * 离线缓存静态资源，GLB文件不缓存（太大）
+ * 策略：网络优先（Network First）
+ * 网络失败时才回退到缓存，确保每次部署后用户拿到最新代码
  */
 
-const CACHE_NAME = 'smb-v4';
-const STATIC_ASSETS = [
-  '/',
-  '/index.html',
-  '/manifest.json',
-  '/js/i18n.js',
-  '/js/audio.js',
-  '/js/effects.js',
-  '/js/config.js',
-  '/js/auth.js',
-  '/js/bazi-engine.js',
-  '/js/user-state.js',
-  '/js/island-loader.js',
-  '/js/island-annotate.js',
-  '/js/island-decorations.js',
-  '/js/analysis.js',
-  '/js/tasks.js',
-  '/js/main-new.js',
-];
+const CACHE_NAME = 'smb-v5';
+
+// 只缓存这些不常变的 CDN 资源作为离线兜底
+const CDN_HOSTS = ['cdn.jsdelivr.net', 'cdnjs.cloudflare.com'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(
-    caches.open(CACHE_NAME).then(cache =>
-      Promise.all(
-        STATIC_ASSETS.map(url =>
-          cache.add(url).catch(err => console.warn('[SW] 缓存失败，跳过:', url, err))
-        )
-      )
-    ).then(() => self.skipWaiting())
-  );
+  // 立即激活，不等旧 SW 退出
+  e.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener('activate', e => {
+  // 清除所有旧版缓存
   e.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
-    ).then(() => self.clients.claim())
+    caches.keys()
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))))
+      .then(() => self.clients.claim())
   );
 });
 
 self.addEventListener('fetch', e => {
   const url = e.request.url;
 
-  // GLB、API请求不走缓存
-  if (url.includes('.glb') || url.includes('/generate') || url.includes('/status')) {
+  // GLB、API 请求：完全不经过 SW
+  if (url.includes('.glb') || url.includes('/generate') || url.includes('/status') || url.includes('/auth/')) {
     return;
   }
 
-  // CDN资源：网络优先，失败走缓存
-  if (url.includes('cdn.jsdelivr') || url.includes('cdnjs.cloudflare')) {
+  const isCDN = CDN_HOSTS.some(h => url.includes(h));
+
+  if (isCDN) {
+    // CDN 资源：网络优先，失败走缓存（Three.js 等大库）
     e.respondWith(
-      fetch(e.request).catch(() => caches.match(e.request))
+      fetch(e.request)
+        .then(res => {
+          const clone = res.clone();
+          caches.open(CACHE_NAME).then(c => c.put(e.request, clone));
+          return res;
+        })
+        .catch(() => caches.match(e.request))
     );
-    return;
+  } else {
+    // 本地资源（JS/HTML/CSS）：网络优先，失败走缓存
+    e.respondWith(
+      fetch(e.request)
+        .then(res => {
+          const clone = res.clone();
+          caches.open(CACHE_NAME).then(c => c.put(e.request, clone));
+          return res;
+        })
+        .catch(() => caches.match(e.request))
+    );
   }
-
-  // 本地静态资源：缓存优先
-  e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request).catch(() => new Response('', { status: 503 })))
-  );
 });
