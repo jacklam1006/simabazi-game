@@ -178,8 +178,9 @@ const IslandLoader = (() => {
       onComplete?.(modelUrl);
 
     } catch (err) {
-      console.error('[IslandLoader]', err);
-      onError?.(err.message || '未知错误');
+      const msg = err?.message || err?.toString?.() || JSON.stringify(err) || '未知错误';
+      console.error('[IslandLoader] 详细错误:', err);
+      onError?.(msg);
     }
   }
 
@@ -234,7 +235,9 @@ const IslandLoader = (() => {
         _scene.add(_islandGroup);
 
         resolve(gltf);
-      }, undefined, reject);
+      }, undefined, (e) => {
+        reject(new Error('GLB加载失败: ' + (e?.message || e?.type || String(e))));
+      });
     });
   }
 
