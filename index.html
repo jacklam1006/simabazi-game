@@ -287,6 +287,9 @@
 
   /* 注册字段包裹 */
   .reg-field-wrap{position:relative;width:100%}
+  /* 手机号输入行 */
+  .phone-row{display:flex;gap:8px;margin-bottom:12px;align-items:stretch}
+  .phone-code-badge{background:rgba(201,169,110,.08);border:1px solid rgba(201,169,110,.2);border-radius:10px;padding:12px 10px;color:#c9a96e;font-size:13px;white-space:nowrap;min-width:54px;text-align:center;display:flex;align-items:center;justify-content:center}
   /* 注册成功页 */
   .reg-success-icon{text-align:center;font-size:52px;margin-bottom:12px;animation:reg-pop .4s ease}
 
@@ -365,6 +368,11 @@
       </div>
       <div class="reg-field-wrap">
         <input class="auth-input" id="reg-email" type="email" data-i18n-ph="reg.email_ph" placeholder="邮箱地址 *" autocomplete="email" oninput="AuthUI.clearFieldErr('reg-error')">
+      </div>
+      <select class="auth-input" id="reg-country" onchange="AuthUI.onCountryChange()"></select>
+      <div class="phone-row">
+        <div class="phone-code-badge" id="reg-phone-code">+86</div>
+        <input class="auth-input" id="reg-phone" type="tel" data-i18n-ph="reg.phone_ph" placeholder="手机号码（选填）" style="flex:1;margin-bottom:0" oninput="AuthUI.clearFieldErr('reg-error')">
       </div>
       <div class="reg-field-wrap">
         <input class="auth-input" id="reg-password" type="password" data-i18n-ph="reg.pass_ph" placeholder="设置密码（至少6位）*" autocomplete="new-password" oninput="AuthUI.clearFieldErr('reg-error')">

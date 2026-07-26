@@ -287,22 +287,24 @@ const AuthUI = (() => {
 
   // ── 提交注册 ────────────────────────────────────────────
   async function doRegister() {
-    const name     = _getVal('reg-name');
-    const email    = _getVal('reg-email');
-    const password = _getVal('reg-password');
+    const name      = _getVal('reg-name');
+    const email     = _getVal('reg-email');
+    const password  = _getVal('reg-password');
+    const country   = _getVal('reg-country');
+    const phoneCode = document.getElementById('reg-phone-code')?.textContent?.trim() || '+86';
+    const phone     = _getVal('reg-phone');
 
     const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
-    if (!name)                        { _setError('reg-error', _t('auth_err.nickname'));   return; }
+    if (!name)                          { _setError('reg-error', _t('auth_err.nickname'));   return; }
     if (!email || !email.includes('@')) { _setError('reg-error', _t('auth_err.valid_email')); return; }
     if (!password || password.length < 6) { _setError('reg-error', _t('auth_err.short_pass')); return; }
 
     const btn = document.getElementById('reg-submit-btn');
     _setLoading(btn, true, _t('reg.creating'));
     try {
-      await AuthManager.registerWithProfile({ email, password, displayName: name });
+      await AuthManager.registerWithProfile({ email, password, displayName: name, country, phoneCode, phone });
       _clearError('reg-error');
       _saveCurrentIsland(name);
-      // 显示注册成功引导页
       _showRegSuccess(email);
     } catch (e) {
       _setError('reg-error', _friendlyError(e));
