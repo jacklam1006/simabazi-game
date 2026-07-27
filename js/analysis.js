@@ -154,7 +154,13 @@ const Analysis = (() => {
     const dmCol = WX_COLOR[dmWx] || '#c9a96e';
     const p     = d.pillars  || {};
     const wx    = d.wuxing   || {};
-    const fav   = Array.isArray(d.favorable) ? d.favorable : [];
+    // favorable 从引擎返回是字符串（如"木"），从 Supabase 可能是字符串或数组
+    const fav = (() => {
+      if (Array.isArray(d.favorable)) return d.favorable;
+      const f = d.favorable ? [d.favorable] : [];
+      if (d.favorable2 && !f.includes(d.favorable2)) f.push(d.favorable2);
+      return f;
+    })();
 
     // ── 命格强弱 ──────────────────────────────────────
     const strength = d.strength || '';
@@ -397,7 +403,7 @@ const Analysis = (() => {
   // ── AI 内容填充 ─────────────────────────────────────
   function _populateAiContent(container, ai, d) {
     // ─ Tab 2：AI 深析 ─
-    const fav    = Array.isArray(d.favorable) ? d.favorable : [];
+    const fav    = Array.isArray(d.favorable) ? d.favorable : (d.favorable ? [d.favorable] : []);
     const mainFav= fav[0] || '';
     const favCol = WX_COLOR[mainFav] || '#c9a96e';
 
@@ -500,7 +506,7 @@ const Analysis = (() => {
   // ── AI 加载失败 → 显示静态 fallback ──────────────────
   function _showAiFallback(container, d) {
     const dm  = getDayMaster(d);
-    const fav = Array.isArray(d.favorable) ? d.favorable : [];
+    const fav = Array.isArray(d.favorable) ? d.favorable : (d.favorable ? [d.favorable] : []);
 
     const fallbackDeep = `<div class="report-section">
       <div class="report-section-head"><span class="r-icon">◈</span>日主解读</div>

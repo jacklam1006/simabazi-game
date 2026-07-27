@@ -96,8 +96,8 @@ const IslandAnnotate = (() => {
   // ── 四柱标签 DOM ─────────────────────────────────────────
   function _makePillarLabel(title, stem, branch, nayin, isDay, col, baziData) {
     // ── 诊断徽标逻辑 ──────────────────────────────────────
-    const fav    = Array.isArray(baziData.favorable) ? baziData.favorable : [];
-    const kw     = Array.isArray(baziData.kongwang)  ? baziData.kongwang  : [];
+    const fav    = Array.isArray(baziData.favorable) ? baziData.favorable : (baziData.favorable ? [baziData.favorable] : []);
+    const kw     = Array.isArray(baziData.kongwang)  ? baziData.kongwang  : (baziData.kongwang  ? [baziData.kongwang]  : []);
     const stemWx = STEM_WX[stem]      || '';
     let diagClass = '';
     let diagIcon  = '';

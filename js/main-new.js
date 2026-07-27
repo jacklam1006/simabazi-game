@@ -720,7 +720,7 @@ const InsightCards = (() => {
     const dmWx= bazi.dayMasterWx || '';
     const dmNature = bazi.dayMasterNature || '';
     const wx  = bazi.wuxing || {};
-    const fav = bazi.favorable || [];
+    const fav = Array.isArray(bazi.favorable) ? bazi.favorable : (bazi.favorable ? [bazi.favorable] : []);
     const nayin = bazi.nayin || {};
 
     // Card 0: 日主

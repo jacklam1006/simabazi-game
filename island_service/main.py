@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from bazi_prompt import generate_island_prompt, generate_tripo_short_prompt
 from gemini_enhance import enhance_island_prompt
+from gemini_analysis import analyze_bazi
 from gemini_image import generate_island_image
 from tripo_client import submit_image_to_3d, submit_text_to_3d, get_task_status
 from supabase_storage import download_glb, upload_glb
@@ -60,6 +61,11 @@ class GenerateRequest(BaseModel):
 
 class CheckEmailRequest(BaseModel):
     email: str
+
+class AnalyzeRequest(BaseModel):
+    bazi_data: dict
+    gender: str = '男'
+    birth_year: int = 0
 
 
 # ── TripoAI 轮询（含超时）────────────────────────────────────
@@ -267,6 +273,19 @@ async def check_email_endpoint(req: CheckEmailRequest):
     except Exception as e:
         print(f"[check-email ERROR] {e}")
         return {"exists": False}
+
+
+# ── 端点6：八字AI深度分析 ────────────────────────────────────
+@app.post("/analyze-bazi")
+async def analyze_bazi_endpoint(req: AnalyzeRequest):
+    """
+    调用 Gemini 对八字命盘进行深度分析。
+    后端有文件缓存：相同八字（干支+性别）只调用一次，后续即时返回。
+    """
+    result = analyze_bazi(req.bazi_data, req.gender, req.birth_year)
+    if result.get('error') == 'no_api_key':
+        raise HTTPException(status_code=503, detail="AI analysis service not configured")
+    return result
 
 
 # ── 本地运行 ─────────────────────────────────────────────────
