@@ -234,44 +234,45 @@ const App = (() => {
     // 关闭"我的岛屿"面板
     document.getElementById('my-islands-panel')?.classList.add('hidden');
 
-    // 从存档还原数据
-    _baziData  = isl.bazi_data  || null;
-    _birthInfo = {
+    // 从存档还原数据（bazi_data 从 Supabase JSONB 取回，已是对象）
+    _baziData   = isl.bazi_data  || null;
+    _birthInfo  = {
       year:   isl.birth_year,
       month:  isl.birth_month,
       day:    isl.birth_day,
       hour:   isl.birth_hour,
       gender: isl.gender,
     };
-    _gender     = isl.gender || '男';
+    _gender      = isl.gender || '男';
     _lastModelUrl = isl.model_url;
 
-    // 切换音效 + 场景
-    AudioManager.setScene('screen-island');
-
-    // 确保Three.js场景已初始化
+    // 确保 Three.js 场景已初始化（initScene 内部有守卫，重复调用安全）
     const container = document.getElementById('canvas-container');
-    if (container) IslandLoader.initScene(container);
+    IslandLoader.initScene(container);
+    IslandDecorations.init(IslandLoader.getScene());
 
-    // 显示3D场景（先显示再加载，用户有反馈）
+    // 切换到3D场景
+    AudioManager.setScene('screen-island');
     _showScreen('screen-island');
 
-    // 渲染八字表、HUD
-    if (_baziData) {
-      _renderBaziTable(_baziData);
-      _refreshSpirit();
-    }
+    // 渲染八字表
+    if (_baziData) _renderBaziTable(_baziData);
 
-    // 显示加载提示
-    const hud = document.getElementById('hud');
+    // 显示加载提示（直接挂在 screen-island）
     const loadingTip = document.createElement('div');
     loadingTip.id = 'island-load-tip';
-    loadingTip.style.cssText = 'position:absolute;bottom:80px;left:50%;transform:translateX(-50%);color:rgba(201,169,110,.6);font-size:11px;letter-spacing:2px;pointer-events:none';
-    loadingTip.textContent = '命盘岛屿加载中...';
+    loadingTip.style.cssText = [
+      'position:absolute', 'bottom:80px', 'left:50%', 'transform:translateX(-50%)',
+      'color:rgba(201,169,110,.55)', 'font-size:11px', 'letter-spacing:2px',
+      'pointer-events:none', 'z-index:9999',
+    ].join(';');
+    loadingTip.textContent = '命盘加载中...';
     document.getElementById('screen-island')?.appendChild(loadingTip);
 
     try {
       await IslandLoader.loadFromUrl(isl.model_url);
+      // GLB 加载完毕 — 执行完整的"就绪"流程（标注、报告、任务等）
+      _onIslandReady();
     } catch (e) {
       console.warn('[App] loadSavedIsland 失败:', e);
     } finally {

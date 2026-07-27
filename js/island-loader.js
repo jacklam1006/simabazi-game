@@ -24,6 +24,7 @@ const IslandLoader = (() => {
 
   // ── 初始化场景 ───────────────────────────────────────────
   function initScene(container) {
+    if (_scene) return;  // 已初始化，防止重复创建 canvas
     _container = container;
     const W = container.clientWidth  || window.innerWidth;
     const H = container.clientHeight || window.innerHeight;
