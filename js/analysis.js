@@ -128,99 +128,173 @@ const Analysis = (() => {
     return fn(baziData);
   }
 
+  // ── 喜用神建议文字库 ─────────────────────────────
+  const FAV_ADVICE = {
+    '木': { career:'适合教育、林业、设计、出版、医疗等木行事业', health:'宜养肝胆，多接触自然，保持身心舒展', relation:'与木行属性之人缘分深，感情细腻温润', color:'绿色、青色为吉色', dir:'东方为利方' },
+    '火': { career:'适合传媒、演艺、科技、能源、餐饮等火行事业', health:'宜养心脏与眼睛，保持情绪稳定积极', relation:'感情热情奔放，与火行之人磁场契合', color:'红色、橙色为吉色', dir:'南方为利方' },
+    '土': { career:'适合房地产、农业、建筑、管理、金融等土行事业', health:'宜养脾胃，饮食规律，避免过劳', relation:'感情稳重踏实，与土行之人互补默契', color:'黄色、棕色为吉色', dir:'中央及西南为利方' },
+    '金': { career:'适合金融、法律、军警、五金、珠宝等金行事业', health:'宜养肺与大肠，注意呼吸系统健康', relation:'感情果断专一，与金行之人志同道合', color:'白色、金色为吉色', dir:'西方为利方' },
+    '水': { career:'适合航运、水利、传媒、哲学、艺术等水行事业', health:'宜养肾脏与膀胱，保证充足睡眠', relation:'感情深邃细腻，与水行之人灵魂相通', color:'蓝色、黑色为吉色', dir:'北方为利方' },
+  };
+
   // ── 公开：构建完整报告 ───────────────────────────
   function buildReport(baziData, container) {
     if (!container || !baziData) return;
 
-    const d  = baziData;
-    const dm = getDayMaster(d);
-    const p  = d.pillars || {};
-    const wx = d.wuxing || {};
+    const d   = baziData;
+    const dm  = getDayMaster(d);
+    const dmWx = d.dayMasterWx || STEM_WX[dm] || '土';
+    const dmColor = WX_COLOR[dmWx] || '#c9a96e';
+    const p   = d.pillars || {};
+    const wx  = d.wuxing  || {};
+    const fav = d.favorable || [];
 
-    // 四柱HTML
-    const cols   = ['year','month','day','hour'];
-    const labels = { year:'年柱',month:'月柱',day:'日柱',hour:'时柱' };
-    let pillarHtml = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0;border:1px solid rgba(201,169,110,.2);border-radius:8px;overflow:hidden;margin:12px 0">';
-    cols.forEach(col => {
-      const pl = p[col] || {};
-      pillarHtml += `<div style="display:flex;flex-direction:column;text-align:center;${col!=='hour'?'border-right:1px solid rgba(201,169,110,.1)':''}">
-        <div style="padding:5px;font-size:10px;color:rgba(232,224,208,.4);background:rgba(201,169,110,.05);border-bottom:1px solid rgba(201,169,110,.1)">${labels[col]}</div>
-        <div style="padding:8px 4px;font-size:22px;font-weight:700">${pl.stem||'—'}</div>
-        <div style="padding:4px;font-size:17px">${pl.branch||'—'}</div>
-        <div style="padding:4px;font-size:10px;color:#c9a96e">${(d.nayin||{})[col]||''}</div>
+    // ── 1. 命格总评 ─────────────────────────────────
+    const strength = d.strength || '';
+    const strengthText = typeof strength === 'number'
+      ? (strength >= 50 ? '身强' : strength >= 30 ? '中和' : '身弱')
+      : (strength || '中和');
+    const dmNature = d.dayMasterNature || getDmDesc(dm).slice(0, 25) + '…';
+
+    const summaryHtml = `
+      <div class="report-summary">
+        <div class="report-summary-dm">
+          <div class="report-summary-char" style="color:${dmColor}">${dm}</div>
+          <div class="report-summary-meta">
+            <div class="report-summary-label">${dmWx}行 · ${strengthText}</div>
+            <div class="report-summary-sub">${d.dayMasterNature || ''}</div>
+          </div>
+        </div>
+        <div class="report-summary-desc">${getDmDesc(dm)}</div>
       </div>`;
+
+    // ── 2. 四柱八字 ─────────────────────────────────
+    const cols   = ['year','month','day','hour'];
+    const labels = { year:'年柱', month:'月柱', day:'日柱', hour:'时柱' };
+    let pillarHtml = '<div class="report-pillar-grid">';
+    cols.forEach(col => {
+      const pl    = p[col] || {};
+      const sWx   = STEM_WX[pl.stem] || '';
+      const bWx   = BRANCH_WX[pl.branch] || '';
+      const sc    = WX_COLOR[sWx] || '#e8e0d0';
+      const bc    = WX_COLOR[bWx] || 'rgba(232,224,208,.7)';
+      const nayin = (d.nayin || {})[col] || '';
+      pillarHtml += `
+        <div class="report-pillar-col">
+          <div class="report-pillar-header">${labels[col]}</div>
+          <div class="report-pillar-stem" style="color:${sc}">${pl.stem||'—'}</div>
+          <div class="report-pillar-branch" style="color:${bc}">${pl.branch||'—'}</div>
+          <div class="report-pillar-nayin">${nayin}</div>
+        </div>`;
     });
     pillarHtml += '</div>';
 
-    // 五行分析HTML
+    // ── 3. 五行强弱 ─────────────────────────────────
     const totalWx = Object.values(wx).reduce((a,b)=>a+b,0) || 1;
-    let wxHtml = '<div style="display:flex;flex-direction:column;gap:10px">';
+    let wxHtml = '';
     Object.entries(wx).sort((a,b)=>b[1]-a[1]).forEach(([el, sc]) => {
       const pct = Math.round(sc / totalWx * 100);
-      wxHtml += `<div style="display:flex;align-items:center;gap:10px">
-        <span style="width:14px;font-size:12px;color:${WX_COLOR[el]||'#e8e0d0'}">${el}</span>
-        <div style="flex:1;height:6px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden">
-          <div style="width:${pct}%;height:100%;background:${WX_COLOR[el]||'#c9a96e'};border-radius:3px"></div>
+      wxHtml += `<div class="report-wx-row">
+        <span class="report-wx-el" style="color:${WX_COLOR[el]||'#e8e0d0'}">${el}</span>
+        <div class="report-wx-bar-wrap">
+          <div class="report-wx-bar" style="width:${pct}%;background:${WX_COLOR[el]||'#c9a96e'}"></div>
         </div>
-        <span style="font-size:11px;color:rgba(232,224,208,.5);width:28px">${pct}%</span>
-        <span style="font-size:10px;color:rgba(232,224,208,.3)">${wxStrength(sc)}</span>
+        <span class="report-wx-pct">${pct}%</span>
+        <span class="report-wx-level">${wxStrength(sc)}</span>
       </div>`;
     });
-    wxHtml += '</div>';
 
-    // 神煞HTML
-    const ss = d.shenshe || [];
+    // 五行余量说明
+    const weakEls = Object.entries(wx).filter(([,v])=>v<10).map(([k])=>k);
+    const strongEls = Object.entries(wx).filter(([,v])=>v>=30).map(([k])=>k);
+    let wxNote = '';
+    if (weakEls.length) wxNote += `<div style="font-size:11px;color:rgba(232,224,208,.35);margin-top:10px;letter-spacing:.5px">· ${weakEls.join('、')}行力量偏弱，宜通过喜用神加以补充</div>`;
+    if (strongEls.length) wxNote += `<div style="font-size:11px;color:rgba(232,224,208,.35);margin-top:4px;letter-spacing:.5px">· ${strongEls.join('、')}行力量偏旺，宜适当疏导平衡</div>`;
+
+    // ── 4. 喜用神 ────────────────────────────────────
+    let favHtml = '';
+    if (fav.length) {
+      const favChips = fav.map(el => {
+        const col = WX_COLOR[el] || '#c9a96e';
+        return `<div class="report-fav-el" style="border-color:${col}33;background:${col}0a">
+          <div class="report-fav-char" style="color:${col}">${el}</div>
+          <div class="report-fav-name" style="color:${col}">喜用</div>
+        </div>`;
+      }).join('');
+      const mainFav = fav[0];
+      const advice  = FAV_ADVICE[mainFav] || {};
+      const adviceItems = [
+        { icon:'💼', text: advice.career || '以喜用神行业为发展重心' },
+        { icon:'🌿', text: advice.health  || '注意与喜用神五行对应的脏腑养护' },
+        { icon:'🤝', text: advice.relation|| '结交喜用神五行属性的贵人' },
+        { icon:'🎨', text: advice.color   || '多穿戴喜用神五行对应颜色' },
+        { icon:'🧭', text: advice.dir     || '喜用神方位有利于运势提升' },
+      ].map(a => `<div class="report-advice-item">
+        <span class="report-advice-icon">${a.icon}</span>
+        <span class="report-advice-text">${a.text}</span>
+      </div>`).join('');
+
+      favHtml = `
+        <div class="report-fav-grid">${favChips}</div>
+        <div style="border-top:1px solid rgba(255,255,255,.05);padding-top:14px">${adviceItems}</div>`;
+    } else {
+      favHtml = '<span style="color:rgba(232,224,208,.3)">喜用神数据计算中</span>';
+    }
+
+    // ── 5. 神煞 ──────────────────────────────────────
+    const ss = d.shenshe || d.shensha || [];
     const ssHtml = ss.length
-      ? ss.map(s => {
+      ? `<div class="report-ss-tags">` + ss.map(s => {
           const isGood = SHENSHA_GOOD.has(s);
           const isWarn = SHENSHA_WARN.has(s);
-          const cls = isGood ? '#6FCF97' : isWarn ? '#EB5757' : '#c9a96e';
-          return `<span style="display:inline-block;margin:3px;padding:3px 10px;border-radius:12px;font-size:11px;border:1px solid ${cls}44;color:${cls};background:${cls}11">${s}</span>`;
-        }).join('')
+          const col = isGood ? '#6FCF97' : isWarn ? '#EB5757' : '#c9a96e';
+          return `<span class="report-ss-tag" style="border-color:${col}44;color:${col};background:${col}0d">${s}</span>`;
+        }).join('') + `</div>`
       : '<span style="color:rgba(232,224,208,.3)">无主要神煞</span>';
 
-    // 空亡
-    const kw     = d.kongwang || [];
+    // ── 6. 空亡 ──────────────────────────────────────
+    const kw = d.kongwang || [];
     const kwHtml = kw.length
-      ? kw.map(k => `<span style="color:#EB5757;font-weight:600">${k}</span>`).join('、')
-      : '<span style="color:rgba(232,224,208,.3)">无空亡</span>';
+      ? `<div style="margin-bottom:10px">${kw.map(k=>`<span style="font-size:22px;color:#EB5757;letter-spacing:4px;font-weight:300">${k}</span>`).join('<span style="color:rgba(232,224,208,.3);margin:0 8px">·</span>')}</div>
+         <div style="font-size:12px;color:rgba(232,224,208,.4);line-height:1.8">${kw.join('、')}所对应的事物在此命盘中容易落空或难以把握，宜顺势而为，避免强求。</div>`
+      : '<span style="color:rgba(111,207,151,.6)">无空亡 — 命格较为完整</span>';
 
-    // 大运
+    // ── 7. 大运行程 ──────────────────────────────────
     const dy = d.dayuns || [];
     const dyHtml = dy.length
-      ? '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">' +
-        dy.slice(0, 6).map(r => `<div style="text-align:center;padding:8px;border:1px solid rgba(201,169,110,.15);border-radius:8px">
-          <div style="font-size:16px;font-weight:600;color:#c9a96e">${r.gan||''}${r.zhi||''}</div>
-          <div style="font-size:10px;color:rgba(232,224,208,.4);margin-top:4px">${r.startAge||''}岁起</div>
-        </div>`).join('') + '</div>'
+      ? `<div class="report-dayun-grid">` +
+        dy.slice(0,6).map(r => `
+          <div class="report-dayun-cell">
+            <div class="report-dayun-ganzhi">${r.gan||''}${r.zhi||''}</div>
+            <div class="report-dayun-age">${r.startAge||''}岁起</div>
+          </div>`).join('') + `</div>`
       : '<span style="color:rgba(232,224,208,.3)">大运数据计算中</span>';
 
+    // ── 组装 ─────────────────────────────────────────
     container.innerHTML = `
+      ${summaryHtml}
       <div class="report-section">
-        <div class="report-section-head">四柱八字</div>
+        <div class="report-section-head"><span class="r-icon">⊞</span>四柱八字</div>
         <div class="report-section-body">${pillarHtml}</div>
       </div>
       <div class="report-section">
-        <div class="report-section-head">日主分析</div>
-        <div class="report-section-body">
-          <p style="margin-bottom:12px"><strong style="color:#c9a96e;font-size:18px">${dm}</strong> · ${STEM_WX[dm]||''}行</p>
-          <p>${getDmDesc(dm)}</p>
-        </div>
+        <div class="report-section-head"><span class="r-icon">◈</span>五行强弱</div>
+        <div class="report-section-body">${wxHtml}${wxNote}</div>
       </div>
       <div class="report-section">
-        <div class="report-section-head">五行强弱</div>
-        <div class="report-section-body">${wxHtml}</div>
+        <div class="report-section-head"><span class="r-icon">✦</span>喜用神与人生建议</div>
+        <div class="report-section-body">${favHtml}</div>
       </div>
       <div class="report-section">
-        <div class="report-section-head">神煞</div>
+        <div class="report-section-head"><span class="r-icon">⋆</span>神煞</div>
         <div class="report-section-body">${ssHtml}</div>
       </div>
       <div class="report-section">
-        <div class="report-section-head">空亡</div>
+        <div class="report-section-head"><span class="r-icon">◎</span>空亡</div>
         <div class="report-section-body">${kwHtml}</div>
       </div>
       <div class="report-section">
-        <div class="report-section-head">大运行程</div>
+        <div class="report-section-head"><span class="r-icon">⏳</span>大运行程</div>
         <div class="report-section-body">${dyHtml}</div>
       </div>
     `;
