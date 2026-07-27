@@ -10,7 +10,7 @@ import requests
 from pathlib import Path
 
 GEMINI_API_KEY  = os.environ.get('GEMINI_API_KEY', '')
-ANALYSIS_MODEL  = 'gemini-2.0-flash'          # 速度快、够用
+ANALYSIS_MODEL  = 'gemini-3.5-flash'           # 用户指定模型
 ANALYSIS_CACHE  = Path('./analysis_cache')
 ANALYSIS_CACHE.mkdir(exist_ok=True)
 
