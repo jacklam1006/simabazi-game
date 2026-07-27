@@ -244,6 +244,11 @@ const IslandLoader = (() => {
   // ── 工具 ─────────────────────────────────────────────────
   function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+  // ── 直接加载已有 GLB（不走生成流程）────────────────────
+  async function loadFromUrl(url) {
+    await _loadGLB(url);
+  }
+
   // ── 公开接口 ─────────────────────────────────────────────
   function getScene()       { return _scene; }
   function getIslandGroup() { return _islandGroup; }
@@ -252,5 +257,5 @@ const IslandLoader = (() => {
   function stopAutoRotate() { if (_controls) _controls.autoRotate = false; }
   function startAutoRotate(){ if (_controls) _controls.autoRotate = true; }
 
-  return { initScene, generateIsland, getScene, getCamera, getRenderer, getIslandGroup, stopAutoRotate, startAutoRotate };
+  return { initScene, generateIsland, loadFromUrl, getScene, getCamera, getRenderer, getIslandGroup, stopAutoRotate, startAutoRotate };
 })();

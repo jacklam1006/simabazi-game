@@ -227,6 +227,58 @@ const App = (() => {
     _startGenerate();
   }
 
+  // ── 加载已存档的岛屿（登录后直接进入命盘）────────────────
+  async function loadSavedIsland(isl) {
+    if (!isl || !isl.model_url) return;
+
+    // 关闭"我的岛屿"面板
+    document.getElementById('my-islands-panel')?.classList.add('hidden');
+
+    // 从存档还原数据
+    _baziData  = isl.bazi_data  || null;
+    _birthInfo = {
+      year:   isl.birth_year,
+      month:  isl.birth_month,
+      day:    isl.birth_day,
+      hour:   isl.birth_hour,
+      gender: isl.gender,
+    };
+    _gender     = isl.gender || '男';
+    _lastModelUrl = isl.model_url;
+
+    // 切换音效 + 场景
+    AudioManager.setScene('screen-island');
+
+    // 确保Three.js场景已初始化
+    const container = document.getElementById('canvas-container');
+    if (container) IslandLoader.initScene(container);
+
+    // 显示3D场景（先显示再加载，用户有反馈）
+    _showScreen('screen-island');
+
+    // 渲染八字表、HUD
+    if (_baziData) {
+      _renderBaziTable(_baziData);
+      _refreshSpirit();
+    }
+
+    // 显示加载提示
+    const hud = document.getElementById('hud');
+    const loadingTip = document.createElement('div');
+    loadingTip.id = 'island-load-tip';
+    loadingTip.style.cssText = 'position:absolute;bottom:80px;left:50%;transform:translateX(-50%);color:rgba(201,169,110,.6);font-size:11px;letter-spacing:2px;pointer-events:none';
+    loadingTip.textContent = '命盘岛屿加载中...';
+    document.getElementById('screen-island')?.appendChild(loadingTip);
+
+    try {
+      await IslandLoader.loadFromUrl(isl.model_url);
+    } catch (e) {
+      console.warn('[App] loadSavedIsland 失败:', e);
+    } finally {
+      document.getElementById('island-load-tip')?.remove();
+    }
+  }
+
   // ── 岛屿就绪后 ───────────────────────────────────────────
   function _onIslandReady() {
     const scene = IslandLoader.getScene();
@@ -488,7 +540,7 @@ const App = (() => {
 
   // ── 公开接口 ──────────────────────────────────────────────
   return {
-    setGender, submit, retryGenerate,
+    setGender, submit, retryGenerate, loadSavedIsland,
     toggleBaziTable, toggleTaskPanel,
     closeZonePanel, showReport, closeReport,
     toggleBgm, toggleSfx,

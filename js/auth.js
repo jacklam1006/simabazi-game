@@ -256,11 +256,27 @@ const AuthUI = (() => {
       await AuthManager.login(email, pass);
       hideModal();
       _clearError('auth-login-error');
+      // 自动加载最新命盘
+      _autoLoadLatestIsland();
     } catch (e) {
       _setError('auth-login-error', _friendlyError(e));
     } finally {
       const _t2 = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
       _setLoading(btn, false, _t2('login.submit'));
+    }
+  }
+
+  // 登录后自动加载最新岛屿
+  async function _autoLoadLatestIsland() {
+    try {
+      const islands = await AuthManager.getMyIslands();
+      if (!islands.length) return;
+      const latest = islands[0]; // 已按 created_at 倒序
+      if (latest.model_url && typeof App !== 'undefined' && typeof App.loadSavedIsland === 'function') {
+        App.loadSavedIsland(latest);
+      }
+    } catch (e) {
+      console.warn('[AuthUI] _autoLoadLatestIsland:', e);
     }
   }
 
@@ -363,6 +379,8 @@ const AuthUI = (() => {
   }
 
   // ── 我的岛屿面板 ────────────────────────────────────────
+  let _cachedIslands = []; // 用于 onclick 引用，避免 JSON 转义问题
+
   async function showMyIslands() {
     const panel = document.getElementById('my-islands-panel');
     const list  = document.getElementById('my-islands-list');
@@ -371,21 +389,31 @@ const AuthUI = (() => {
     const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
     list.innerHTML = `<div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">${_t('islands.loading')}</div>`;
 
-    const islands = await AuthManager.getMyIslands();
-    if (!islands.length) {
+    _cachedIslands = await AuthManager.getMyIslands();
+    if (!_cachedIslands.length) {
       list.innerHTML = `<div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">${_t('islands.empty')}</div>`;
       return;
     }
-    list.innerHTML = islands.map(isl => `
-      <div class="island-card">
-        <div class="island-card-name">${isl.name || '命盘岛屿'}</div>
+    const isZh = (typeof Lang !== 'undefined') ? Lang.current() === 'zh' : true;
+    list.innerHTML = _cachedIslands.map((isl, i) => `
+      <div class="island-card" onclick="AuthUI._loadIslandByIndex(${i})" style="cursor:pointer">
+        <div class="island-card-name">${isl.name || (isZh ? '命盘岛屿' : 'My Island')}</div>
         <div class="island-card-meta">
-          ${isl.birth_year || ''}年${isl.birth_month || ''}月${isl.birth_day || ''}日
+          ${isl.birth_year || ''}${isZh?'年':'/'} ${isl.birth_month || ''}${isZh?'月':'/'} ${isl.birth_day || ''}${isZh?'日':''}
           · ${isl.gender || ''}
-          · ${new Date(isl.created_at).toLocaleDateString('zh-CN')}
+          · ${new Date(isl.created_at).toLocaleDateString(isZh?'zh-CN':'en-US')}
         </div>
+        <div style="font-size:9px;color:rgba(201,169,110,.4);margin-top:6px;letter-spacing:1px">${isZh?'点击进入命盘':'Tap to enter'} →</div>
       </div>
     `).join('');
+  }
+
+  function _loadIslandByIndex(i) {
+    const isl = _cachedIslands[i];
+    if (!isl) return;
+    if (typeof App !== 'undefined' && typeof App.loadSavedIsland === 'function') {
+      App.loadSavedIsland(isl);
+    }
   }
 
   // ── 主页邮箱实时检测 ────────────────────────────────────
@@ -485,7 +513,7 @@ const AuthUI = (() => {
     showRegister, hideModal, skipReg, showLoginFromReg,
     doLogin, doForgotPassword, doRegister,
     clearFieldErr, onMainEmailBlur,
-    showMyIslands,
+    showMyIslands, _loadIslandByIndex,
     _onAuthChange,
   };
 })();
