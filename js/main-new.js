@@ -234,17 +234,31 @@ const App = (() => {
     // 关闭"我的岛屿"面板
     document.getElementById('my-islands-panel')?.classList.add('hidden');
 
-    // 从存档还原数据（bazi_data 从 Supabase JSONB 取回，已是对象）
-    _baziData   = isl.bazi_data  || null;
+    // 从存档还原数据
     _birthInfo  = {
       year:   isl.birth_year,
       month:  isl.birth_month,
       day:    isl.birth_day,
-      hour:   isl.birth_hour,
+      hour:   isl.birth_hour || 0,
       gender: isl.gender,
     };
-    _gender      = isl.gender || '男';
+    _gender       = isl.gender || '男';
     _lastModelUrl = isl.model_url;
+
+    // bazi_data 可能为 null（旧存档未保存此字段），则从生辰重算
+    if (isl.bazi_data && typeof isl.bazi_data === 'object' && isl.bazi_data.pillars) {
+      _baziData = isl.bazi_data;
+    } else {
+      try {
+        _baziData = BaziEngine.calculate(
+          _birthInfo.year, _birthInfo.month, _birthInfo.day,
+          _birthInfo.hour, 0, _gender
+        );
+      } catch(e) {
+        console.warn('[App] BaziEngine recalc failed:', e);
+        _baziData = null;
+      }
+    }
 
     // 确保 Three.js 场景已初始化（initScene 内部有守卫，重复调用安全）
     const container = document.getElementById('canvas-container');
@@ -436,6 +450,7 @@ const App = (() => {
 
   function showReport() {
     document.getElementById('report-modal')?.classList.add('open');
+    document.getElementById('auth-bar')?.classList.add('hidden');
     AudioManager.playSfx('report_open');
     // 完成"研读命理"任务
     Tasks.complete('daily_read_analysis', _baziData);
@@ -445,6 +460,7 @@ const App = (() => {
 
   function closeReport() {
     document.getElementById('report-modal')?.classList.remove('open');
+    document.getElementById('auth-bar')?.classList.remove('hidden');
     AudioManager.playSfx('panel_close');
   }
 

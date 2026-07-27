@@ -389,7 +389,17 @@ const AuthUI = (() => {
     const _t = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
     list.innerHTML = `<div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">${_t('islands.loading')}</div>`;
 
-    _cachedIslands = await AuthManager.getMyIslands();
+    let fetchOk = false;
+    try {
+      _cachedIslands = await AuthManager.getMyIslands();
+      fetchOk = true;
+    } catch(e) {
+      console.warn('[AuthUI] getMyIslands error:', e);
+    }
+    if (!fetchOk) {
+      list.innerHTML = `<div style="color:rgba(235,87,87,.7);text-align:center;padding:20px;font-size:12px">加载失败，请检查网络后重试</div>`;
+      return;
+    }
     if (!_cachedIslands.length) {
       list.innerHTML = `<div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">${_t('islands.empty')}</div>`;
       return;

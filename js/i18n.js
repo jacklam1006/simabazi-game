@@ -107,6 +107,7 @@ const I18N = {
     'hud.spirit':          '灵气',
 
     // ── 顶部栏 ────────────────────────────────
+    'nav.brand':           '司 马 八 字',
     'bar.my_islands':      '我的岛屿',
     'bar.login':           '登录 / 注册',
     'bar.logout':          '退出',
@@ -286,6 +287,7 @@ const I18N = {
     'hud.spirit':          'Spirit',
 
     // ── Auth Bar ──────────────────────────────
+    'nav.brand':           'Sima BaZi',
     'bar.my_islands':      'My Islands',
     'bar.login':           'Sign In',
     'bar.logout':          'Sign Out',
