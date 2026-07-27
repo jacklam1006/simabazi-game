@@ -323,6 +323,199 @@
     .report-advice-item:last-child{border-bottom:none}
     .report-advice-icon{font-size:16px;flex-shrink:0;margin-top:1px}
     .report-advice-text{font-size:12px;color:rgba(232,224,208,.6);line-height:1.7}
+
+    /* ══ 报告 Tab 系统 ══ */
+    .r-tabs{display:flex;gap:0;border-bottom:1px solid rgba(201,169,110,.15);margin-bottom:20px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+    .r-tabs::-webkit-scrollbar{display:none}
+    .r-tab{padding:12px 18px;font-size:11px;letter-spacing:2px;color:rgba(232,224,208,.3);cursor:pointer;border:none;background:none;white-space:nowrap;border-bottom:2px solid transparent;transition:all .2s;flex-shrink:0;font-family:inherit}
+    .r-tab.active{color:#c9a96e;border-bottom-color:#c9a96e}
+    .r-tab-panel{display:none}
+    .r-tab-panel.active{display:block}
+
+    /* AI shimmer */
+    .ai-loading{background:rgba(201,169,110,.03);border:1px solid rgba(201,169,110,.08);border-radius:14px;padding:22px 18px;margin-bottom:16px}
+    .ai-shimmer{height:11px;background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(201,169,110,.12) 50%,rgba(255,255,255,.04) 75%);background-size:200% 100%;border-radius:6px;margin-bottom:10px;animation:shimmer 1.6s ease-in-out infinite}
+    @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+    .ai-shimmer.short{width:60%}
+    .ai-shimmer.medium{width:80%}
+
+    /* AI 文字区块 */
+    .ai-narrative{font-size:13px;color:rgba(232,224,208,.68);line-height:2.05;letter-spacing:.3px;margin-bottom:6px}
+    .ai-pattern{display:inline-flex;align-items:center;gap:8px;padding:7px 16px;border:1px solid rgba(201,169,110,.3);border-radius:20px;background:rgba(201,169,110,.06);font-size:12px;color:#c9a96e;letter-spacing:1px}
+
+    /* 六维卡片 */
+    .r-dim-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+    .r-dim-card{padding:14px;border:1px solid rgba(201,169,110,.1);border-radius:12px;background:rgba(255,255,255,.01)}
+    .r-dim-icon{font-size:20px;margin-bottom:6px}
+    .r-dim-title{font-size:10px;color:rgba(201,169,110,.5);letter-spacing:2px;margin-bottom:6px}
+    .r-dim-text{font-size:11px;color:rgba(232,224,208,.6);line-height:1.8}
+
+    /* 流年卡片 */
+    .r-year-card{background:linear-gradient(135deg,rgba(201,169,110,.07),rgba(201,169,110,.02));border:1px solid rgba(201,169,110,.2);border-radius:14px;padding:18px;margin-bottom:20px}
+    .r-year-title{font-size:10px;color:rgba(201,169,110,.55);letter-spacing:3px;margin-bottom:10px}
+    .r-year-text{font-size:13px;color:rgba(232,224,208,.7);line-height:1.95}
+
+    /* 命格关键词 */
+    .r-keywords{flex-wrap:wrap;gap:8px;margin-top:14px}
+    .r-keyword{padding:5px 14px;border-radius:16px;border:1px solid rgba(201,169,110,.25);background:rgba(201,169,110,.06);font-size:12px;color:#c9a96e;letter-spacing:1px}
+
+    /* ══ 新用户报告"探索"按钮栏 ══ */
+    .report-newuser-bar{
+      position:sticky;bottom:0;left:0;right:0;
+      display:flex;gap:10px;padding:14px 20px;
+      background:linear-gradient(to top,rgba(6,6,14,1) 70%,transparent);
+      margin-top:20px;
+    }
+    .report-skip-btn{
+      flex:0 0 auto;padding:10px 16px;border-radius:10px;
+      border:1px solid rgba(255,255,255,.1);background:transparent;
+      color:rgba(232,224,208,.4);font-size:12px;letter-spacing:1px;cursor:pointer;
+    }
+    .report-explore-btn{
+      flex:1;padding:12px;border-radius:10px;border:none;
+      background:linear-gradient(135deg,#c9a96e,#a07840);
+      color:#1a1000;font-size:13px;font-weight:700;letter-spacing:2px;cursor:pointer;
+      transition:opacity .2s;
+    }
+    .report-explore-btn:hover{opacity:.88}
+
+    /* ══ 诊断徽标 ✓ / ⚠ ══ */
+    .label-diag{
+      position:absolute;top:-7px;right:-7px;
+      width:16px;height:16px;border-radius:50%;
+      font-size:9px;font-weight:700;line-height:16px;text-align:center;
+      z-index:5;pointer-events:none;
+    }
+    .diag-good{background:#1a3a22;border:1px solid rgba(111,207,151,.6);color:#6FCF97}
+    .diag-warn{background:#3a1a1a;border:1px solid rgba(235,87,87,.6);color:#EB5757}
+    /* 让 pillar-label 有 position:relative 以便 .label-diag absolute 定位 */
+    .pillar-label{position:relative}
+    .shensha-label{position:relative}
+
+    /* ══ 标签高亮 / 变暗（Tutorial 用）══ */
+    .label-dim{
+      opacity:0.18 !important;
+      filter:grayscale(0.5);
+      pointer-events:none !important;
+      transition:opacity .3s,filter .3s;
+    }
+    .label-highlighted{
+      animation:label-pulse-highlight 1.6s ease-in-out infinite;
+      z-index:100;
+      transition:opacity .3s;
+    }
+    @keyframes label-pulse-highlight{
+      0%,100%{transform:scale(1);filter:brightness(1) drop-shadow(0 0 0 transparent)}
+      50%{transform:scale(1.12);filter:brightness(1.4) drop-shadow(0 0 8px rgba(201,169,110,.8))}
+    }
+
+    /* ══ 新手引导覆盖层 ══ */
+    #tutorial-overlay{
+      position:fixed;inset:0;z-index:800;
+      pointer-events:auto;
+      background:rgba(0,0,0,.35);
+      display:flex;flex-direction:column;
+      align-items:center;justify-content:flex-end;
+    }
+    #tutorial-overlay.hidden{display:none}
+
+    /* 跳过按钮（右上角）*/
+    #tutorial-skip-btn{
+      position:absolute;top:60px;right:14px;
+      pointer-events:auto;
+      background:rgba(8,8,20,.7);
+      border:1px solid rgba(255,255,255,.15);
+      border-radius:20px;padding:6px 14px;
+      color:rgba(232,224,208,.5);font-size:11px;letter-spacing:1px;
+      cursor:pointer;font-family:inherit;
+      transition:color .2s,border-color .2s;
+    }
+    #tutorial-skip-btn:hover{color:rgba(232,224,208,.8);border-color:rgba(255,255,255,.3)}
+
+    /* 进度点 */
+    #tutorial-dots{
+      position:absolute;top:68px;left:50%;transform:translateX(-50%);
+      display:flex;gap:7px;pointer-events:none;
+    }
+    .tut-dot{
+      width:7px;height:7px;border-radius:50%;
+      background:rgba(255,255,255,.15);transition:all .25s;
+    }
+    .tut-dot.active{background:#c9a96e;transform:scale(1.25)}
+    .tut-dot.done{background:rgba(111,207,151,.55)}
+
+    /* 弹窗主体（底部滑入）*/
+    #tutorial-modal{
+      width:100%;max-width:500px;
+      background:rgba(8,8,20,.97);
+      border:1px solid rgba(201,169,110,.18);border-bottom:none;
+      border-radius:24px 24px 0 0;
+      padding:22px 22px 44px;
+      max-height:52vh;overflow-y:auto;
+      -webkit-overflow-scrolling:touch;
+    }
+    #tutorial-modal-content{margin-bottom:16px}
+    .tut-step-num{font-size:9px;letter-spacing:3px;color:rgba(201,169,110,.4);margin-bottom:8px}
+    .tut-step-title{font-size:26px;font-weight:300;letter-spacing:4px;color:#c9a96e;margin-bottom:4px}
+    .tut-step-sub{font-size:11px;color:rgba(232,224,208,.35);letter-spacing:1px;margin-bottom:14px}
+    .tut-text{font-size:13px;color:rgba(232,224,208,.75);line-height:1.95;margin-bottom:8px}
+    .tut-hint{font-size:11px;color:rgba(201,169,110,.45);letter-spacing:.5px;margin-top:8px}
+    .tut-ai-preview{font-size:12px;color:rgba(232,224,208,.5);font-style:italic;border-left:2px solid rgba(201,169,110,.2);padding-left:10px;margin-top:8px}
+
+    /* 下一步按钮 */
+    #tutorial-next-btn{
+      position:sticky;bottom:0;
+      width:100%;padding:13px;border:none;border-radius:12px;
+      background:linear-gradient(135deg,#c9a96e,#a07840);
+      color:#1a1000;font-size:14px;font-weight:700;letter-spacing:3px;
+      cursor:pointer;font-family:inherit;
+      transition:opacity .2s;
+    }
+    #tutorial-next-btn:hover{opacity:.88}
+    #tutorial-next-btn.hidden{display:none}
+    @keyframes tut-next-bounce{
+      0%,100%{transform:translateY(0)}
+      40%{transform:translateY(-6px)}
+      70%{transform:translateY(-2px)}
+    }
+    .tut-next-bounce{animation:tut-next-bounce .7s ease!important}
+
+    /* Toast 提示 */
+    .tut-toast{
+      position:fixed;bottom:100px;left:50%;transform:translateX(-50%) translateY(20px);
+      background:rgba(20,18,40,.95);border:1px solid rgba(201,169,110,.3);
+      border-radius:20px;padding:10px 20px;
+      font-size:12px;color:#c9a96e;letter-spacing:1px;
+      z-index:900;pointer-events:none;
+      opacity:0;transition:opacity .35s,transform .35s;
+      white-space:nowrap;
+    }
+    .tut-toast-show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+    /* ══ 调试面板 ══ */
+    #debug-panel{position:fixed;bottom:80px;right:8px;z-index:9500}
+    #debug-panel.hidden{display:none}
+    #debug-toggle-btn{
+      width:32px;height:32px;border-radius:50%;
+      background:rgba(8,8,20,.7);border:1px solid rgba(255,255,255,.12);
+      color:rgba(232,224,208,.35);font-size:13px;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;
+    }
+    #debug-content{
+      position:absolute;bottom:40px;right:0;width:280px;
+      background:rgba(8,8,20,.97);border:1px solid rgba(201,169,110,.2);
+      border-radius:12px;padding:12px;
+      font-family:monospace;
+    }
+    #debug-content.hidden{display:none}
+    #debug-log{font-size:9px;color:rgba(232,224,208,.6);max-height:180px;overflow-y:auto;margin-bottom:8px}
+    .debug-action-btn{
+      display:block;width:100%;margin-top:5px;padding:6px 10px;
+      background:rgba(201,169,110,.08);border:1px solid rgba(201,169,110,.18);
+      border-radius:6px;color:#c9a96e;font-size:10px;letter-spacing:1px;
+      cursor:pointer;font-family:monospace;text-align:left;
+    }
+
   /* ── 登录 / 忘记密码 弹窗 ─────────────────────── */
   #auth-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.78);backdrop-filter:blur(10px);z-index:9000;display:flex;align-items:center;justify-content:center;padding:20px}
   #auth-modal-overlay.hidden{display:none}
@@ -486,6 +679,30 @@
   </div>
 </div>
 
+<!-- ══ 新手引导覆盖层 ══ -->
+<div id="tutorial-overlay" class="hidden">
+  <!-- 跳过按钮 -->
+  <button id="tutorial-skip-btn" onclick="Tutorial.skip()">跳过引导 ×</button>
+  <!-- 进度点 -->
+  <div id="tutorial-dots"></div>
+  <!-- 底部弹窗 -->
+  <div id="tutorial-modal">
+    <div id="tutorial-modal-content"></div>
+    <button id="tutorial-next-btn" class="hidden" onclick="Tutorial.next()">下一个 →</button>
+  </div>
+</div>
+
+<!-- ══ 调试面板（测试版专用）══ -->
+<div id="debug-panel" class="hidden">
+  <button id="debug-toggle-btn" onclick="App._debug().toggle()">🐛</button>
+  <div id="debug-content" class="hidden">
+    <div style="font-size:9px;letter-spacing:2px;color:rgba(201,169,110,.45);margin-bottom:6px">DEBUG LOG</div>
+    <div id="debug-log"></div>
+    <button class="debug-action-btn" onclick="App.restartTutorial()">🧭 重玩引导</button>
+    <button class="debug-action-btn" onclick="BaziAnalysis.clearCache(App._getBaziData(),'男');alert('AI缓存已清除')">🗑 清AI缓存</button>
+  </div>
+</div>
+
 <!-- ══ 屏幕1：输入表单 ══ -->
 <div id="screen-form">
   <div class="form-logo">
@@ -571,6 +788,8 @@
       <div id="hud-spirit">✦ 0 灵气</div>
       <button class="audio-btn" id="btn-bgm" title="背景音乐" onclick="App.toggleBgm(this)">♪</button>
       <button class="audio-btn" id="btn-sfx" title="音效"     onclick="App.toggleSfx(this)">🔔</button>
+      <!-- 测试模式：重玩引导按钮 -->
+      <button id="hud-tutorial-restart" class="audio-btn" title="重玩引导" onclick="App.restartTutorial()" style="font-size:11px;width:auto;padding:0 8px;border-radius:8px">🧭</button>
       <button id="hud-task-btn" onclick="App.toggleTaskPanel()">
         <span data-i18n="hud.tasks">任务</span>
         <span class="task-badge hidden" id="task-badge">0</span>
@@ -633,7 +852,9 @@
 <script src="js/island-loader.js"></script>
 <script src="js/island-annotate.js"></script>
 <script src="js/island-decorations.js"></script>
+<script src="js/bazi-analysis.js"></script>
 <script src="js/analysis.js"></script>
+<script src="js/tutorial.js"></script>
 <script src="js/tasks.js"></script>
 <script src="js/main-new.js"></script>
 

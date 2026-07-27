@@ -21,6 +21,7 @@ const IslandLoader = (() => {
   let _islandGroup  = null;
   let _container    = null;
   let _animId       = null;
+  let _flyTween     = null;   // 相机动画 tween 状态
 
   // ── 初始化场景 ───────────────────────────────────────────
   function initScene(container) {
@@ -127,6 +128,8 @@ const IslandLoader = (() => {
     if (_animId) cancelAnimationFrame(_animId);
     const tick = () => {
       _animId = requestAnimationFrame(tick);
+      // 相机飞行 tween（tutorial 镜头移动）
+      if (_flyTween) _flyTween.update(performance.now());
       if (_controls) _controls.update();
       _renderer.render(_scene, _camera);
       if (_labelRenderer) _labelRenderer.render(_scene, _camera);
@@ -250,6 +253,38 @@ const IslandLoader = (() => {
     await _loadGLB(url);
   }
 
+  // ── 相机平滑飞行（Tutorial 专用）────────────────────────
+  /**
+   * 将相机平滑飞到 camPos，镜头朝向 lookAt。
+   * @param {THREE.Vector3} camPos    - 目标相机世界坐标
+   * @param {THREE.Vector3} lookAt    - OrbitControls 的目标点
+   * @param {number}        durationMs
+   * @param {Function}      onComplete - 动画结束回调
+   */
+  function flyTo(camPos, lookAt, durationMs, onComplete) {
+    if (!_camera || !_controls) { onComplete?.(); return; }
+    const dur        = durationMs || 1500;
+    const startCamPos= _camera.position.clone();
+    const startTarget= _controls.target.clone();
+    const endCamPos  = camPos.clone();
+    const endTarget  = lookAt ? lookAt.clone() : new THREE.Vector3(0, 0, 0);
+    const startTime  = performance.now();
+    _flyTween = {
+      update(now) {
+        const raw  = Math.min((now - startTime) / dur, 1);
+        const ease = raw < 0.5 ? 4*raw*raw*raw : 1 - Math.pow(-2*raw+2, 3)/2;
+        _camera.position.lerpVectors(startCamPos, endCamPos, ease);
+        _controls.target.lerpVectors(startTarget, endTarget, ease);
+        if (raw >= 1) { _flyTween = null; onComplete?.(); }
+      }
+    };
+  }
+
+  /** 锁定或解锁 OrbitControls（Tutorial 期间锁定用户交互）*/
+  function setControlsEnabled(enabled) {
+    if (_controls) _controls.enabled = !!enabled;
+  }
+
   // ── 公开接口 ─────────────────────────────────────────────
   function getScene()       { return _scene; }
   function getIslandGroup() { return _islandGroup; }
@@ -258,5 +293,10 @@ const IslandLoader = (() => {
   function stopAutoRotate() { if (_controls) _controls.autoRotate = false; }
   function startAutoRotate(){ if (_controls) _controls.autoRotate = true; }
 
-  return { initScene, generateIsland, loadFromUrl, getScene, getCamera, getRenderer, getIslandGroup, stopAutoRotate, startAutoRotate };
+  return {
+    initScene, generateIsland, loadFromUrl,
+    getScene, getCamera, getRenderer, getIslandGroup,
+    stopAutoRotate, startAutoRotate,
+    flyTo, setControlsEnabled,
+  };
 })();

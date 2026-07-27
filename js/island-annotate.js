@@ -3,9 +3,14 @@
  *
  * 功能：
  *   在 Three.js 场景上叠加 CSS2DLabel 标注：
- *   - 四柱石碑标签（年/月/日/时）
+ *   - 四柱石碑标签（年/月/日/时）+ 诊断徽标（✓/⚠）
  *   - 神煞标记（点击 → 分析面板）
  *   - 空亡区域提示
+ *
+ * 新增公开 API（Tutorial 使用）：
+ *   highlightLabel(key)  - 高亮指定标签，其余变暗
+ *   clearHighlight()     - 清除所有高亮/变暗
+ *   getLabelPositions()  - 返回各标签的3D位置
  *
  * 依赖：CSS2DRenderer（随 Three.js r128 examples 加载）
  */
@@ -32,7 +37,14 @@ const IslandAnnotate = (() => {
     new THREE.Vector3( 3.2, 0.5, -3.2),
   ];
 
-  let _labels = [];    // 所有CSS2DObject引用
+  // 干支五行映射（诊断徽标用）
+  const STEM_WX = {
+    '甲':'木','乙':'木','丙':'火','丁':'火',
+    '戊':'土','己':'土','庚':'金','辛':'金','壬':'水','癸':'水',
+  };
+
+  let _labels   = [];    // 所有CSS2DObject引用
+  let _labelMap = {};    // key → DOM div，供 highlight 使用
 
   // ── 主入口：创建所有标注 ─────────────────────────────────
   function attach(scene, baziData) {
@@ -46,7 +58,7 @@ const IslandAnnotate = (() => {
     const ss = baziData.shenshe  || [];
     const kw = baziData.kongwang || [];
 
-    // 四柱标签
+    // 四柱标签（含诊断徽标）
     Object.entries(PILLAR_POSITIONS).forEach(([col, pos]) => {
       const pillar = p[col] || {};
       const label  = _makePillarLabel(
@@ -83,9 +95,25 @@ const IslandAnnotate = (() => {
 
   // ── 四柱标签 DOM ─────────────────────────────────────────
   function _makePillarLabel(title, stem, branch, nayin, isDay, col, baziData) {
+    // ── 诊断徽标逻辑 ──────────────────────────────────────
+    const fav    = baziData.favorable || [];
+    const kw     = baziData.kongwang  || [];
+    const stemWx = STEM_WX[stem]      || '';
+    let diagClass = '';
+    let diagIcon  = '';
+    if (kw.includes(branch)) {
+      diagClass = 'diag-warn';
+      diagIcon  = '⚠';
+    } else if (fav.includes(stemWx)) {
+      diagClass = 'diag-good';
+      diagIcon  = '✓';
+    }
+    // ──────────────────────────────────────────────────────
+
     const div = document.createElement('div');
     div.className = 'island-label pillar-label' + (isDay ? ' day-label' : '');
     div.innerHTML = `
+      ${diagIcon ? `<div class="label-diag ${diagClass}">${diagIcon}</div>` : ''}
       <div class="label-title">${title}</div>
       <div class="label-stem" style="color:${_stemColor(stem)}">${stem}</div>
       <div class="label-branch">${branch}</div>
@@ -96,8 +124,8 @@ const IslandAnnotate = (() => {
       if (window.onIslandZoneClick) window.onIslandZoneClick('pillar_' + col, baziData);
     });
 
-    const obj = new THREE.CSS2DObject(div);
-    return obj;
+    _labelMap['pillar_' + col] = div;
+    return new THREE.CSS2DObject(div);
   }
 
   // ── 神煞标记 DOM ─────────────────────────────────────────
@@ -105,15 +133,23 @@ const IslandAnnotate = (() => {
     const isGood = ['将星','禄神','红鸾','天乙','文昌','天德','月德','天厨','福星贵人'].includes(name);
     const isWarn = ['亡神','劫煞','白虎','羊刃','孤辰'].includes(name);
     const cls    = isGood ? 'ss-good' : isWarn ? 'ss-warn' : 'ss-neutral';
+    const diagCls= isGood ? 'diag-good' : isWarn ? 'diag-warn' : '';
+    const diagIco= isGood ? '✓' : isWarn ? '⚠' : '';
 
     const div = document.createElement('div');
     div.className = `island-label shensha-label ${cls}`;
-    div.innerHTML = `<span class="ss-icon">${_ssIcon(name)}</span><span class="ss-name">${name}</span>`;
+    div.innerHTML = `
+      ${diagIco ? `<div class="label-diag ${diagCls}" style="top:-6px;right:-6px">${diagIco}</div>` : ''}
+      <span class="ss-icon">${_ssIcon(name)}</span>
+      <span class="ss-name">${name}</span>
+    `;
+    div.style.position = 'relative';
     div.addEventListener('click', () => {
       UIEffects.labelPulse(div);
       if (window.onIslandZoneClick) window.onIslandZoneClick('shensha_' + name, baziData);
     });
 
+    _labelMap['shensha_' + name] = div;
     return new THREE.CSS2DObject(div);
   }
 
@@ -123,6 +159,37 @@ const IslandAnnotate = (() => {
     div.className = 'island-label kongwang-label';
     div.innerHTML = `<span>空亡</span><span style="color:#EB5757;margin-left:4px">${kw.join('、')}</span>`;
     return new THREE.CSS2DObject(div);
+  }
+
+  // ── Tutorial：高亮 / 清除高亮 ───────────────────────────
+  /**
+   * 高亮指定标签（其余变暗）
+   * @param {string} key - 如 'pillar_day'、'shensha_将星'
+   */
+  function highlightLabel(key) {
+    Object.entries(_labelMap).forEach(([k, el]) => {
+      el.classList.remove('label-highlighted', 'label-dim');
+      if (k === key) {
+        el.classList.add('label-highlighted');
+      } else {
+        el.classList.add('label-dim');
+      }
+    });
+  }
+
+  /** 清除所有高亮与变暗状态 */
+  function clearHighlight() {
+    Object.values(_labelMap).forEach(el => {
+      el.classList.remove('label-highlighted', 'label-dim');
+    });
+  }
+
+  /** 返回各标签的3D世界坐标（Tutorial 计算飞行目标用）*/
+  function getLabelPositions() {
+    return {
+      pillars : PILLAR_POSITIONS,
+      shensha : SHENSHA_POSITIONS,
+    };
   }
 
   // ── fallback：无 CSS2DRenderer 时用 HTML overlay ─────────
@@ -135,10 +202,9 @@ const IslandAnnotate = (() => {
     overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:20';
 
     const p = baziData.pillars || {};
-    // 简单文字提示放在角落
     const info = document.createElement('div');
     info.style.cssText = 'position:absolute;top:60px;left:16px;display:flex;flex-direction:column;gap:6px';
-    const cols = ['year','month','day','hour'];
+    const cols   = ['year','month','day','hour'];
     const labels = { year:'年',month:'月',day:'日',hour:'时' };
     cols.forEach(col => {
       const pl = p[col] || {};
@@ -162,7 +228,8 @@ const IslandAnnotate = (() => {
   // ── 清理 ─────────────────────────────────────────────────
   function _clearLabels(scene) {
     _labels.forEach(l => scene.remove(l));
-    _labels = [];
+    _labels   = [];
+    _labelMap = {};
     const existing = document.getElementById('island-overlay');
     if (existing) existing.remove();
   }
@@ -190,5 +257,5 @@ const IslandAnnotate = (() => {
     return icons[name] || '✦';
   }
 
-  return { attach, detach };
+  return { attach, detach, highlightLabel, clearHighlight, getLabelPositions };
 })();

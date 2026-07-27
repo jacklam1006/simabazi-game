@@ -14,6 +14,43 @@ const App = (() => {
   let _baziTableOpen = false;
   let _taskPanelOpen = false;
 
+  // ── 新用户引导流程状态 ────────────────────────────────────
+  let _isNewUser     = false;  // 当前用户是否为新用户（无 tutorial_done 标记）
+
+  // ── 调试面板（测试版专用）────────────────────────────────
+  const DEBUG_MODE = true;  // 发布时设为 false
+  const Debug = {
+    _log: [],
+    log(msg, type) {
+      const ts = new Date().toTimeString().slice(0,8);
+      const entry = `[${ts}] ${msg}`;
+      this._log.push(entry);
+      if (this._log.length > 80) this._log.shift();
+      this._render();
+      if (type === 'error') console.error('[App]', msg);
+    },
+    _render() {
+      const el = document.getElementById('debug-log');
+      if (!el) return;
+      el.innerHTML = [...this._log].reverse().map(l =>
+        `<div style="margin-bottom:2px;opacity:.75">${l}</div>`
+      ).join('');
+    },
+    toggle() {
+      const content = document.getElementById('debug-content');
+      if (content) content.classList.toggle('hidden');
+    },
+  };
+
+  // 劫持 console.error 写入调试面板
+  if (DEBUG_MODE) {
+    const _origError = console.error.bind(console);
+    console.error = (...args) => {
+      _origError(...args);
+      Debug.log('❌ ' + args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' '), 'error');
+    };
+  }
+
   // ── Stage → UI 映射（动态，支持 i18n）──────────────────
   function _getStageMap() {
     const _t = (k) => (typeof Lang !== 'undefined') ? Lang.t(k) : k;
@@ -285,7 +322,8 @@ const App = (() => {
 
     try {
       await IslandLoader.loadFromUrl(isl.model_url);
-      // GLB 加载完毕 — 执行完整的"就绪"流程（标注、报告、任务等）
+      // GLB 加载完毕 — 重置可能残留的引导状态，再执行就绪流程
+      if (typeof Tutorial !== 'undefined') Tutorial.reset();
       _onIslandReady();
     } catch (e) {
       console.warn('[App] loadSavedIsland 失败:', e);
@@ -298,14 +336,25 @@ const App = (() => {
   function _onIslandReady() {
     const scene = IslandLoader.getScene();
 
-    // 标注系统
+    // 标注系统（含诊断徽标）
     IslandAnnotate.attach(scene, _baziData);
 
     // 恢复已解锁装饰
     IslandDecorations.restoreAll(_baziData);
 
-    // 填充报告
-    Analysis.buildReport(_baziData, document.getElementById('report-body'));
+    // 判断新老用户（Tutorial 状态检测）
+    _isNewUser = (typeof Tutorial !== 'undefined')
+      ? !Tutorial.isDone(_baziData, _gender)
+      : false;
+    Debug.log(`用户状态：${_isNewUser ? '新用户' : '旧用户'}`);
+
+    // 填充报告（根据新老用户决定是否附加"探索"按钮）
+    const reportOpts = _isNewUser ? {
+      isNewUser:      true,
+      onStartExplore: _startTutorial,
+      onSkip:         _skipToFreeMode,
+    } : null;
+    Analysis.buildReport(_baziData, document.getElementById('report-body'), reportOpts);
 
     // 更新任务UI
     _refreshTaskUI();
@@ -346,6 +395,81 @@ const App = (() => {
       UIEffects.confetti(10);
       _refreshTaskUI();
     });
+
+    // 新用户：1s 后自动弹出报告（带探索按钮）
+    if (_isNewUser) {
+      Debug.log('新用户流程：1s 后自动开启报告');
+      setTimeout(() => {
+        showReport();
+      }, 1000);
+    }
+
+    // 调试面板显示（若开启）
+    if (DEBUG_MODE) {
+      const dbPanel = document.getElementById('debug-panel');
+      if (dbPanel) dbPanel.classList.remove('hidden');
+      Debug.log('岛屿就绪，场景初始化完毕');
+    }
+  }
+
+  // ── 新用户：开始引导 ─────────────────────────────────────
+  function _startTutorial() {
+    closeReport();
+    if (typeof Tutorial !== 'undefined') {
+      Debug.log('Tutorial.start()');
+      Tutorial.start(_baziData, _gender);
+
+      // 异步加载 AI 内容，后到时推送给 Tutorial
+      if (typeof BaziAnalysis !== 'undefined') {
+        BaziAnalysis.getAnalysis(_baziData, _gender).then(analysis => {
+          if (analysis && typeof Tutorial !== 'undefined') {
+            Tutorial.updateAiContent(analysis);
+            Debug.log('AI内容已推送到 Tutorial');
+          }
+        });
+      }
+    }
+  }
+
+  // ── 新用户：跳过引导（直接进入自由模式）────────────────
+  function _skipToFreeMode() {
+    closeReport();
+    // 标记为已完成（下次作为旧用户处理）
+    if (typeof Tutorial !== 'undefined') {
+      Tutorial.skip();
+    }
+    Debug.log('用户跳过引导，进入自由模式');
+  }
+
+  // ── 公开：重置并重玩引导（测试模式 HUD 按钮）────────────
+  function restartTutorial() {
+    if (!_baziData) return;
+    // 清除 localStorage 引导完成标记（让 isDone() 返回 false）
+    try {
+      const p = _baziData.pillars || {};
+      const parts = ['year','month','day','hour'].map(col => {
+        const pl = p[col] || {};
+        return (pl.stem || '') + (pl.branch || '');
+      });
+      parts.push(_gender || '');
+      let h = 0;
+      const str = parts.join('|');
+      for (let i = 0; i < str.length; i++) h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
+      const hash = Math.abs(h).toString(16).padStart(8, '0');
+      localStorage.removeItem('tutorial_done_' + hash);
+    } catch(e) {}
+    if (typeof Tutorial !== 'undefined') {
+      Tutorial.reset();
+    }
+    // 强制重建报告（带探索按钮）
+    const reportOpts = {
+      isNewUser:      true,
+      onStartExplore: _startTutorial,
+      onSkip:         _skipToFreeMode,
+    };
+    Analysis.buildReport(_baziData, document.getElementById('report-body'), reportOpts);
+    showReport();
+    Debug.log('引导重置，报告重新展示');
   }
 
   function _refreshSpirit() {
@@ -561,10 +685,12 @@ const App = (() => {
     toggleBaziTable, toggleTaskPanel,
     closeZonePanel, showReport, closeReport,
     toggleBgm, toggleSfx,
+    restartTutorial,   // 测试模式 HUD 用
     // AuthUI 内部调用（勿删）
     _getBaziData:  () => _baziData,
     _getBirthInfo: () => _birthInfo,
     _getLastUrl:   () => _lastModelUrl,
+    _debug:        () => Debug,
   };
 })();
 
