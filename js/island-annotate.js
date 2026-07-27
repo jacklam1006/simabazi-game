@@ -257,5 +257,10 @@ const IslandAnnotate = (() => {
     return icons[name] || '✦';
   }
 
-  return { attach, detach, highlightLabel, clearHighlight, getLabelPositions };
+  /** 返回指定标签的 DOM 元素（Tutorial 用于绑定点击） */
+  function getLabelElement(key) {
+    return _labelMap[key] || null;
+  }
+
+  return { attach, detach, highlightLabel, clearHighlight, getLabelPositions, getLabelElement };
 })();

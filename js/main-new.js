@@ -590,6 +590,9 @@ const App = (() => {
 
   // ── 区域点击回调（供 island-annotate.js 调用）─────────────
   function _openZonePanel(zoneKey, baziData) {
+    // 引导激活期间，标签点击由 Tutorial 接管，此处直接返回
+    if (typeof Tutorial !== 'undefined' && Tutorial.isActive()) return;
+
     const panel   = document.getElementById('zone-panel');
     const content = document.getElementById('zone-panel-content');
     if (!panel || !content) return;

@@ -413,9 +413,7 @@
     #tutorial-overlay{
       position:fixed;inset:0;z-index:800;
       pointer-events:auto;
-      background:rgba(0,0,0,.35);
-      display:flex;flex-direction:column;
-      align-items:center;justify-content:flex-end;
+      background:rgba(0,0,0,.38);
     }
     #tutorial-overlay.hidden{display:none}
 
@@ -444,45 +442,118 @@
     .tut-dot.active{background:#c9a96e;transform:scale(1.25)}
     .tut-dot.done{background:rgba(111,207,151,.55)}
 
-    /* 弹窗主体（底部滑入）*/
-    #tutorial-modal{
-      width:100%;max-width:500px;
-      background:rgba(8,8,20,.97);
-      border:1px solid rgba(201,169,110,.18);border-bottom:none;
-      border-radius:24px 24px 0 0;
-      padding:22px 22px 44px;
-      max-height:52vh;overflow-y:auto;
-      -webkit-overflow-scrolling:touch;
+    /* ── 提示条「👆 点击高亮标识」── */
+    #tutorial-hint-bar{
+      position:absolute;bottom:52px;left:50%;transform:translateX(-50%);
+      display:flex;align-items:center;gap:10px;
+      background:rgba(8,8,20,.88);
+      border:1px solid rgba(201,169,110,.28);
+      border-radius:50px;padding:13px 26px;
+      font-size:13px;color:rgba(232,224,208,.82);letter-spacing:1px;
+      pointer-events:none;white-space:nowrap;
+      animation:hint-breathe 2.2s ease-in-out infinite;
     }
-    #tutorial-modal-content{margin-bottom:16px}
-    .tut-step-num{font-size:9px;letter-spacing:3px;color:rgba(201,169,110,.4);margin-bottom:8px}
-    .tut-step-title{font-size:26px;font-weight:300;letter-spacing:4px;color:#c9a96e;margin-bottom:4px}
-    .tut-step-sub{font-size:11px;color:rgba(232,224,208,.35);letter-spacing:1px;margin-bottom:14px}
+    #tutorial-hint-bar.hidden{display:none}
+    .tut-hint-arrow{
+      font-size:20px;
+      display:inline-block;
+      animation:hint-arrow-soft 1.8s ease-in-out infinite;
+    }
+    #tutorial-hint-bar.hint-urgent .tut-hint-arrow{
+      animation:hint-arrow-strong .75s ease-in-out infinite;
+    }
+    @keyframes hint-breathe{
+      0%,100%{opacity:.75;box-shadow:0 0 0 rgba(201,169,110,0)}
+      50%{opacity:1;box-shadow:0 0 22px rgba(201,169,110,.22)}
+    }
+    @keyframes hint-arrow-soft{
+      0%,100%{transform:translateY(0)}
+      50%{transform:translateY(-5px)}
+    }
+    @keyframes hint-arrow-strong{
+      0%,100%{transform:translateY(0) scale(1)}
+      35%{transform:translateY(-10px) scale(1.25)}
+      65%{transform:translateY(-4px) scale(1.08)}
+    }
+
+    /* ── 居中卡片 Modal ── */
+    #tutorial-modal{
+      position:absolute;top:50%;left:50%;
+      transform:translate(-50%,-50%) scale(0.94);
+      opacity:0;pointer-events:none;
+      width:min(440px,90vw);
+      background:rgba(8,8,20,.97);
+      border:1px solid rgba(201,169,110,.22);
+      border-radius:20px;
+      padding:28px 24px 20px;
+      max-height:78vh;overflow-y:auto;
+      -webkit-overflow-scrolling:touch;
+      transition:opacity .26s ease, transform .26s ease;
+    }
+    #tutorial-modal.tut-modal-show{
+      opacity:1;pointer-events:auto;
+      transform:translate(-50%,-50%) scale(1);
+    }
+    #tutorial-modal-content{margin-bottom:18px}
+    .tut-step-num{font-size:9px;letter-spacing:3px;color:rgba(201,169,110,.4);margin-bottom:10px}
+    .tut-step-title{font-size:28px;font-weight:300;letter-spacing:5px;color:#c9a96e;margin-bottom:4px}
+    .tut-step-sub{font-size:11px;color:rgba(232,224,208,.35);letter-spacing:1px;margin-bottom:16px}
+    .tut-step-body{border-top:1px solid rgba(201,169,110,.08);padding-top:14px}
     .tut-text{font-size:13px;color:rgba(232,224,208,.75);line-height:1.95;margin-bottom:8px}
     .tut-hint{font-size:11px;color:rgba(201,169,110,.45);letter-spacing:.5px;margin-top:8px}
-    .tut-ai-preview{font-size:12px;color:rgba(232,224,208,.5);font-style:italic;border-left:2px solid rgba(201,169,110,.2);padding-left:10px;margin-top:8px}
+    .tut-ai-preview{font-size:12px;color:rgba(232,224,208,.5);font-style:italic;
+      border-left:2px solid rgba(201,169,110,.2);padding-left:10px;margin-top:8px}
 
     /* 下一步按钮 */
     #tutorial-next-btn{
-      position:sticky;bottom:0;
-      width:100%;padding:13px;border:none;border-radius:12px;
+      width:100%;margin-top:18px;padding:13px;
+      border:none;border-radius:12px;
       background:linear-gradient(135deg,#c9a96e,#a07840);
       color:#1a1000;font-size:14px;font-weight:700;letter-spacing:3px;
-      cursor:pointer;font-family:inherit;
-      transition:opacity .2s;
+      cursor:pointer;font-family:inherit;transition:opacity .2s;
     }
     #tutorial-next-btn:hover{opacity:.88}
-    #tutorial-next-btn.hidden{display:none}
-    @keyframes tut-next-bounce{
-      0%,100%{transform:translateY(0)}
-      40%{transform:translateY(-6px)}
-      70%{transform:translateY(-2px)}
+    /* 跳过文字按钮（Modal内）*/
+    .tut-modal-skip{
+      display:block;width:100%;margin-top:10px;padding:8px;
+      background:transparent;border:none;
+      color:rgba(232,224,208,.28);font-size:11px;letter-spacing:1px;
+      cursor:pointer;font-family:inherit;transition:color .2s;
     }
-    .tut-next-bounce{animation:tut-next-bounce .7s ease!important}
+    .tut-modal-skip:hover{color:rgba(232,224,208,.55)}
+
+    /* ── 粒子庆祝动画 ── */
+    .tut-celebration{
+      position:fixed;inset:0;z-index:850;
+      display:flex;align-items:center;justify-content:center;
+      pointer-events:none;
+    }
+    .tut-celebration-text{
+      font-size:22px;letter-spacing:6px;font-weight:300;
+      color:#c9a96e;
+      text-shadow:0 0 30px rgba(201,169,110,.65);
+      animation:tut-text-pop .55s ease-out forwards;
+    }
+    @keyframes tut-text-pop{
+      0%{opacity:0;transform:scale(.8) translateY(10px)}
+      60%{opacity:1;transform:scale(1.06) translateY(-2px)}
+      100%{opacity:1;transform:scale(1) translateY(0)}
+    }
+    .tut-particle{
+      position:absolute;top:50%;left:50%;
+      width:7px;height:7px;border-radius:50%;
+      background:var(--pc,#c9a96e);
+      animation:tut-particle-burst .9s ease-out forwards;
+      animation-delay:var(--delay,0s);
+    }
+    @keyframes tut-particle-burst{
+      0%{transform:translate(-50%,-50%) translate(0,0) scale(1.4);opacity:1}
+      100%{transform:translate(-50%,-50%) translate(var(--tx,0),var(--ty,0)) scale(0);opacity:0}
+    }
 
     /* Toast 提示 */
     .tut-toast{
-      position:fixed;bottom:100px;left:50%;transform:translateX(-50%) translateY(20px);
+      position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(20px);
       background:rgba(20,18,40,.95);border:1px solid rgba(201,169,110,.3);
       border-radius:20px;padding:10px 20px;
       font-size:12px;color:#c9a96e;letter-spacing:1px;
@@ -681,14 +752,20 @@
 
 <!-- ══ 新手引导覆盖层 ══ -->
 <div id="tutorial-overlay" class="hidden">
-  <!-- 跳过按钮 -->
+  <!-- 跳过按钮（右上角，始终可见）-->
   <button id="tutorial-skip-btn" onclick="Tutorial.skip()">跳过引导 ×</button>
-  <!-- 进度点 -->
+  <!-- 进度点（顶部居中）-->
   <div id="tutorial-dots"></div>
-  <!-- 底部弹窗 -->
+  <!-- 提示条（相机到位后显示，引导用户点击）-->
+  <div id="tutorial-hint-bar" class="hidden">
+    <span class="tut-hint-arrow">👆</span>
+    <span>点击命盘上高亮的标识</span>
+  </div>
+  <!-- 居中大卡片 Modal（用户点击标识后弹出）-->
   <div id="tutorial-modal">
     <div id="tutorial-modal-content"></div>
-    <button id="tutorial-next-btn" class="hidden" onclick="Tutorial.next()">下一个 →</button>
+    <button id="tutorial-next-btn" onclick="Tutorial.next()">下一个 →</button>
+    <button class="tut-modal-skip" onclick="Tutorial.skip()">跳过引导，自由探索</button>
   </div>
 </div>
 

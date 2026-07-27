@@ -6,11 +6,12 @@
  *     → 锁定 OrbitControls
  *     → 相机飞到每个步骤位置
  *     → 高亮对应标签
- *     → 显示引导弹窗（底部滑出）
- *     → 用户点"下一个 →" 或 "跳过引导 ×"
+ *     → 底部提示条「👆 点击高亮标识」
+ *     → 用户主动点击标签 → 居中大卡片 Modal 弹出
+ *     → 点「下一个 →」继续 / 「跳过引导」退出
+ *     → 最后一步：粒子爆炸庆祝动画
  *
  * localStorage 标记：tutorial_done_[hash] = '1'
- * 新老用户判断：main-new.js 读取此标记
  *
  * 公开 API：
  *   Tutorial.start(baziData, gender)
@@ -18,22 +19,21 @@
  *   Tutorial.skip()
  *   Tutorial.reset()
  *   Tutorial.isActive() → boolean
- *   Tutorial.updateAiContent(analysis) → 用于 AI 内容后到时刷新
- *   Tutorial.isDone(baziData, gender) → boolean（供 main-new.js 判断新老用户）
+ *   Tutorial.isDone(baziData, gender) → boolean
+ *   Tutorial.updateAiContent(analysis)
  */
 
 const Tutorial = (() => {
 
-  // ── 相机飞行配置（每个步骤的 camPos + lookAt）────────────
+  // ── 相机飞行配置 ──────────────────────────────────────────
   const STEP_CAM = {
     pillar_day   : { cam: [0, 9, 11],   look: [0, 3.5, 0] },
     pillar_year  : { cam: [-1, 7, 6],   look: [-3.5, 1.5, -3] },
     pillar_month : { cam: [1, 7, 6],    look: [3.5, 1.5, -3] },
     pillar_hour  : { cam: [0, 6, 13],   look: [0, 1.5, 3.8] },
-    shensha      : { cam: [0, 12, 18],  look: [0, 0, 0] },   // 神煞 overview
+    shensha      : { cam: [0, 12, 18],  look: [0, 0, 0] },
   };
 
-  // ── 天干短描述（fallback 用）──────────────────────────────
   const STEM_SHORT = {
     '甲':'甲木如参天大树，刚直领导，开拓创新',
     '乙':'乙木如柔藤翠竹，灵活适应，善借外力',
@@ -71,14 +71,17 @@ const Tutorial = (() => {
   };
 
   // ── 模块状态 ─────────────────────────────────────────────
-  let _active      = false;
-  let _steps       = [];
-  let _idx         = 0;
-  let _baziData    = null;
-  let _gender      = '男';
-  let _aiAnalysis  = null;
-  let _baziHash    = '';
-  let _nextBtnTimer= null;
+  let _active          = false;
+  let _steps           = [];
+  let _idx             = 0;
+  let _baziData        = null;
+  let _gender          = '男';
+  let _aiAnalysis      = null;
+  let _baziHash        = '';
+
+  let _pendingLabelEl  = null;
+  let _pendingClickFn  = null;
+  let _hintStrongTimer = null;
 
   // ── 哈希（与 BaziAnalysis 算法一致）─────────────────────
   function _computeHash(baziData, gender) {
@@ -96,7 +99,7 @@ const Tutorial = (() => {
     return Math.abs(h).toString(16).padStart(8, '0');
   }
 
-  // ── 构建步骤列表 ─────────────────────────────────────────
+  // ── 步骤列表 ─────────────────────────────────────────────
   function _buildSteps(baziData) {
     const ss = baziData.shenshe || baziData.shensha || [];
     const steps = [
@@ -105,19 +108,21 @@ const Tutorial = (() => {
       { type: 'pillar', col: 'month' },
       { type: 'pillar', col: 'hour' },
     ];
-    if (ss.length > 0) {
-      steps.push({ type: 'shensha', name: ss[0] });
-    }
+    if (ss.length > 0) steps.push({ type: 'shensha', name: ss[0] });
     return steps;
   }
 
   function _stepKey(step) {
-    if (step.type === 'pillar') return 'pillar_' + step.col;
-    if (step.type === 'shensha') return 'shensha';
-    return 'unknown';
+    return step.type === 'pillar' ? ('pillar_' + step.col) : 'shensha';
   }
 
-  // ── 公开：启动引导 ───────────────────────────────────────
+  function _labelKey(step) {
+    if (step.type === 'pillar')  return 'pillar_' + step.col;
+    if (step.type === 'shensha') return 'shensha_' + step.name;
+    return '';
+  }
+
+  // ── 公开：启动 ────────────────────────────────────────────
   function start(baziData, gender) {
     if (!baziData) return;
     _active     = true;
@@ -126,13 +131,11 @@ const Tutorial = (() => {
     _steps      = _buildSteps(baziData);
     _idx        = 0;
     _baziHash   = _computeHash(baziData, gender);
-    _aiAnalysis = null;  // 等待 AI 后到
+    _aiAnalysis = null;
 
-    // 显示引导覆盖层
     const overlay = document.getElementById('tutorial-overlay');
     if (overlay) overlay.classList.remove('hidden');
 
-    // 锁定 OrbitControls，停止自转
     if (typeof IslandLoader !== 'undefined') {
       IslandLoader.setControlsEnabled(false);
       IslandLoader.stopAutoRotate();
@@ -141,9 +144,10 @@ const Tutorial = (() => {
     _showStep(0);
   }
 
-  // ── 公开：下一步 ─────────────────────────────────────────
+  // ── 公开：下一步 ──────────────────────────────────────────
   function next() {
     if (!_active) return;
+    _hideModal();
     _idx++;
     if (_idx >= _steps.length) {
       _complete();
@@ -152,218 +156,269 @@ const Tutorial = (() => {
     }
   }
 
-  // ── 公开：跳过 ───────────────────────────────────────────
+  // ── 公开：跳过 ────────────────────────────────────────────
   function skip() {
     if (!_active) return;
     _markDone();
     _cleanup();
   }
 
-  // ── 内部：完成引导 ───────────────────────────────────────
+  // ── 完成 ──────────────────────────────────────────────────
   function _complete() {
     _markDone();
-    _cleanup();
-    _showToast('✦ 引导完成！点击岛屿标记开始探索 ✦');
+    _hideModal();
+    _hideHintBar();
+    _showCelebration();
+    setTimeout(() => {
+      _cleanup();
+      _showToast('✦ 命盘探索完成！随时点击标识深入了解 ✦');
+    }, 900);
   }
 
   function _markDone() {
     if (_baziHash) {
-      try {
-        localStorage.setItem('tutorial_done_' + _baziHash, '1');
-      } catch(e) {}
+      try { localStorage.setItem('tutorial_done_' + _baziHash, '1'); } catch(e) {}
     }
   }
 
   function _cleanup() {
     _active = false;
-    clearTimeout(_nextBtnTimer);
-    _nextBtnTimer = null;
+    _hideHintBar();
+    _clearLabelListener();
 
     const overlay = document.getElementById('tutorial-overlay');
     if (overlay) overlay.classList.add('hidden');
+    _hideModal();
 
     if (typeof IslandAnnotate !== 'undefined') IslandAnnotate.clearHighlight();
-
     if (typeof IslandLoader !== 'undefined') {
       IslandLoader.setControlsEnabled(true);
       IslandLoader.startAutoRotate();
     }
   }
 
-  // ── 显示某个步骤 ─────────────────────────────────────────
+  // ── 显示步骤 ──────────────────────────────────────────────
   function _showStep(idx) {
     const step  = _steps[idx];
     const total = _steps.length;
 
-    // 更新进度点
+    _clearLabelListener();
+    _hideHintBar();
+    _hideModal();
     _renderDots(idx, total);
 
-    // 隐藏"下一个"按钮，等相机到位后再显示
-    const nextBtn = document.getElementById('tutorial-next-btn');
-    if (nextBtn) {
-      nextBtn.classList.add('hidden');
-      nextBtn.classList.remove('tut-next-bounce');
-    }
-    clearTimeout(_nextBtnTimer);
-
-    // 飞行相机
-    const camCfg = STEP_CAM[_stepKey(step)] || STEP_CAM.shensha;
-    if (typeof IslandLoader !== 'undefined' && typeof THREE !== 'undefined') {
-      const camPos  = new THREE.Vector3(...camCfg.cam);
-      const lookAt  = new THREE.Vector3(...camCfg.look);
-      IslandLoader.flyTo(camPos, lookAt, 1200, () => {
-        // 相机到位后，1.5s 后弹出"下一个"按钮
-        _nextBtnTimer = setTimeout(() => {
-          const btn = document.getElementById('tutorial-next-btn');
-          if (btn && _active) {
-            btn.classList.remove('hidden');
-            btn.classList.add('tut-next-bounce');
-            setTimeout(() => btn.classList.remove('tut-next-bounce'), 800);
-          }
-        }, 1500);
-      });
-    } else {
-      // 降级：没有飞行，直接显示按钮
-      _nextBtnTimer = setTimeout(() => {
-        const btn = document.getElementById('tutorial-next-btn');
-        if (btn && _active) btn.classList.remove('hidden');
-      }, 1000);
-    }
-
-    // 高亮当前标签
     if (typeof IslandAnnotate !== 'undefined') {
       IslandAnnotate.clearHighlight();
-      if (step.type === 'pillar') IslandAnnotate.highlightLabel('pillar_' + step.col);
-      if (step.type === 'shensha') IslandAnnotate.highlightLabel('shensha_' + step.name);
+      IslandAnnotate.highlightLabel(_labelKey(step));
     }
 
-    // 渲染弹窗内容
-    _renderModal(step, idx, total);
+    const camCfg = STEP_CAM[_stepKey(step)] || STEP_CAM.shensha;
+    if (typeof IslandLoader !== 'undefined' && typeof THREE !== 'undefined') {
+      const camPos = new THREE.Vector3(...camCfg.cam);
+      const lookAt = new THREE.Vector3(...camCfg.look);
+      IslandLoader.flyTo(camPos, lookAt, 1200, () => {
+        if (_active) _showHintBar(step, idx, total);
+      });
+    } else {
+      setTimeout(() => { if (_active) _showHintBar(step, idx, total); }, 600);
+    }
   }
 
-  // ── 渲染进度点 ───────────────────────────────────────────
+  // ── 提示条：显示 ─────────────────────────────────────────
+  function _showHintBar(step, idx, total) {
+    const bar = document.getElementById('tutorial-hint-bar');
+    if (bar) bar.classList.remove('hidden', 'hint-urgent');
+
+    const key     = _labelKey(step);
+    const labelEl = (typeof IslandAnnotate !== 'undefined' && IslandAnnotate.getLabelElement)
+      ? IslandAnnotate.getLabelElement(key)
+      : null;
+
+    if (labelEl) {
+      _pendingClickFn = () => _onLabelClick(step, idx, total);
+      labelEl.addEventListener('click', _pendingClickFn, { once: true });
+      _pendingLabelEl = labelEl;
+    } else {
+      // 降级：无可点击标签，1.5s 后直接弹 Modal
+      setTimeout(() => { if (_active) _onLabelClick(step, idx, total); }, 1500);
+    }
+
+    // 3s 无操作 → 强调动画
+    _hintStrongTimer = setTimeout(() => {
+      const b = document.getElementById('tutorial-hint-bar');
+      if (b && _active) b.classList.add('hint-urgent');
+    }, 3000);
+  }
+
+  // ── 提示条：隐藏 ─────────────────────────────────────────
+  function _hideHintBar() {
+    clearTimeout(_hintStrongTimer);
+    _hintStrongTimer = null;
+    const bar = document.getElementById('tutorial-hint-bar');
+    if (bar) bar.classList.add('hidden');
+  }
+
+  // ── 清除标签点击监听 ──────────────────────────────────────
+  function _clearLabelListener() {
+    if (_pendingLabelEl && _pendingClickFn) {
+      _pendingLabelEl.removeEventListener('click', _pendingClickFn);
+    }
+    _pendingLabelEl = null;
+    _pendingClickFn = null;
+  }
+
+  // ── 用户点击标签 → Modal ─────────────────────────────────
+  function _onLabelClick(step, idx, total) {
+    _clearLabelListener();
+    _hideHintBar();
+    _fillModalContent(step, idx, total);
+    const modal = document.getElementById('tutorial-modal');
+    if (modal) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => modal.classList.add('tut-modal-show'));
+      });
+    }
+  }
+
+  // ── Modal：隐藏 ───────────────────────────────────────────
+  function _hideModal() {
+    const modal = document.getElementById('tutorial-modal');
+    if (modal) modal.classList.remove('tut-modal-show');
+  }
+
+  // ── 进度点 ────────────────────────────────────────────────
   function _renderDots(idx, total) {
     const el = document.getElementById('tutorial-dots');
     if (!el) return;
     el.innerHTML = Array.from({ length: total }, (_, i) => {
       const cls = i === idx ? 'active' : i < idx ? 'done' : '';
-      return `<span class="tut-dot ${cls}"></span>`;
+      return '<span class="tut-dot ' + cls + '"></span>';
     }).join('');
   }
 
-  // ── 渲染弹窗内容 ─────────────────────────────────────────
-  function _renderModal(step, idx, total) {
+  // ── 填充 Modal 内容 ───────────────────────────────────────
+  function _fillModalContent(step, idx, total) {
     const content = document.getElementById('tutorial-modal-content');
     if (!content) return;
 
     const c = _getStepContent(step);
+    content.innerHTML =
+      '<div class="tut-step-num">' + (idx + 1) + ' / ' + total + '</div>' +
+      '<div class="tut-step-title">' + c.title + '</div>' +
+      '<div class="tut-step-sub">' + c.subtitle + '</div>' +
+      '<div class="tut-step-body">' + c.body + '</div>';
 
-    content.innerHTML = `
-      <div class="tut-step-num">${idx + 1} / ${total}</div>
-      <div class="tut-step-title">${c.title}</div>
-      <div class="tut-step-sub">${c.subtitle}</div>
-      <div class="tut-step-body">${c.body}</div>
-    `;
-
-    // 更新按钮文字
     const nextBtn = document.getElementById('tutorial-next-btn');
     if (nextBtn) {
-      nextBtn.textContent = (idx === total - 1) ? '开始探索 →' : '下一个 →';
+      nextBtn.textContent = (idx === total - 1) ? '✦ 探索完成 ✦' : '下一个 →';
     }
   }
 
-  // ── 步骤内容生成 ─────────────────────────────────────────
   function _getStepContent(step) {
-    if (step.type === 'pillar') return _pillarContent(step.col);
+    if (step.type === 'pillar')  return _pillarContent(step.col);
     if (step.type === 'shensha') return _shenshaContent(step.name);
     return { title: '命盘', subtitle: '', body: '' };
   }
 
   function _pillarContent(col) {
     const LABELS = { year:'年柱', month:'月柱', day:'日柱', hour:'时柱' };
-    const p      = (_baziData?.pillars || {})[col] || {};
+    const p      = (_baziData && _baziData.pillars ? _baziData.pillars[col] : null) || {};
     const stem   = p.stem   || '—';
     const branch = p.branch || '—';
+    var body = '';
 
-    let body = '';
-
-    // 优先 AI 内容
-    if (_aiAnalysis?.four_pillars?.[col]) {
-      body = `<p class="tut-text">${_aiAnalysis.four_pillars[col]}</p>`;
+    if (_aiAnalysis && _aiAnalysis.four_pillars && _aiAnalysis.four_pillars[col]) {
+      body = '<p class="tut-text">' + _aiAnalysis.four_pillars[col] + '</p>';
       if (col === 'day' && _aiAnalysis.day_master_reading) {
-        const preview = _aiAnalysis.day_master_reading.slice(0, 100);
-        body += `<p class="tut-text tut-ai-preview">${preview}…</p>`;
+        var preview = _aiAnalysis.day_master_reading.slice(0, 100);
+        body += '<p class="tut-text tut-ai-preview">' + preview + '…</p>';
       }
     } else {
-      // 规则引擎 fallback
-      const role = PILLAR_ROLE[col] || '';
-      const stemDesc = col === 'day' ? (STEM_SHORT[stem] || '') : '';
-      body = `<p class="tut-text">${role}。${stemDesc}</p>
-              <p class="tut-hint">💡 点击完整报告获取 AI 深度解读</p>`;
+      var role     = PILLAR_ROLE[col] || '';
+      var stemDesc = col === 'day' ? (STEM_SHORT[stem] || '') : '';
+      body = '<p class="tut-text">' + role + '。' + stemDesc + '</p>' +
+             '<p class="tut-hint">💡 点击完整报告获取 AI 深度解读</p>';
     }
-
-    return {
-      title:    `${stem}${branch}`,
-      subtitle: LABELS[col],
-      body,
-    };
+    return { title: stem + branch, subtitle: LABELS[col], body: body };
   }
 
   function _shenshaContent(name) {
-    const isGood = ['将星','禄神','红鸾','天乙','文昌','天德','月德','天厨'].includes(name);
-    const isWarn = ['亡神','劫煞','白虎','羊刃','孤辰'].includes(name);
-    const tag    = isGood ? '✦ 吉神' : isWarn ? '⚠ 凶煞' : '◈ 中性';
-    const desc   = SS_DESC[name] || name + '神煞，影响命运走向';
-
-    const tagStyle = isGood
+    var isGood = ['将星','禄神','红鸾','天乙','文昌','天德','月德','天厨'].indexOf(name) >= 0;
+    var isWarn = ['亡神','劫煞','白虎','羊刃','孤辰'].indexOf(name) >= 0;
+    var tag    = isGood ? '✦ 吉神' : isWarn ? '⚠ 凶煞' : '◈ 中性';
+    var desc   = SS_DESC[name] || name + '神煞，影响命运走向';
+    var tagStyle = isGood
       ? 'color:#6FCF97;background:rgba(111,207,151,.1);border-color:rgba(111,207,151,.3)'
       : isWarn
         ? 'color:#EB5757;background:rgba(235,87,87,.1);border-color:rgba(235,87,87,.3)'
         : 'color:#c9a96e;background:rgba(201,169,110,.08);border-color:rgba(201,169,110,.2)';
-
     return {
       title:    name,
-      subtitle: `<span style="font-size:10px;padding:2px 10px;border-radius:12px;border:1px solid;${tagStyle}">${tag}</span>`,
-      body:     `<p class="tut-text">${desc}</p>
-                 <p class="tut-hint">${isWarn ? '💡 点击神煞标记可查看更多' : '💡 点击各标记深入了解'}</p>`,
+      subtitle: '<span style="font-size:10px;padding:2px 10px;border-radius:12px;border:1px solid;' + tagStyle + '">' + tag + '</span>',
+      body:     '<p class="tut-text">' + desc + '</p>' +
+                '<p class="tut-hint">' + (isWarn ? '💡 点击神煞标记可查看更多' : '💡 点击各标记深入了解') + '</p>',
     };
   }
 
-  // ── Toast 提示 ───────────────────────────────────────────
+  // ── 粒子庆祝动画 ─────────────────────────────────────────
+  function _showCelebration() {
+    var wrap   = document.createElement('div');
+    wrap.className = 'tut-celebration';
+    var colors = ['#c9a96e','#6FCF97','#63B3ED','#EB5757','#F2C94C','#e8e0d0'];
+    for (var i = 0; i < 30; i++) {
+      var p     = document.createElement('div');
+      p.className = 'tut-particle';
+      var angle = Math.random() * Math.PI * 2;
+      var dist  = 80 + Math.random() * 160;
+      p.style.cssText = [
+        '--tx:' + Math.round(Math.cos(angle) * dist) + 'px',
+        '--ty:' + Math.round(Math.sin(angle) * dist) + 'px',
+        '--pc:' + colors[Math.floor(Math.random() * colors.length)],
+        '--delay:' + (Math.random() * 0.18).toFixed(3) + 's',
+      ].join(';');
+      wrap.appendChild(p);
+    }
+    var text = document.createElement('div');
+    text.className = 'tut-celebration-text';
+    text.textContent = '✦ 命盘探索完成 ✦';
+    wrap.appendChild(text);
+    document.body.appendChild(wrap);
+    setTimeout(function() { wrap.remove(); }, 1400);
+  }
+
+  // ── Toast ─────────────────────────────────────────────────
   function _showToast(msg) {
-    const el = document.createElement('div');
+    var el = document.createElement('div');
     el.className = 'tut-toast';
     el.textContent = msg;
     document.body.appendChild(el);
-    requestAnimationFrame(() => el.classList.add('tut-toast-show'));
-    setTimeout(() => {
+    requestAnimationFrame(function() { el.classList.add('tut-toast-show'); });
+    setTimeout(function() {
       el.classList.remove('tut-toast-show');
-      setTimeout(() => el.remove(), 500);
-    }, 3000);
+      setTimeout(function() { el.remove(); }, 500);
+    }, 3500);
   }
 
-  // ── 公开：AI 内容后到，刷新当前步骤 ─────────────────────
+  // ── 公开：AI 后到 → 刷新 Modal ───────────────────────────
   function updateAiContent(analysis) {
     _aiAnalysis = analysis;
     if (_active && _idx < _steps.length) {
-      _renderModal(_steps[_idx], _idx, _steps.length);
+      var modal = document.getElementById('tutorial-modal');
+      if (modal && modal.classList.contains('tut-modal-show')) {
+        _fillModalContent(_steps[_idx], _idx, _steps.length);
+      }
     }
   }
 
-  // ── 公开：判断此命盘是否已完成引导（供 main-new.js 调用）─
+  // ── 公开：判断引导是否已完成 ─────────────────────────────
   function isDone(baziData, gender) {
     if (!baziData) return false;
-    const hash = _computeHash(baziData, gender);
-    try {
-      return !!localStorage.getItem('tutorial_done_' + hash);
-    } catch(e) { return false; }
+    var hash = _computeHash(baziData, gender);
+    try { return !!localStorage.getItem('tutorial_done_' + hash); }
+    catch(e) { return false; }
   }
 
-  // ── 公开：重置（切换岛屿时清理状态）─────────────────────
-  function reset() {
-    if (_active) _cleanup();
-  }
-
+  function reset() { if (_active) _cleanup(); }
   function isActive() { return _active; }
 
   return { start, next, skip, reset, isActive, isDone, updateAiContent };
