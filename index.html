@@ -865,8 +865,8 @@
       <div id="hud-spirit">✦ 0 灵气</div>
       <button class="audio-btn" id="btn-bgm" title="背景音乐" onclick="App.toggleBgm(this)">♪</button>
       <button class="audio-btn" id="btn-sfx" title="音效"     onclick="App.toggleSfx(this)">🔔</button>
-      <!-- 测试模式：重玩引导按钮 -->
-      <button id="hud-tutorial-restart" class="audio-btn" title="重玩引导" onclick="App.restartTutorial()" style="font-size:11px;width:auto;padding:0 8px;border-radius:8px">🧭</button>
+      <!-- 测试模式：重玩引导按钮（醒目样式，方便测试） -->
+      <button id="hud-tutorial-restart" onclick="App.restartTutorial()" style="background:rgba(201,169,110,.18);border:1px solid rgba(201,169,110,.5);border-radius:10px;padding:4px 10px;color:#c9a96e;font-size:11px;letter-spacing:.5px;cursor:pointer;white-space:nowrap">🧭 重玩引导</button>
       <button id="hud-task-btn" onclick="App.toggleTaskPanel()">
         <span data-i18n="hud.tasks">任务</span>
         <span class="task-badge hidden" id="task-badge">0</span>

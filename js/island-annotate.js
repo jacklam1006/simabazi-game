@@ -55,8 +55,8 @@ const IslandAnnotate = (() => {
     _clearLabels(scene);
 
     const p  = baziData.pillars  || {};
-    const ss = baziData.shenshe  || [];
-    const kw = baziData.kongwang || [];
+    const ss = Array.isArray(baziData.shenshe) ? baziData.shenshe : [];
+    const kw = Array.isArray(baziData.kongwang) ? baziData.kongwang : [];
 
     // 四柱标签（含诊断徽标）
     Object.entries(PILLAR_POSITIONS).forEach(([col, pos]) => {
@@ -96,8 +96,8 @@ const IslandAnnotate = (() => {
   // ── 四柱标签 DOM ─────────────────────────────────────────
   function _makePillarLabel(title, stem, branch, nayin, isDay, col, baziData) {
     // ── 诊断徽标逻辑 ──────────────────────────────────────
-    const fav    = baziData.favorable || [];
-    const kw     = baziData.kongwang  || [];
+    const fav    = Array.isArray(baziData.favorable) ? baziData.favorable : [];
+    const kw     = Array.isArray(baziData.kongwang)  ? baziData.kongwang  : [];
     const stemWx = STEM_WX[stem]      || '';
     let diagClass = '';
     let diagIcon  = '';

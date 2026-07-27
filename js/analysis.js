@@ -154,7 +154,7 @@ const Analysis = (() => {
     const dmCol = WX_COLOR[dmWx] || '#c9a96e';
     const p     = d.pillars  || {};
     const wx    = d.wuxing   || {};
-    const fav   = d.favorable|| [];
+    const fav   = Array.isArray(d.favorable) ? d.favorable : [];
 
     // ── 命格强弱 ──────────────────────────────────────
     const strength = d.strength || '';
@@ -246,7 +246,7 @@ const Analysis = (() => {
     }
 
     // 神煞
-    const ss    = d.shenshe || d.shensha || [];
+    const ss    = Array.isArray(d.shenshe) ? d.shenshe : (Array.isArray(d.shensha) ? d.shensha : []);
     const ssHtml= ss.length
       ? `<div class="report-ss-tags">` + ss.map(s => {
           const isGood = SHENSHA_GOOD.has(s);
@@ -257,14 +257,14 @@ const Analysis = (() => {
       : '<span style="color:rgba(232,224,208,.3)">无主要神煞</span>';
 
     // 空亡
-    const kw    = d.kongwang || [];
+    const kw    = Array.isArray(d.kongwang) ? d.kongwang : [];
     const kwHtml= kw.length
       ? `<div style="margin-bottom:10px">${kw.map(k=>`<span style="font-size:22px;color:#EB5757;letter-spacing:4px;font-weight:300">${k}</span>`).join('<span style="color:rgba(232,224,208,.3);margin:0 8px">·</span>')}</div>
          <div style="font-size:12px;color:rgba(232,224,208,.4);line-height:1.8">${kw.join('、')}所对应的事物在此命盘中容易落空或难以把握，宜顺势而为，避免强求。</div>`
       : '<span style="color:rgba(111,207,151,.6)">无空亡 — 命格较为完整</span>';
 
     // 大运
-    const dy    = d.dayuns || [];
+    const dy    = Array.isArray(d.dayuns) ? d.dayuns : [];
     const dyHtml= dy.length
       ? `<div class="report-dayun-grid">` +
         dy.slice(0,6).map(r => `
@@ -397,7 +397,7 @@ const Analysis = (() => {
   // ── AI 内容填充 ─────────────────────────────────────
   function _populateAiContent(container, ai, d) {
     // ─ Tab 2：AI 深析 ─
-    const fav    = d.favorable || [];
+    const fav    = Array.isArray(d.favorable) ? d.favorable : [];
     const mainFav= fav[0] || '';
     const favCol = WX_COLOR[mainFav] || '#c9a96e';
 
@@ -500,7 +500,7 @@ const Analysis = (() => {
   // ── AI 加载失败 → 显示静态 fallback ──────────────────
   function _showAiFallback(container, d) {
     const dm  = getDayMaster(d);
-    const fav = d.favorable || [];
+    const fav = Array.isArray(d.favorable) ? d.favorable : [];
 
     const fallbackDeep = `<div class="report-section">
       <div class="report-section-head"><span class="r-icon">◈</span>日主解读</div>
