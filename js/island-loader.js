@@ -128,9 +128,16 @@ const IslandLoader = (() => {
     if (_animId) cancelAnimationFrame(_animId);
     const tick = () => {
       _animId = requestAnimationFrame(tick);
-      // 相机飞行 tween（tutorial 镜头移动）
-      if (_flyTween) _flyTween.update(performance.now());
-      if (_controls) _controls.update();
+      if (_flyTween) {
+        // 相机飞行期间：手动更新 tween，跳过 controls.update()
+        // 避免 OrbitControls 内部球坐标覆盖 tween 设置的位置
+        _flyTween.update(performance.now());
+        if (_controls) {
+          _camera.lookAt(_controls.target);
+        }
+      } else {
+        if (_controls) _controls.update();
+      }
       _renderer.render(_scene, _camera);
       if (_labelRenderer) _labelRenderer.render(_scene, _camera);
     };

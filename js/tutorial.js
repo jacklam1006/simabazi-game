@@ -79,9 +79,10 @@ const Tutorial = (() => {
   let _aiAnalysis      = null;
   let _baziHash        = '';
 
-  let _pendingLabelEl  = null;
-  let _pendingClickFn  = null;
-  let _hintStrongTimer = null;
+  let _pendingLabelEl   = null;
+  let _pendingClickFn   = null;
+  let _hintStrongTimer  = null;
+  let _autoAdvanceTimer = null;
 
   // ── 哈希（与 BaziAnalysis 算法一致）─────────────────────
   function _computeHash(baziData, gender) {
@@ -238,9 +239,6 @@ const Tutorial = (() => {
       _pendingClickFn = () => _onLabelClick(step, idx, total);
       labelEl.addEventListener('click', _pendingClickFn, { once: true });
       _pendingLabelEl = labelEl;
-    } else {
-      // 降级：无可点击标签，1.5s 后直接弹 Modal
-      setTimeout(() => { if (_active) _onLabelClick(step, idx, total); }, 1500);
     }
 
     // 3s 无操作 → 强调动画
@@ -248,12 +246,19 @@ const Tutorial = (() => {
       const b = document.getElementById('tutorial-hint-bar');
       if (b && _active) b.classList.add('hint-urgent');
     }, 3000);
+
+    // 5s 后无论是否点击，自动弹出 Modal（防止点击失效卡死）
+    _autoAdvanceTimer = setTimeout(() => {
+      if (_active) _onLabelClick(step, idx, total);
+    }, 5000);
   }
 
   // ── 提示条：隐藏 ─────────────────────────────────────────
   function _hideHintBar() {
     clearTimeout(_hintStrongTimer);
     _hintStrongTimer = null;
+    clearTimeout(_autoAdvanceTimer);
+    _autoAdvanceTimer = null;
     const bar = document.getElementById('tutorial-hint-bar');
     if (bar) bar.classList.add('hidden');
   }
@@ -265,6 +270,8 @@ const Tutorial = (() => {
     }
     _pendingLabelEl = null;
     _pendingClickFn = null;
+    clearTimeout(_autoAdvanceTimer);
+    _autoAdvanceTimer = null;
   }
 
   // ── 用户点击标签 → Modal ─────────────────────────────────
