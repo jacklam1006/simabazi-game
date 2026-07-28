@@ -714,7 +714,7 @@ const InsightCards = (() => {
   function _build(bazi) {
     if (!bazi) return [];
     const _t  = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
-    const isZh = (typeof Lang !== 'undefined') ? Lang.current() === 'zh' : true;
+    const isZh = (typeof Lang !== 'undefined') ? Lang.getLang() === 'zh' : true;
     const p   = bazi.pillars || {};
     const dm  = bazi.dayMaster || '';
     const dmWx= bazi.dayMasterWx || '';
@@ -819,7 +819,7 @@ const InsightCards = (() => {
     const remain  = Math.max(0, TOTAL_MS - elapsed);
     const mins    = Math.floor(remain / 60000);
     const secs    = Math.floor((remain % 60000) / 1000);
-    const isZh = (typeof Lang !== 'undefined') ? Lang.current() === 'zh' : true;
+    const isZh = (typeof Lang !== 'undefined') ? Lang.getLang() === 'zh' : true;
     el.textContent = isZh
       ? `预计还需 ${mins > 0 ? mins+'分' : ''}${secs}秒`
       : `Est. ${mins > 0 ? mins+'m ' : ''}${secs}s remaining`;

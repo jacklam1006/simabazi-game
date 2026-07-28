@@ -13,7 +13,7 @@
     八字数据 → 结构化英文描述
     纯代码逻辑，无AI调用，速度极快
     ↓
-[步骤 2] Gemini 3.5 Flash 深度分析（gemini_enhance.py）
+[步骤 2] Gemini 深度分析提示词增强（gemini_enhance.py，模型链见文件内 ENHANCE_MODEL_CHAIN）
     结构化描述 → 意境丰富的3D提示词
     AI理解八字命局，优化视觉层次感
     ↓
@@ -27,6 +27,10 @@
     TripoAI text-to-3D（自动兜底）
     ↓
 用户看到自己的3D命盘岛屿
+
+[并行分支] Gemini AI 命盘深度解读（gemini_analysis.py，模型链见文件内 ANALYSIS_MODEL_CHAIN）
+    八字数据 → JSON结构化命理解读（日主/命格/四柱/六维度/流年）
+    独立于图像流水线，供前端"AI深析"标签页展示
 ```
 
 ---
@@ -99,7 +103,18 @@
 
 ---
 
-## 三、步骤2：Gemini 3.5 Flash 系统提示词 — gemini_enhance.py
+## 三、步骤2：Gemini 提示词增强系统提示词 — gemini_enhance.py
+
+### 模型信息（2026-07-29 更新，二次修复）
+- **模型链**：`ENHANCE_MODEL_CHAIN`，依次尝试 `GEMINI_ENHANCE_MODEL`环境变量（若设置）→ `gemini-flash-latest`（Google官方稳定别名）→ `gemini-2.5-flash` → `gemini-2.0-flash`
+- 不再硬编码单一模型名 `gemini-3.5-flash`（该ID未经确认存在，历史上曾导致本模块一直静默回退到原始提示词而无人察觉）
+- 任一模型HTTP失败/candidates为空/文本过短，自动尝试下一个候选；全部失败才静默回退到 `raw_prompt`，不影响主流程
+- **二次修复（2026-07-29）**：首版模型链只有 `gemini-flash-latest`/`gemini-2.5-flash` 两个候选，两者都是"思考型"模型
+  （会把推理过程计入 `maxOutputTokens`），一旦复现 `gemini_analysis.py` 同款"HTTP 200但candidate文本为空"症状会
+  一路失败到底、静默回退到 `raw_prompt`，等于修复未生效。补上非思考模型 `gemini-2.0-flash` 作为最终回退；
+  同时给思考型模型的 `generationConfig` 加上 `thinkingConfig: {thinkingBudget: 0}`（关闭思考token消耗，`gemini-2.0-flash`
+  不支持该参数故不附加，否则会被API拒绝）；异常日志统一脱敏，`requests` 网络层异常字符串中可能嵌入的
+  `?key=真实KEY` 一律替换为 `***REDACTED***` 后才打印
 
 ### 当前系统提示词（完整版）
 
@@ -137,6 +152,7 @@ Strict rules:
 | 日期 | 修改内容 | 效果 |
 |------|---------|------|
 | 2026-07-26 | 初始版本上线 | 待测试 |
+| 2026-07-29 | `ENHANCE_MODEL_CHAIN` 补上 `gemini-2.0-flash` 最终回退（原链只有两个思考型模型）；`generationConfig` 按模型区分附加 `thinkingConfig.thinkingBudget=0`（`gemini-2.0-flash`不附加，避免400）；网络异常日志脱敏，`requests`异常字符串里的 `?key=真实KEY` 统一替换为 `***REDACTED***` 后才打印 | 待测试（本地无真实 `GEMINI_API_KEY` 无法端到端验证；已用mock覆盖模型链回退顺序/thinkingConfig按模型区分/异常日志脱敏三类控制流路径，见 `claude-docs/已知问题与修复记录.md` 2026-07-29条目） |
 
 ---
 
@@ -192,16 +208,53 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
 
 ---
 
-## 六、整体优化路线图
+## 六、并行分支：Gemini AI 命盘深度解读 — gemini_analysis.py
+
+### 作用
+独立于"八字→图像→3D"主流水线的分支：直接把八字数据（四柱、日主、五行、喜用神、神煞、大运）
+组装成结构化中文提示词，要求 Gemini 输出严格 JSON（日主解读/命格/四柱解读/事业财富感情健康成长精神六维度/流年建议/关键词），
+供前端命盘报告"AI深析"标签页展示。有文件级永久缓存（相同八字+性别只调用一次）。
+
+### 模型信息（2026-07-29 更新，修复"AI深析一直显示兜底文案"故障）
+- **故障现象**：生产环境 `/analyze-bazi` 返回 `{"analysis": null, "error": "Expecting value: line 1 column 1 (char 0)"}`，
+  即 Gemini 返回了 200 OK 但candidate文本为空字符串，旧代码对空字符串 `json.loads('')` 报出的错误完全看不出真实原因
+- **根因排查**：`ANALYSIS_MODEL = 'gemini-3.5-flash'`（2026-07-27引入）是未经确认存在的模型ID——本项目里唯一
+  已验证可用的图像模型是 `gemini-3-pro-image`（见步骤3），命名规律并不支持"3.5"这个版本号；同时原有
+  `maxOutputTokens=2200` 相对于本模块要求的JSON输出量（六维度×80字+四柱×60字+日主解读200字等，中文字符
+  在Gemini分词器下往往消耗更多token）明显偏紧，思考型模型很容易把预算耗尽在内部推理上导致正文为空
+- **模型链**：`ANALYSIS_MODEL_CHAIN`，依次尝试 `GEMINI_ANALYSIS_MODEL`环境变量（若设置）→ `gemini-flash-latest`
+  （Google官方稳定别名，避免再次把具体版本号硬编码进代码）→ `gemini-2.5-flash` → `gemini-2.0-flash`
+- **maxOutputTokens**：默认从 2200 提高到 4096，且遇到 `finishReason=MAX_TOKENS` 且文本为空时，会对同一模型自动
+  加倍预算重试一次（封顶8192），仍失败才换下一个候选模型
+- **防御性解析**：`_extract_text()` 显式检查响应结构（candidates是否为空、是否被安全过滤器/版权检测拦截、
+  finishReason），拿不到有效文本时返回明确原因，不再让裸取字段的异常一路冒泡成语义不明的 JSONDecodeError；
+  `analyze_bazi()` 返回的 `error` 字段现在会直接说明"哪个模型、什么原因"失败，不用再靠猜
+
+### 如何优化解读质量
+- 调整六维度/四柱/流年的字数要求：直接改 `prompt` 模板里的字数提示
+- 想要更简洁：降低 `maxOutputTokens` 默认值，同时相应缩短 prompt 里各字段要求的字数
+- 切换到确认可用的更强模型：设置环境变量 `GEMINI_ANALYSIS_MODEL` 即可，无需改代码
+
+### 修改记录
+| 日期 | 修改内容 | 效果 |
+|------|---------|------|
+| 2026-07-27 | 从 `gemini-2.0-flash` 改为 `gemini-3.5-flash` | 未验证即上线，实际导致生产环境AI深析持续报错 |
+| 2026-07-29 | 改为模型优先级链（`gemini-flash-latest` → `gemini-2.5-flash` → `gemini-2.0-flash`，支持环境变量强制指定）+ `maxOutputTokens` 2200→4096并支持MAX_TOKENS自动加倍重试 + `_extract_text()` 显式诊断响应结构 | 待测试（生产环境需配置真实 `GEMINI_API_KEY` 后实测；本地已用mock覆盖模型链切换/MAX_TOKENS重试/安全过滤诊断/无Key泄露等控制流路径） |
+| 2026-07-29（二次修复） | qa-reviewer复查发现三个问题并修复：①`RequestException`（网络超时/连接失败）的`str(e)`会内嵌含真实key的完整URL，经`analyze_bazi()`的`error`字段一路传到前端HTTP响应体导致Key泄漏——新增`_redact()`在所有可能字符串化异常的地方脱敏；②MAX_TOKENS截断时若candidate文本非空（如部分JSON），旧逻辑会当作"成功"返回、跳出重试循环后才在`_parse_json`失败且不再重试——`_extract_text()`新增返回`finish_reason`，`_call_gemini_once`对非空文本仍检查`finishReason==MAX_TOKENS`并抛出可重试错误；③`generationConfig`补充`thinkingConfig.thinkingBudget=0`（仅思考型模型，`gemini-2.0-flash`等非思考模型不附加以免400），关闭思考token消耗以缓解"HTTP 200但candidate为空"的根本原因 | 待测试（本地无真实`GEMINI_API_KEY`仍无法端到端验证；已用mock+真实`requests.exceptions.ConnectTimeout`复现场景补充11个单元测试，断言异常/日志中不含真实key字符串、MAX_TOKENS部分文本触发加倍预算重试与模型回退、thinkingConfig按模型区分生成，全部通过） |
+
+---
+
+## 七、整体优化路线图
 
 ### 短期优化（可立即执行）
 - [ ] 测试并记录 Nano Banana Pro 生成图质量
-- [ ] 测试 Gemini 3.5 Flash 增强后的提示词效果
+- [ ] 测试 Gemini 提示词增强后的效果
 - [ ] 补充缺失的神煞（目前只有26个，传统有百余个）
 - [ ] 优化空亡的视觉表现描述
+- [ ] 生产环境验证 gemini_analysis.py 模型链修复是否解决"AI深析"兜底文案问题
 
 ### 中期优化
-- [ ] 为不同日主定制专属 Gemini 3.5 Flash 提示词
+- [ ] 为不同日主定制专属 Gemini 提示词
 - [ ] 根据用户反馈调整各档五行的视觉密度
 - [ ] 增加季节/时辰对岛屿光线的影响
 
@@ -212,12 +265,13 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
 
 ---
 
-## 七、文件对照表
+## 八、文件对照表
 
 | 文件路径 | 作用 | 人工可调整 |
 |---------|------|----------|
 | `island_service/bazi_prompt.py` | 规则引擎，八字→描述映射 | ✅ 直接编辑字典 |
-| `island_service/gemini_enhance.py` | Gemini 3.5 Flash 系统提示词 | ✅ 修改 system_instruction |
+| `island_service/gemini_enhance.py` | Gemini 提示词增强系统提示词，模型链见 `ENHANCE_MODEL_CHAIN` | ✅ 修改 system_instruction |
+| `island_service/gemini_analysis.py` | Gemini AI命盘深度解读，模型链见 `ANALYSIS_MODEL_CHAIN` | ✅ 修改 prompt 模板 |
 | `island_service/gemini_image.py` | Nano Banana Pro 图像生成，含附加样式提示 | ✅ 修改 enhanced_prompt |
 | `island_service/tripo_client.py` | TripoAI 3D转换参数 | ✅ 修改 face_limit 等参数 |
 | `island_service/main.py` | 流水线控制，含兜底逻辑 | ⚠️ 修改需谨慎 |

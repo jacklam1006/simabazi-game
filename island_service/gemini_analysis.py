@@ -10,9 +10,64 @@ import requests
 from pathlib import Path
 
 GEMINI_API_KEY  = os.environ.get('GEMINI_API_KEY', '')
-ANALYSIS_MODEL  = 'gemini-3.5-flash'           # 用户指定模型
+
+# 模型优先级链：'gemini-3.5-flash' 并非 Google 已确认存在的模型ID（本项目里唯一已验证
+# 可用的是 gemini_image.py 的 `gemini-3-pro-image`，命名规律并不支持 "3.5" 这个版本号），
+# 且历史上出现过"调用返回200但candidate无文本"的故障，无法排除是模型名错误导致。
+# 因此不再硬编码单一模型名，而是走优先级链：
+#   1) 环境变量 GEMINI_ANALYSIS_MODEL 强制指定（留给以后确认好模型名/切换新模型用）
+#   2) gemini-flash-latest —— Google 官方维护的稳定别名，始终指向当前推荐的 flash 版本，
+#      避免把具体版本号硬编码进代码、版本下线后又要来回改
+#   3) gemini-2.5-flash / gemini-2.0-flash —— 已知长期可用的具体版本号兜底
+# 见 _call_gemini()：某个模型返回"模型不存在/无权限"这类配置性错误时自动换下一个候选，
+# 不会让整条AI分析流水线因为一个写错的模型ID而彻底瘫痪。
+_ENV_ANALYSIS_MODEL = os.environ.get('GEMINI_ANALYSIS_MODEL', '').strip()
+ANALYSIS_MODEL_CHAIN = ([_ENV_ANALYSIS_MODEL] if _ENV_ANALYSIS_MODEL else []) + [
+    'gemini-flash-latest',
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+]
 ANALYSIS_CACHE  = Path('./analysis_cache')
 ANALYSIS_CACHE.mkdir(exist_ok=True)
+
+
+class GeminiCallError(Exception):
+    """Gemini 调用失败：message 里必须包含明确原因（不含 API Key），
+    禁止让底层异常（如空字符串导致的 JSONDecodeError）不加解释地冒泡上去。"""
+    pass
+
+
+def _redact(s: str) -> str:
+    """把字符串里可能出现的真实 GEMINI_API_KEY 替换掉。
+
+    背景：requests 在网络层异常（ConnectTimeout/ConnectionError/DNS失败等）时，会把
+    完整请求URL（含 `?key=<真实KEY>`）嵌进异常对象的字符串表示（str(e)）里。这类异常
+    经由 GeminiCallError → analyze_bazi() 的 `error` 字段 → main.py 的HTTP响应体，
+    会原样出现在给前端的响应里——任何用户打开devtools就能看到生产环境的Gemini Key。
+    因此任何可能把 str(exception) 或完整URL塞进消息/日志的地方，都必须先经过这里脱敏。
+    """
+    if GEMINI_API_KEY and GEMINI_API_KEY in s:
+        return s.replace(GEMINI_API_KEY, '***REDACTED***')
+    return s
+
+
+# gemini-2.0-flash（及更早的 1.5 系列）不支持 thinkingConfig，传入会被API拒绝（400）。
+# 只对已知支持"思考"能力的模型（2.5系列、以及当前指向思考模型的 flash-latest 别名）
+# 附加 thinkingConfig.thinkingBudget=0，关闭思考token消耗，让 maxOutputTokens 全部
+# 用于生成正文——这很可能正是"HTTP 200但candidate文本为空"故障复现的根因：思考型模型
+# 把输出预算耗尽在内部推理上，还没轮到生成正文就已经触发 MAX_TOKENS。
+_NON_THINKING_MODELS = {'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'}
+
+
+def _build_generation_config(model: str, max_tokens: int, temperature: float, top_p: float) -> dict:
+    cfg = {
+        "temperature": temperature,
+        "maxOutputTokens": max_tokens,
+        "topP": top_p,
+    }
+    if model not in _NON_THINKING_MODELS:
+        cfg["thinkingConfig"] = {"thinkingBudget": 0}
+    return cfg
 
 
 # ── 哈希 ─────────────────────────────────────────────────
@@ -44,22 +99,119 @@ def _cache_write(h: str, data: dict):
 
 
 # ── Gemini 调用 ───────────────────────────────────────────
-def _call_gemini(prompt: str, max_tokens: int = 2200) -> str:
+def _extract_text(data: dict) -> tuple:
+    """
+    从 Gemini generateContent 的响应体中提取文本。
+    显式检查响应结构，不做裸取（data['candidates'][0]['content']['parts'][0]['text']）——
+    一旦结构不是预期（被安全过滤器拦截、candidates为空、content无parts等），
+    过去会一路冒泡成语义不明的异常（例如对空字符串 json.loads 报出的
+    "Expecting value: line 1 column 1 (char 0)"，完全看不出真实原因）。
+
+    Returns: (text, diagnostic, finish_reason)
+        text 非空 → 提取成功（但调用方仍需检查 finish_reason，见下方说明）；
+        text 为空 → diagnostic 说明具体原因，供上层拼错误信息。
+        finish_reason 无论 text 是否为空都会返回，供调用方判断"非空但被截断"的情况——
+        Gemini 在 finishReason=MAX_TOKENS 时即使已经吐出了一部分文本，那段文本也往往
+        是生成到一半被硬切断的（常见于JSON输出被砍在中途），不能当作完整有效结果使用。
+    """
+    candidates = data.get('candidates') or []
+    if not candidates:
+        block_reason = (data.get('promptFeedback') or {}).get('blockReason')
+        if block_reason:
+            return '', f'prompt被安全过滤器整体拦截（blockReason={block_reason}）', ''
+        return '', 'Gemini响应中candidates为空', ''
+
+    cand = candidates[0]
+    finish_reason = cand.get('finishReason', '')
+    parts = (cand.get('content') or {}).get('parts') or []
+    text = ''.join(p.get('text', '') for p in parts).strip()
+
+    if text:
+        return text, '', finish_reason
+
+    # 拿到了candidate，但没有提取出有效文本——按finishReason给出明确诊断
+    if finish_reason == 'SAFETY':
+        return '', 'candidate被安全过滤器拦截（finishReason=SAFETY）', finish_reason
+    if finish_reason == 'RECITATION':
+        return '', 'candidate因版权检测被拦截（finishReason=RECITATION）', finish_reason
+    if finish_reason == 'MAX_TOKENS':
+        return '', ('输出为空且finishReason=MAX_TOKENS：maxOutputTokens预算在生成'
+                     '正文前就被耗尽（常见于思考型模型把预算花在内部推理上），需提高预算重试'), finish_reason
+    return '', f'candidate无有效文本（finishReason={finish_reason or "未知"}）', finish_reason
+
+
+def _call_gemini_once(model: str, prompt: str, max_tokens: int) -> str:
+    """对单个模型发起一次调用。成功返回文本；失败抛出 GeminiCallError（消息含明确原因，绝不含API Key）"""
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{ANALYSIS_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        f"{model}:generateContent?key={GEMINI_API_KEY}"
     )
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.72,
-            "maxOutputTokens": max_tokens,
-            "topP": 0.92,
-        },
+        "generationConfig": _build_generation_config(model, max_tokens, 0.72, 0.92),
     }
-    resp = requests.post(url, json=payload, timeout=50)
-    resp.raise_for_status()
-    return resp.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+    try:
+        resp = requests.post(url, json=payload, timeout=50)
+    except requests.exceptions.RequestException as e:
+        # RequestException 的 str(e) 常含完整请求URL（含 ?key=真实KEY），必须脱敏后才能
+        # 抛出——这条消息会一路传播到 analyze_bazi() 的 error 字段、再到HTTP响应体。
+        raise GeminiCallError(f'[{model}] 网络请求失败：{_redact(f"{type(e).__name__}: {e}")}')
+
+    if not resp.ok:
+        detail = resp.text[:200]
+        try:
+            err = resp.json().get('error', {})
+            detail = f"{err.get('status', '')} {err.get('message', '')}".strip()
+        except Exception:
+            pass
+        raise GeminiCallError(f'[{model}] HTTP {resp.status_code}：{_redact(detail)}')
+
+    try:
+        data = resp.json()
+    except Exception as e:
+        raise GeminiCallError(f'[{model}] 响应不是合法JSON：{_redact(str(e))}')
+
+    text, diagnostic, finish_reason = _extract_text(data)
+    if not text:
+        raise GeminiCallError(f'[{model}] {diagnostic}（maxOutputTokens={max_tokens}）')
+
+    if finish_reason == 'MAX_TOKENS':
+        # 拿到了非空文本，但 finishReason=MAX_TOKENS 说明这段文本极可能是在生成中途
+        # （常见于JSON输出写到一半）被硬性截断的，不是完整结果。必须当作失败抛出，
+        # 消息里带上 'MAX_TOKENS' 标记，好让 _call_gemini() 的重试循环识别并加倍预算重试——
+        # 否则这段不完整JSON会被当作"成功"一路带到 analyze_bazi() 才在 _parse_json 解析
+        # 时失败，那时已经跳出了重试循环，不会触发"加倍预算重试→换模型"链路。
+        raise GeminiCallError(
+            f'[{model}] 文本非空但finishReason=MAX_TOKENS，内容极可能在生成中途被截断'
+            f'（maxOutputTokens={max_tokens}）；文本前100字：{text[:100]!r}'
+        )
+    return text
+
+
+def _call_gemini(prompt: str, max_tokens: int = 4096) -> str:
+    """
+    依次尝试 ANALYSIS_MODEL_CHAIN 中的候选模型：
+    - 某模型返回"模型不存在/无权限"这类配置性错误 → 直接换下一个候选模型
+    - 某模型因 MAX_TOKENS 截断为空 → 先对同一模型加倍预算重试一次（封顶8192），
+      仍失败才换模型（避免一次性把预算开到很大浪费配额，同时兼顾"确实是预算不够"的情况）
+    全部失败时抛出 GeminiCallError，message 汇总每个模型的失败原因，方便定位。
+    """
+    errors = []
+    for model in ANALYSIS_MODEL_CHAIN:
+        if not model:
+            continue
+        budget = max_tokens
+        for attempt in range(2):  # 最多：原预算一次 + 加倍预算重试一次
+            try:
+                return _call_gemini_once(model, prompt, budget)
+            except GeminiCallError as e:
+                errors.append(str(e))
+                is_max_tokens = 'MAX_TOKENS' in str(e)
+                if is_max_tokens and budget < 8192:
+                    budget = min(budget * 2, 8192)
+                    continue
+                break  # 非MAX_TOKENS原因，或已经重试过 → 换下一个模型
+    raise GeminiCallError('；'.join(errors) or 'Gemini调用链全部失败，原因未知')
 
 
 def _parse_json(text: str) -> dict:
@@ -73,7 +225,12 @@ def _parse_json(text: str) -> dict:
         start = text.find('{')
         end   = text.rfind('}') + 1
         text  = text[start:end]
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        # 常见于JSON在生成到一半时被截断（token预算不够）——把原始文本片段带出来，
+        # 避免只看到一句"Expecting value"却不知道Gemini到底说了什么
+        raise GeminiCallError(f'Gemini返回文本无法解析为JSON（{e}）；原始文本前200字：{text[:200]!r}')
 
 
 # ── 主分析函数 ────────────────────────────────────────────
@@ -171,6 +328,14 @@ def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0) -> d
         analysis = _parse_json(raw)
         _cache_write(bz_hash, analysis)
         return {'hash': bz_hash, 'analysis': analysis, 'from_cache': False}
-    except Exception as e:
+    except GeminiCallError as e:
+        # 明确诊断过的失败（模型不存在/安全过滤/MAX_TOKENS截断/JSON解析失败等）
         print(f"[gemini_analysis ERROR] {e}")
         return {'hash': bz_hash, 'analysis': None, 'error': str(e)}
+    except Exception as e:
+        # 兜底：真正没预料到的异常，仍然带上类型名方便定位，不让它裸露成一句模糊的话；
+        # 同样先脱敏——不能假设未预料到的异常类型一定不含API Key（例如requests的
+        # 网络层异常理论上可能绕过上面专门的except分支，以其他形式冒泡到这里）
+        msg = _redact(f"{type(e).__name__}: {e}")
+        print(f"[gemini_analysis ERROR] unexpected {msg}")
+        return {'hash': bz_hash, 'analysis': None, 'error': f'unexpected_error({msg})'}

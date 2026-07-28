@@ -126,7 +126,7 @@ const AuthManager = (() => {
   // ── 读取用户资料 ────────────────────────────────────────
   async function getProfile() {
     if (!_sb || !_user) return null;
-    const { data } = await _sb.from('profiles').select('*').eq('id', _user.id).single();
+    const { data } = await _sb.from('profiles').select('*').eq('id', _user.id).maybeSingle();
     return data;
   }
 
@@ -404,7 +404,7 @@ const AuthUI = (() => {
       list.innerHTML = `<div style="color:rgba(232,224,208,.4);text-align:center;padding:20px">${_t('islands.empty')}</div>`;
       return;
     }
-    const isZh = (typeof Lang !== 'undefined') ? Lang.current() === 'zh' : true;
+    const isZh = (typeof Lang !== 'undefined') ? Lang.getLang() === 'zh' : true;
     list.innerHTML = _cachedIslands.map((isl, i) => `
       <div class="island-card" onclick="AuthUI._loadIslandByIndex(${i})" style="cursor:pointer">
         <div class="island-card-name">${isl.name || (isZh ? '命盘岛屿' : 'My Island')}</div>

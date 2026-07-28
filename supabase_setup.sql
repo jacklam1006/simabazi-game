@@ -30,18 +30,22 @@ CREATE TABLE IF NOT EXISTS islands (
 
 ALTER TABLE islands ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "用户只能读取自己的岛屿" ON islands;
 CREATE POLICY "用户只能读取自己的岛屿"
     ON islands FOR SELECT
     USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "用户只能创建自己的岛屿" ON islands;
 CREATE POLICY "用户只能创建自己的岛屿"
     ON islands FOR INSERT
     WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "用户只能更新自己的岛屿" ON islands;
 CREATE POLICY "用户只能更新自己的岛屿"
     ON islands FOR UPDATE
     USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "用户只能删除自己的岛屿" ON islands;
 CREATE POLICY "用户只能删除自己的岛屿"
     ON islands FOR DELETE
     USING (auth.uid() = user_id);
@@ -49,3 +53,40 @@ CREATE POLICY "用户只能删除自己的岛屿"
 -- ── 索引（加速查询）────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_islands_user_id ON islands(user_id);
 CREATE INDEX IF NOT EXISTS idx_islands_bazi_hash ON islands(bazi_hash);
+
+-- ── 用户资料表 ──────────────────────────────────────────────
+-- 对应 js/auth.js 的 registerWithProfile() / getProfile()
+-- 主键即 auth.users 的 id（一对一），不是单独的 user_id 外键列
+CREATE TABLE IF NOT EXISTS profiles (
+    id           UUID REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
+    display_name TEXT,
+    country      TEXT DEFAULT 'CN',
+    phone_code   TEXT DEFAULT '+86',
+    phone        TEXT,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ── 行级安全策略（RLS）──────────────────────────────────────
+-- 用户只能读写自己的资料；注意条件是 auth.uid() = id（表主键本身就是 user id）
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "用户只能读取自己的资料" ON profiles;
+CREATE POLICY "用户只能读取自己的资料"
+    ON profiles FOR SELECT
+    USING (auth.uid() = id);
+
+DROP POLICY IF EXISTS "用户只能创建自己的资料" ON profiles;
+CREATE POLICY "用户只能创建自己的资料"
+    ON profiles FOR INSERT
+    WITH CHECK (auth.uid() = id);
+
+DROP POLICY IF EXISTS "用户只能更新自己的资料" ON profiles;
+CREATE POLICY "用户只能更新自己的资料"
+    ON profiles FOR UPDATE
+    USING (auth.uid() = id);
+
+DROP POLICY IF EXISTS "用户只能删除自己的资料" ON profiles;
+CREATE POLICY "用户只能删除自己的资料"
+    ON profiles FOR DELETE
+    USING (auth.uid() = id);
