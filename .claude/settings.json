@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/syntax-check.sh",
+            "timeout": 30,
+            "statusMessage": "语法检查中…"
+          }
+        ]
+      }
+    ]
+  }
+}
