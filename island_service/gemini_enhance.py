@@ -12,27 +12,29 @@ import requests
 
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 
-# 'gemini-3.5-flash' 并非已确认存在的模型ID（详见 gemini_analysis.py 的说明——
-# 本项目里唯一已验证可用的是 gemini_image.py 的 `gemini-3-pro-image`，命名规律
-# 并不支持 "3.5" 这个版本号）。这里同样改成候选链，任一模型失败就换下一个，
-# 全部失败才回退到原始提示词（原有行为不变，调用方不需要感知失败）。
-#
-# 2026-07-29 二次修复：原链只有 gemini-flash-latest / gemini-2.5-flash 两个候选，
-# 两者都是"思考型"模型（会把推理过程也计入 maxOutputTokens），一旦复现
-# gemini_analysis.py 同款"HTTP 200但candidate文本为空"的症状，会一路失败到底、
-# 静默回退到 raw_prompt，等于这次修复对本模块没有实质改善。补上非思考模型
-# gemini-2.0-flash 作为最终回退，与 gemini_analysis.py 的 ANALYSIS_MODEL_CHAIN 对齐。
+# 模型优先级链（2026-07-29 第三轮修复，与 gemini_analysis.py 的 ANALYSIS_MODEL_CHAIN
+# 对齐）：生产环境实测确认 `gemini-2.5-flash` 与 `gemini-2.0-flash` 均已被 Google
+# 正式下线（HTTP 404 NOT_FOUND，"no longer available to new users"），已整体移除。
+# 现链：环境变量 GEMINI_ENHANCE_MODEL 强制指定 → gemini-flash-latest（官方稳定别名，
+# 目前指向 Gemini 3.x 系列）→ gemini-3.6-flash（显式版本号兜底，2026-07-21发布，
+# 已确认可用）。任一模型失败就换下一个，全部失败才回退到原始提示词（原有行为不变，
+# 调用方不需要感知失败）。
 _ENV_ENHANCE_MODEL = os.environ.get('GEMINI_ENHANCE_MODEL', '').strip()
 ENHANCE_MODEL_CHAIN = ([_ENV_ENHANCE_MODEL] if _ENV_ENHANCE_MODEL else []) + [
     'gemini-flash-latest',
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
+    'gemini-3.6-flash',
 ]
 
-# gemini-2.0-flash 不支持 thinkingConfig（传入会被API拒绝），只对已知的思考型模型
-# （2.5系列 / flash-latest别名）附加 thinkingConfig.thinkingBudget=0，关闭思考token
-# 消耗，让 maxOutputTokens 全部用于生成正文——与 gemini_analysis.py 的处理逻辑一致。
-_NON_THINKING_MODELS = {'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'}
+# 2026-07-29 第三轮修复：`gemini-flash-latest` 别名现在指向 Gemini 3.x 系列模型，
+# 而 Gemini 3.x 把老版本 2.5 系列的数值型 `thinkingConfig.thinkingBudget` 参数换成了
+# 字符串枚举 `thinkingConfig.thinkingLevel`（minimal/low/medium/high），不再接受
+# thinkingBudget 字段——这正是生产环境实测 "[gemini-flash-latest] HTTP 400
+# INVALID_ARGUMENT" 的根因。ENHANCE_MODEL_CHAIN 现在只剩 Gemini 3.x 系列模型
+# （不支持 thinkingConfig 的老模型 gemini-2.0-flash 已移除，见上），因此默认对链中
+# 所有模型都附加 thinkingLevel=minimal。仍保留 `_NON_THINKING_MODELS` 例外名单机制
+# （当前为空）——如果未来往链里加入某个已知完全不支持 thinkingConfig 的模型，加进
+# 这个集合即可跳过，而不是重新引入400错误的风险。
+_NON_THINKING_MODELS = set()
 
 
 def _redact(s: str) -> str:
@@ -87,15 +89,16 @@ Five Elements: {wuxing}"""
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={GEMINI_API_KEY}"
         )
-        # generationConfig 按模型单独构建：只有思考型模型才附加 thinkingConfig，
-        # 传给 gemini-2.0-flash 这类非思考模型会被API拒绝（400）
+        # generationConfig 按模型单独构建：Gemini 3.x 系列用字符串枚举
+        # thinkingConfig.thinkingLevel（非 3.x 老模型如加入 _NON_THINKING_MODELS
+        # 则跳过，避免被API拒绝）
         generation_config = {
             "temperature": 0.65,
             "maxOutputTokens": 900,
             "topP": 0.9,
         }
         if model not in _NON_THINKING_MODELS:
-            generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+            generation_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
         payload = {"contents": contents, "generationConfig": generation_config}
         try:
             resp = requests.post(url, json=payload, timeout=25)

@@ -11,21 +11,20 @@ from pathlib import Path
 
 GEMINI_API_KEY  = os.environ.get('GEMINI_API_KEY', '')
 
-# 模型优先级链：'gemini-3.5-flash' 并非 Google 已确认存在的模型ID（本项目里唯一已验证
-# 可用的是 gemini_image.py 的 `gemini-3-pro-image`，命名规律并不支持 "3.5" 这个版本号），
-# 且历史上出现过"调用返回200但candidate无文本"的故障，无法排除是模型名错误导致。
-# 因此不再硬编码单一模型名，而是走优先级链：
+# 模型优先级链（2026-07-29 第三轮修复）：生产环境实测确认 `gemini-2.5-flash` 与
+# `gemini-2.0-flash` 均已被 Google 正式下线（HTTP 404 NOT_FOUND，"no longer
+# available to new users"），留在回退链里是纯粹的死路，已整体移除。现链：
 #   1) 环境变量 GEMINI_ANALYSIS_MODEL 强制指定（留给以后确认好模型名/切换新模型用）
-#   2) gemini-flash-latest —— Google 官方维护的稳定别名，始终指向当前推荐的 flash 版本，
-#      避免把具体版本号硬编码进代码、版本下线后又要来回改
-#   3) gemini-2.5-flash / gemini-2.0-flash —— 已知长期可用的具体版本号兜底
+#   2) gemini-flash-latest —— Google 官方维护的稳定别名，目前指向 Gemini 3.x 系列
+#      （如 gemini-3.6-flash），始终指向当前推荐的 flash 版本
+#   3) gemini-3.6-flash —— 显式版本号兜底（2026-07-21发布，已确认可用），避免
+#      `gemini-flash-latest` 别名将来指向变化时无法追溯到具体版本
 # 见 _call_gemini()：某个模型返回"模型不存在/无权限"这类配置性错误时自动换下一个候选，
 # 不会让整条AI分析流水线因为一个写错的模型ID而彻底瘫痪。
 _ENV_ANALYSIS_MODEL = os.environ.get('GEMINI_ANALYSIS_MODEL', '').strip()
 ANALYSIS_MODEL_CHAIN = ([_ENV_ANALYSIS_MODEL] if _ENV_ANALYSIS_MODEL else []) + [
     'gemini-flash-latest',
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
+    'gemini-3.6-flash',
 ]
 ANALYSIS_CACHE  = Path('./analysis_cache')
 ANALYSIS_CACHE.mkdir(exist_ok=True)
@@ -51,12 +50,18 @@ def _redact(s: str) -> str:
     return s
 
 
-# gemini-2.0-flash（及更早的 1.5 系列）不支持 thinkingConfig，传入会被API拒绝（400）。
-# 只对已知支持"思考"能力的模型（2.5系列、以及当前指向思考模型的 flash-latest 别名）
-# 附加 thinkingConfig.thinkingBudget=0，关闭思考token消耗，让 maxOutputTokens 全部
-# 用于生成正文——这很可能正是"HTTP 200但candidate文本为空"故障复现的根因：思考型模型
-# 把输出预算耗尽在内部推理上，还没轮到生成正文就已经触发 MAX_TOKENS。
-_NON_THINKING_MODELS = {'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'}
+# 2026-07-29 第三轮修复：`gemini-flash-latest` 别名现在指向 Gemini 3.x 系列模型
+# （如 gemini-3.6-flash），而 Gemini 3.x 把老版本 2.5 系列的数值型
+# `thinkingConfig.thinkingBudget` 参数换成了字符串枚举 `thinkingConfig.thinkingLevel`
+# （取值 minimal/low/medium/high），已不再接受 thinkingBudget 字段——这正是生产环境
+# 实测 "[gemini-flash-latest] HTTP 400 INVALID_ARGUMENT" 的根因：传了 3.x 不认识的
+# 旧格式参数。ANALYSIS_MODEL_CHAIN 现在只剩 Gemini 3.x 系列模型（gemini-2.0-flash
+# 等不支持 thinkingConfig 的老模型已被移除，见上），因此默认对链中所有模型都附加
+# thinkingLevel=minimal（让 maxOutputTokens 尽量流向正文而非内部推理）。仍保留
+# `_NON_THINKING_MODELS` 这个例外名单机制（当前为空）——如果未来往链里加入某个已知
+# 完全不支持 thinkingConfig 的模型，把它加进这个集合即可跳过，而不是重新引入
+# 400错误的风险。
+_NON_THINKING_MODELS = set()
 
 
 def _build_generation_config(model: str, max_tokens: int, temperature: float, top_p: float) -> dict:
@@ -66,7 +71,7 @@ def _build_generation_config(model: str, max_tokens: int, temperature: float, to
         "topP": top_p,
     }
     if model not in _NON_THINKING_MODELS:
-        cfg["thinkingConfig"] = {"thinkingBudget": 0}
+        cfg["thinkingConfig"] = {"thinkingLevel": "minimal"}
     return cfg
 
 

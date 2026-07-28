@@ -105,8 +105,8 @@
 
 ## 三、步骤2：Gemini 提示词增强系统提示词 — gemini_enhance.py
 
-### 模型信息（2026-07-29 更新，二次修复）
-- **模型链**：`ENHANCE_MODEL_CHAIN`，依次尝试 `GEMINI_ENHANCE_MODEL`环境变量（若设置）→ `gemini-flash-latest`（Google官方稳定别名）→ `gemini-2.5-flash` → `gemini-2.0-flash`
+### 模型信息（2026-07-29 更新，第三轮修复，见下方修改记录）
+- **模型链（当前）**：`ENHANCE_MODEL_CHAIN`，依次尝试 `GEMINI_ENHANCE_MODEL`环境变量（若设置）→ `gemini-flash-latest`（Google官方稳定别名，现指向Gemini 3.x系列）→ `gemini-3.6-flash`（显式版本号兜底）。`gemini-2.5-flash`/`gemini-2.0-flash`已被Google下线，不再作为候选
 - 不再硬编码单一模型名 `gemini-3.5-flash`（该ID未经确认存在，历史上曾导致本模块一直静默回退到原始提示词而无人察觉）
 - 任一模型HTTP失败/candidates为空/文本过短，自动尝试下一个候选；全部失败才静默回退到 `raw_prompt`，不影响主流程
 - **二次修复（2026-07-29）**：首版模型链只有 `gemini-flash-latest`/`gemini-2.5-flash` 两个候选，两者都是"思考型"模型
@@ -153,6 +153,7 @@ Strict rules:
 |------|---------|------|
 | 2026-07-26 | 初始版本上线 | 待测试 |
 | 2026-07-29 | `ENHANCE_MODEL_CHAIN` 补上 `gemini-2.0-flash` 最终回退（原链只有两个思考型模型）；`generationConfig` 按模型区分附加 `thinkingConfig.thinkingBudget=0`（`gemini-2.0-flash`不附加，避免400）；网络异常日志脱敏，`requests`异常字符串里的 `?key=真实KEY` 统一替换为 `***REDACTED***` 后才打印 | 待测试（本地无真实 `GEMINI_API_KEY` 无法端到端验证；已用mock覆盖模型链回退顺序/thinkingConfig按模型区分/异常日志脱敏三类控制流路径，见 `claude-docs/已知问题与修复记录.md` 2026-07-29条目） |
+| 2026-07-29（第三轮修复） | 总agent对生产 `/analyze-bazi` 实测拿到确凿报错：`gemini-2.5-flash`/`gemini-2.0-flash` 已被Google正式下线（HTTP 404 NOT_FOUND），`gemini-flash-latest` 现指向 Gemini 3.x 系列（含 `gemini-3.6-flash`），而 3.x 系列已把数值型 `thinkingConfig.thinkingBudget` 换成字符串枚举 `thinkingConfig.thinkingLevel`（minimal/low/medium/high），旧格式导致 `gemini-flash-latest` 返回 HTTP 400 INVALID_ARGUMENT。修复：`ENHANCE_MODEL_CHAIN` 移除已下线的 `gemini-2.5-flash`/`gemini-2.0-flash`，改为 `gemini-flash-latest` → `gemini-3.6-flash`；`generationConfig` 改用 `thinkingConfig: {thinkingLevel: "minimal"}`；`_NON_THINKING_MODELS` 例外名单保留机制但清空（链中模型均为3.x，默认都支持thinkingConfig） | 待测试（总agent将直接对生产端点发起真实请求验证，本轮未做本地mock测试） |
 
 ---
 
@@ -222,8 +223,9 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
   已验证可用的图像模型是 `gemini-3-pro-image`（见步骤3），命名规律并不支持"3.5"这个版本号；同时原有
   `maxOutputTokens=2200` 相对于本模块要求的JSON输出量（六维度×80字+四柱×60字+日主解读200字等，中文字符
   在Gemini分词器下往往消耗更多token）明显偏紧，思考型模型很容易把预算耗尽在内部推理上导致正文为空
-- **模型链**：`ANALYSIS_MODEL_CHAIN`，依次尝试 `GEMINI_ANALYSIS_MODEL`环境变量（若设置）→ `gemini-flash-latest`
-  （Google官方稳定别名，避免再次把具体版本号硬编码进代码）→ `gemini-2.5-flash` → `gemini-2.0-flash`
+- **模型链（当前，2026-07-29第三轮修复后）**：`ANALYSIS_MODEL_CHAIN`，依次尝试 `GEMINI_ANALYSIS_MODEL`环境变量
+  （若设置）→ `gemini-flash-latest`（Google官方稳定别名，现指向Gemini 3.x系列）→ `gemini-3.6-flash`（显式版本号兜底）。
+  `gemini-2.5-flash`/`gemini-2.0-flash`已被Google下线（HTTP 404），不再作为候选
 - **maxOutputTokens**：默认从 2200 提高到 4096，且遇到 `finishReason=MAX_TOKENS` 且文本为空时，会对同一模型自动
   加倍预算重试一次（封顶8192），仍失败才换下一个候选模型
 - **防御性解析**：`_extract_text()` 显式检查响应结构（candidates是否为空、是否被安全过滤器/版权检测拦截、
@@ -241,6 +243,7 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
 | 2026-07-27 | 从 `gemini-2.0-flash` 改为 `gemini-3.5-flash` | 未验证即上线，实际导致生产环境AI深析持续报错 |
 | 2026-07-29 | 改为模型优先级链（`gemini-flash-latest` → `gemini-2.5-flash` → `gemini-2.0-flash`，支持环境变量强制指定）+ `maxOutputTokens` 2200→4096并支持MAX_TOKENS自动加倍重试 + `_extract_text()` 显式诊断响应结构 | 待测试（生产环境需配置真实 `GEMINI_API_KEY` 后实测；本地已用mock覆盖模型链切换/MAX_TOKENS重试/安全过滤诊断/无Key泄露等控制流路径） |
 | 2026-07-29（二次修复） | qa-reviewer复查发现三个问题并修复：①`RequestException`（网络超时/连接失败）的`str(e)`会内嵌含真实key的完整URL，经`analyze_bazi()`的`error`字段一路传到前端HTTP响应体导致Key泄漏——新增`_redact()`在所有可能字符串化异常的地方脱敏；②MAX_TOKENS截断时若candidate文本非空（如部分JSON），旧逻辑会当作"成功"返回、跳出重试循环后才在`_parse_json`失败且不再重试——`_extract_text()`新增返回`finish_reason`，`_call_gemini_once`对非空文本仍检查`finishReason==MAX_TOKENS`并抛出可重试错误；③`generationConfig`补充`thinkingConfig.thinkingBudget=0`（仅思考型模型，`gemini-2.0-flash`等非思考模型不附加以免400），关闭思考token消耗以缓解"HTTP 200但candidate为空"的根本原因 | 待测试（本地无真实`GEMINI_API_KEY`仍无法端到端验证；已用mock+真实`requests.exceptions.ConnectTimeout`复现场景补充11个单元测试，断言异常/日志中不含真实key字符串、MAX_TOKENS部分文本触发加倍预算重试与模型回退、thinkingConfig按模型区分生成，全部通过） |
+| 2026-07-29（第三轮修复） | 总agent对生产 `/analyze-bazi` 实测拿到确凿报错：`[gemini-flash-latest] HTTP 400 INVALID_ARGUMENT`；`[gemini-2.5-flash] HTTP 404 NOT_FOUND`（已不再对新用户开放）；`[gemini-2.0-flash] HTTP 404 NOT_FOUND`（已下线）。根因：`gemini-2.5-flash`/`gemini-2.0-flash`均已被Google正式下线；`gemini-flash-latest`别名现指向Gemini 3.x系列（如`gemini-3.6-flash`，2026-07-21发布），3.x系列已把数值型`thinkingConfig.thinkingBudget`换成字符串枚举`thinkingConfig.thinkingLevel`（minimal/low/medium/high），旧格式字段被3.x模型拒绝返回400。修复：`ANALYSIS_MODEL_CHAIN`移除已下线的`gemini-2.5-flash`/`gemini-2.0-flash`，改为`gemini-flash-latest` → `gemini-3.6-flash`；`_build_generation_config`改用`thinkingConfig: {thinkingLevel: "minimal"}`；`_NON_THINKING_MODELS`例外名单保留机制但清空（链中模型均为3.x，默认都支持thinkingConfig，若未来加入不支持的模型可放回此名单跳过） | 待测试（总agent将直接对生产端点发起真实请求验证是否返回有效analysis，本轮未做本地mock测试，交由部署后实测确认） |
 
 ---
 
