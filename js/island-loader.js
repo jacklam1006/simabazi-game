@@ -50,15 +50,10 @@ const IslandLoader = (() => {
     container.appendChild(_renderer.domElement);
 
     // CSS2DRenderer（标注标签层）
-    if (typeof THREE.CSS2DRenderer !== 'undefined') {
-      _labelRenderer = new THREE.CSS2DRenderer();
-      _labelRenderer.setSize(W, H);
-      _labelRenderer.domElement.style.position = 'absolute';
-      _labelRenderer.domElement.style.top = '0';
-      _labelRenderer.domElement.style.left = '0';
-      _labelRenderer.domElement.style.pointerEvents = 'none';
-      container.appendChild(_labelRenderer.domElement);
-    }
+    // CSS2DRenderer.js 是独立CDN脚本，网络较差时可能加载较慢/失败，
+    // 不能"检查一次没有就永久放弃"（会导致标注标签之后走固定位置兜底、
+    // 完全不跟随3D物体），改为限时轮询等待其就绪。
+    _setupLabelRenderer(container, Date.now());
 
     // Lights
     _scene.add(new THREE.AmbientLight(0x1e2040, 1.8));
@@ -96,6 +91,30 @@ const IslandLoader = (() => {
 
     // Render loop
     _startLoop();
+  }
+
+  // ── CSS2DRenderer 限时轮询等待（CDN加载时序不确定）──────
+  const LABEL_RENDERER_MAX_WAIT_MS = 5000;
+  const LABEL_RENDERER_POLL_MS     = 100;
+
+  function _setupLabelRenderer(container, startedAt) {
+    if (typeof THREE.CSS2DRenderer !== 'undefined') {
+      const W = container.clientWidth  || window.innerWidth;
+      const H = container.clientHeight || window.innerHeight;
+      _labelRenderer = new THREE.CSS2DRenderer();
+      _labelRenderer.setSize(W, H);
+      _labelRenderer.domElement.style.position = 'absolute';
+      _labelRenderer.domElement.style.top = '0';
+      _labelRenderer.domElement.style.left = '0';
+      _labelRenderer.domElement.style.pointerEvents = 'none';
+      container.appendChild(_labelRenderer.domElement);
+      return;
+    }
+    if (Date.now() - startedAt >= LABEL_RENDERER_MAX_WAIT_MS) {
+      console.warn(`[IslandLoader] CSS2DRenderer 在 ${LABEL_RENDERER_MAX_WAIT_MS}ms 内仍未就绪（CDN加载失败？），3D标注标签将不可用`);
+      return;
+    }
+    setTimeout(() => _setupLabelRenderer(container, startedAt), LABEL_RENDERER_POLL_MS);
   }
 
   function _addStars() {

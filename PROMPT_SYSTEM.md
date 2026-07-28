@@ -185,6 +185,7 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
 | 日期 | 修改内容 | 效果 |
 |------|---------|------|
 | 2026-07-26 | 从 gemini-2.0-flash 升级到 Nano Banana Pro | 待测试 |
+| 2026-07-29 | **修复"图生3D主路径静默失败"故障**：`generationConfig.responseModalities` 从 `["IMAGE"]` 改为 `["TEXT", "IMAGE"]`；新增 `generationConfig.imageConfig: {aspectRatio: "1:1", imageSize: "4K"}`；新增 `_redact()` 防止网络层异常泄漏真实API Key。根因：生产环境4次真实实测均在提交后极短时间内跳过图生3D、直接进入文生3D兜底，`main.py` 的 try/except 把这个失败完全静默掉，用户和开发者都看不到报错。经查 `ai.google.dev/api/generate-content` 官方REST参考，`GenerationConfig.responseModalities` 语义是"与响应模态精确匹配"——"If the requested modalities do not match any of the supported combinations, an error will be returned"；`gemini-3-pro-image` 实际支持的组合是 TEXT+IMAGE，不支持单独 IMAGE-only，旧代码只传 `["IMAGE"]` 会被判定为不支持的组合，Gemini 立即返回400，与生产实测"极快失败"的现象完全吻合。交叉核对 `ai.google.dev/gemini-api/docs/image-generation` 2026-05-22至07-07的多个历史归档快照，`gemini-3-pro-image-preview`/`gemini-3.1-flash-image-preview` 的全部官方示例（Python/JS/Go/Java/REST curl）无一例外都设置 `responseModalities: ["TEXT","IMAGE"]`。已排除"需要迁移到新版Interactions API"的猜测——2026-07-21更新的官方文档明确写道"the original generateContent API remains fully supported"，本次改动范围仅限修正被遗漏的必需字段+补充可选的 `imageConfig`（对齐本文件"4K"设计目标，不设置时模型默认仅出1K）+ 安全补丁，未改动端点/认证方式/响应解析结构（`candidates[0].content.parts[].inlineData.data` 官方格式与改动前代码本就一致，未变）。响应解析新增遍历所有parts查找`inlineData`（原代码假设第一个part即图像，但改为TEXT+IMAGE后响应可能先出现文本part）。本地无真实`GEMINI_API_KEY`，用mock覆盖测试了payload结构/混合文本+图像part解析/400错误打码/网络异常打码/无图像数据兜底5个场景全部通过，但**未做真实API端到端调用验证**，需部署后对生产环境实测确认 |
 
 ---
 

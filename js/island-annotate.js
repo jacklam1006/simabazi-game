@@ -46,12 +46,31 @@ const IslandAnnotate = (() => {
   let _labels   = [];    // 所有CSS2DObject引用
   let _labelMap = {};    // key → DOM div，供 highlight 使用
 
+  // CSS2DRenderer.js 是独立CDN脚本，理论上在 <script> 标签同步加载顺序下
+  // 会先于本文件执行完毕；但网络环境不可控时CDN可能加载缓慢/失败，
+  // 不能"检查一次没有就永久放弃"，改为限时轮询，正常情况下总能等到它就绪。
+  const CSS2D_MAX_WAIT_MS = 5000;
+  const CSS2D_POLL_MS     = 100;
+
   // ── 主入口：创建所有标注 ─────────────────────────────────
   function attach(scene, baziData) {
-    if (typeof THREE.CSS2DObject === 'undefined') {
+    _attachWhenReady(scene, baziData, Date.now());
+  }
+
+  function _attachWhenReady(scene, baziData, startedAt) {
+    if (typeof THREE.CSS2DObject !== 'undefined') {
+      _attachLabels(scene, baziData);
+      return;
+    }
+    if (Date.now() - startedAt >= CSS2D_MAX_WAIT_MS) {
+      console.warn(`[IslandAnnotate] CSS2DObject 在 ${CSS2D_MAX_WAIT_MS}ms 内仍未就绪（CDN加载失败？），改用固定位置的HTML兜底浮层`);
       _fallbackHtmlOverlay(baziData);
       return;
     }
+    setTimeout(() => _attachWhenReady(scene, baziData, startedAt), CSS2D_POLL_MS);
+  }
+
+  function _attachLabels(scene, baziData) {
     _clearLabels(scene);
 
     const p  = baziData.pillars  || {};
