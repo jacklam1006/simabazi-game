@@ -14,6 +14,11 @@ const App = (() => {
   let _baziTableOpen = false;
   let _taskPanelOpen = false;
 
+  // 当前会话对应的已保存岛屿记录id（islands表主键）。生成完成保存成功后，
+  // 或加载已有存档时被赋值；供 analysis.js 在AI深析完成后做"补写"
+  // （islands.ai_analysis）时定位要更新的那条记录。未登录/未保存时始终为null。
+  let _currentIslandId = null;
+
   // ── 新用户引导流程状态 ────────────────────────────────────
   let _isNewUser     = false;  // 当前用户是否为新用户（无 tutorial_done 标记）
 
@@ -208,6 +213,12 @@ const App = (() => {
   }
 
   function _startGenerate() {
+    // 重置当前岛屿记录id：本次是一次全新的生成（区别于 loadSavedIsland 加载已有存档），
+    // 避免残留上一个岛屿的id导致后面AI深析"补写"写错记录（例如同一会话内未刷新页面
+    // 连续生成了两个不同命盘，第二个生成完成前若AI深析先跑完，不应该补写回第一个岛屿）。
+    // onComplete 里若本次生成成功保存，会重新赋值为本次真实的岛屿id。
+    _currentIslandId = null;
+
     // 启动八字洞察卡片（2s后出现，避免与初始UI冲突）
     setTimeout(() => { InsightCards.start(_baziData); }, 2000);
 
@@ -234,17 +245,28 @@ const App = (() => {
         AudioManager.playSfx('island_ready');
         AudioManager.setScene('screen-island');
 
-        // 已登录用户：自动保存岛屿
+        // 已登录用户：立刻保存岛屿记录（3D模型是真金白银花Gemini图片额度+TripoAI
+        // 额度生成出来的，绝不能因为等一个更便宜、可随时重新生成的AI文字分析而
+        // 白白丢失）。aiAnalysis 先传 null 占位——AI深析六步流水线最坏情况可能跑到
+        // 10分钟以上（甚至挂起，_fetchBackend 用裸 fetch 没有 AbortController），
+        // 若在此处 await 它再insert，用户中途关闭页面会导致整条岛屿记录（连同已经
+        // 生成好的3D模型）都不会被创建。AI深析结果由 analysis.js::buildReport() 里
+        // 已实现好的"补写"机制（AuthManager.updateIslandAnalysis）异步补上，不在
+        // 这里等待，详见 claude-docs/已知问题与修复记录.md 对应日期条目。
         if (typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn()) {
-          AuthManager.getProfile().then(profile => {
+          AuthManager.getProfile().then(async profile => {
             const displayName = profile?.display_name || AuthManager.currentUser()?.email || '我';
-            AuthManager.saveIsland({
-              baziData:  _baziData,
-              modelUrl:  modelUrl,
-              baziHash:  null,
-              birthInfo: _birthInfo,
-              name:      displayName + ' 的命盘',
-            }).catch(() => {});
+            try {
+              const saved = await AuthManager.saveIsland({
+                baziData:   _baziData,
+                modelUrl:   modelUrl,
+                baziHash:   null,
+                birthInfo:  _birthInfo,
+                name:       displayName + ' 的命盘',
+                aiAnalysis: null, // 占位，AI深析完成后由补写机制自动填上
+              });
+              if (saved && saved.id) _currentIslandId = saved.id;
+            } catch (e) {}
           }).catch(() => {});
         }
 
@@ -310,6 +332,17 @@ const App = (() => {
         console.warn('[App] BaziEngine recalc failed:', e);
         _baziData = null;
       }
+    }
+
+    // 记录当前加载的存档id，供AI深析补写逻辑使用（见 analysis.js buildReport）
+    _currentIslandId = isl.id || null;
+
+    // 存档里已经保存过AI深析结果 → 直接种进本地缓存，之后报告弹窗调用
+    // BaziAnalysis.getAnalysis() 会直接命中缓存，不会重新触发一次完整的
+    // 六步流水线请求（不浪费token）。存档当时若AI深析还没生成完（ai_analysis
+    // 为null），则不种缓存，等用户本次真实触发生成后，由 analysis.js 补写回这条记录。
+    if (_baziData && isl.ai_analysis && typeof BaziAnalysis !== 'undefined') {
+      BaziAnalysis.seedCache(_baziData, _gender, isl.ai_analysis);
     }
 
     // 确保 Three.js 场景已初始化（initScene 内部有守卫，重复调用安全）
@@ -709,6 +742,13 @@ const App = (() => {
     _getBirthInfo: () => _birthInfo,
     _getLastUrl:   () => _lastModelUrl,
     _debug:        () => Debug,
+    // analysis.js 用于AI深析生成完成后"补写"回对应的已保存岛屿记录
+    // （islands.ai_analysis）。未登录/本次会话未保存过岛屿时为 null。
+    getCurrentIslandId: () => _currentIslandId,
+    // auth.js::logout() 退出登录时调用，清除本次会话记录的岛屿id（防御性清理——
+    // RLS+user_id过滤已经能防止跨账号误写，且报告只能从会设置这个id的入口打开，
+    // 但退出登录后不应再残留上一个账号的岛屿id）
+    _resetCurrentIslandId: () => { _currentIslandId = null; },
   };
 })();
 

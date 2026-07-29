@@ -495,9 +495,20 @@ async def _step1_foundation(ctx: dict) -> dict:
 # ── Step2 定格局与找用神 ─────────────────────────────────────
 def _step2_pattern_yongshen_sync(ctx: dict, step1: dict) -> dict:
     rag_query = f"{ctx['ten_gods_str'] or (ctx['dm'] + '日主')} 格局 用神 忌神"
-    # Step2 定格局找用神，对应知识库标签里的格局/用神/十神条目
+    # Step2 定格局找用神，对应知识库标签里的格局/用神/十神条目。
+    # 2026-07-30 补充：03_geju_yongshen.md（子平真诠格局理论+穷通宝鉴调候用神，
+    # Phase B第一批古籍整理）文件头标签是 格局,用神,调候,子平真诠,穷通宝鉴,正官,
+    # 七杀,正财,食神,伤官,五行总论,病药,扶抑；而 02_bazi_duanyu.md 标签更宽泛
+    # （八字断语,十神,格局,大运,流年,日主,用神,神煞），本步骤原tags只有'格局'
+    # '用神'和02文件重合，'十神'/'ten-gods'02文件也命中，导致rag_service.query()
+    # 的标签重合度重排里02文件（重合3个标签）稳定压过03文件（重合2个），03文件
+    # 这批古籍整理investment实际从未在Step2检索里真正发挥作用（详见已知问题记录）。
+    # 补上'调候''扶抑''病药''正官''七杀'——这几个都是03文件独有、02文件完全没有
+    # 的标签，且正是Step2"格局与用神"任务本身核心涉及的概念，加上后03文件重合度
+    # 变为7（远高于02文件的3），可稳定排到02文件前面。
     rag_snippet = rag_service.query(rag_service.COLLECTION_NAME, rag_query,
-                                     tags=['格局', '用神', '十神', 'ten-gods'])
+                                     tags=['格局', '用神', '十神', 'ten-gods',
+                                           '调候', '扶抑', '病药', '正官', '七杀'])
 
     prompt = f"""{_shared_chart_block(ctx)}
 
@@ -540,9 +551,14 @@ def _step3_career_wealth_sync(ctx: dict, step1: dict, step2: dict) -> dict:
     wealth_stars = _ten_gods_matching(ctx['ten_gods'], ['正财', '偏财'])
     career_stars = _ten_gods_matching(ctx['ten_gods'], ['正官', '七杀'])
     rag_query = f"{'、'.join(wealth_stars) or '财星'}{'、'.join(career_stars) or '官杀星'} 事业方向 财运"
-    # Step3 财官分析主要依赖十神组合与格局判断
+    # Step3 财官分析主要依赖十神组合与格局判断。2026-07-30 补充：03_geju_yongshen.md
+    # 里恰好有"正官格""七杀格""正财格""食神格""伤官格"各自独立小节，直接对应本步骤
+    # 判断"财官印组合→职业赛道/单干还是打工"的核心依据，比02文件泛泛的"事业财运"
+    # 断语更具体、更有策略含义。补上这5个03文件独有标签，同理提升其检索重排优先级
+    # （原因同Step2，详见Step2注释与已知问题记录）。
     rag_snippet = rag_service.query(rag_service.COLLECTION_NAME, rag_query,
-                                     tags=['十神', 'ten-gods', '格局'])
+                                     tags=['十神', 'ten-gods', '格局',
+                                           '正官', '七杀', '正财', '食神', '伤官'])
 
     prompt = f"""{_shared_chart_block(ctx)}
 

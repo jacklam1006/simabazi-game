@@ -131,5 +131,16 @@ const BaziAnalysis = (() => {
     console.log('[BaziAnalysis] cache cleared for hash:', hash);
   }
 
-  return { getAnalysis, clearCache };
+  // ── 直接写入缓存（供"加载已保存岛屿"复用存档里的AI深析内容）──
+  // 用途：用户存档（islands.ai_analysis）里已经保存过一份AI深析结果时，
+  // 加载存档直接把它种进本地缓存，之后 getAnalysis() 会像本地命中一样
+  // 直接返回，不会再对同一份八字重新发起一次完整六步流水线请求
+  // （避免重复消耗 Gemini token）。
+  function seedCache(baziData, gender, analysis) {
+    if (!baziData || !analysis) return;
+    const hash = _hash(baziData, gender);
+    _lsSet(hash, analysis);
+  }
+
+  return { getAnalysis, clearCache, seedCache };
 })();

@@ -112,6 +112,12 @@ const AuthManager = (() => {
     await _sb.auth.signOut();
     _user = null;
     AuthUI._onAuthChange(null);
+    // 清除 main-new.js 里记录的当前岛屿id，防止退出登录后仍残留上一个账号的
+    // 岛屿id（风险很低——RLS+user_id过滤已能防止跨账号误写，报告也只能从会设置
+    // 这个id的入口打开——但这里是最干净的重置时机，退出登录这一刻状态最明确）
+    if (typeof App !== 'undefined' && typeof App._resetCurrentIslandId === 'function') {
+      App._resetCurrentIslandId();
+    }
   }
 
   // ── 忘记密码 ────────────────────────────────────────────
@@ -131,7 +137,7 @@ const AuthManager = (() => {
   }
 
   // ── 保存岛屿 ────────────────────────────────────────────
-  async function saveIsland({ baziData, modelUrl, baziHash, birthInfo, name }) {
+  async function saveIsland({ baziData, modelUrl, baziHash, birthInfo, name, aiAnalysis = null }) {
     if (!_sb || !_user) return null;
     const { data, error } = await _sb.from('islands').insert({
       user_id:     _user.id,
@@ -144,10 +150,22 @@ const AuthManager = (() => {
       model_url:   modelUrl,
       bazi_hash:   baziHash,
       name:        name || '我的命盘岛屿',
+      ai_analysis: aiAnalysis || null,
     }).select().single();
     if (error) { console.error('[Auth] 保存岛屿失败:', error.message); return null; }
     console.log('[Auth] 岛屿已保存:', data.id);
     return data;
+  }
+
+  // ── 补写 AI 深析内容（3D生成完成但六步AI流水线晚到时使用）──
+  async function updateIslandAnalysis(islandId, aiAnalysis) {
+    if (!_sb || !_user || !islandId) return false;
+    const { error } = await _sb.from('islands')
+      .update({ ai_analysis: aiAnalysis })
+      .eq('id', islandId)
+      .eq('user_id', _user.id); // 双重确认只能改自己的记录，RLS本身也会拦，这里是防御性写法
+    if (error) { console.warn('[Auth] 补写AI深析失败:', error.message); return false; }
+    return true;
   }
 
   // ── 读取我的岛屿 ────────────────────────────────────────
@@ -178,7 +196,7 @@ const AuthManager = (() => {
   return {
     init, login, register, registerWithProfile,
     logout, sendPasswordReset, getProfile,
-    saveIsland, getMyIslands, checkEmailExists,
+    saveIsland, updateIslandAnalysis, getMyIslands, checkEmailExists,
     isLoggedIn: () => !!_user,
     currentUser: () => _user,
   };

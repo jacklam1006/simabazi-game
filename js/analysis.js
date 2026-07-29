@@ -393,6 +393,19 @@ const Analysis = (() => {
       BaziAnalysis.getAnalysis(d, gender).then(analysis => {
         if (analysis) {
           _populateAiContent(container, analysis, d);
+
+          // ── 补写：把AI深析结果同步回用户已保存的岛屿记录 ──
+          // 场景：3D模型保存时AI深析尚未生成完（saveIsland的aiAnalysis传了null），
+          // 用户这次打开报告触发了真实生成/命中缓存，借这个时机把结果补写回那条
+          // 记录，避免下次登录还要重新花token生成。fire-and-forget，不阻塞UI，
+          // updateIslandAnalysis内部已有错误处理（未登录/无岛屿id/记录不存在等
+          // 情况均静默返回，不影响当前浏览体验）。
+          if (typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn() &&
+              typeof App !== 'undefined' && App.getCurrentIslandId && App.getCurrentIslandId()) {
+            AuthManager.updateIslandAnalysis(App.getCurrentIslandId(), analysis).catch((e) => {
+              console.warn('[Analysis] AI深析补写回岛屿记录失败:', e);
+            });
+          }
         } else {
           _showAiFallback(container, d);
         }

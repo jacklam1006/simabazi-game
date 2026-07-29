@@ -25,6 +25,12 @@ CREATE TABLE IF NOT EXISTS islands (
     name        TEXT DEFAULT '我的命盘岛屿'
 );
 
+-- ── 已上线生产表补列（幂等，可安全重复执行）──────────────────
+-- AI深析六步命理框架结果（完整JSON：step1_foundation ~ step6_dayun_liunian + keywords）
+-- 允许为空：保存岛屿（写入model_url）与AI深析生成完成不一定同步，
+-- 3D模型先入库，AI深析结果跑完后再补写这一列
+ALTER TABLE islands ADD COLUMN IF NOT EXISTS ai_analysis JSONB;
+
 -- ── 行级安全策略（RLS）──────────────────────────────────────
 -- 用户只能看到自己的岛屿
 
