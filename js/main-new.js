@@ -77,6 +77,11 @@ const App = (() => {
     ['screen-form','screen-loading','screen-island'].forEach(s => {
       document.getElementById(s)?.classList.toggle('hidden', s !== id);
     });
+    if (id !== 'screen-island') {
+      ['task-panel','zone-panel','report-modal'].forEach(p => {
+        document.getElementById(p)?.classList.remove('open');
+      });
+    }
   }
 
   function _setProgress(pct) {
