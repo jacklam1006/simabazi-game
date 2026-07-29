@@ -197,6 +197,18 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
 - **兜底路径**：text-to-3D（直接用提示词 → 3D，Gemini失败时自动切换）
 - **超时设置**：150秒（约2.5分钟）
 
+### API端点（2026-07-29 修正，见下方修改记录）
+- **BASE_URL**：`https://api.tripo3d.ai/v2/openapi`（此前误用 `https://openapi.tripo3d.ai/v3`，
+  那个host是TripoAI给"segment v2"网格分割功能开的窄通道，跟图生3D/文生3D完全无关）
+- **上传图片**：`POST {BASE_URL}/upload`（multipart，字段名`file`）→ `data.data.image_token`
+- **建任务**（图生3D/文生3D共用）：`POST {BASE_URL}/task`，body含 `type`
+  （`image_to_model`/`text_to_model`）+ `model_version`（字段名是 `model_version`，不是 `model`）
+  + 图生3D的 `file:{type,file_token}` 或文生3D的 `prompt` → `data.data.task_id`
+- **查任务**：`GET {BASE_URL}/task/{task_id}`（单数task）→ `data.data`，其中
+  `output.model` 是GLB下载链接（不是 `output.model_url`）、失败原因在 `error_msg`（不是 `message`）
+- 依据：TripoAI官方开源Python SDK（`github.com/VAST-AI-Research/tripo-python-sdk`，
+  `tripo3d/client.py` + `tripo3d/client_impl/legacy_client_impl.py` + `tripo3d/models.py`）源码
+
 ### 转换质量参数
 
 | 参数 | 当前值 | 作用 |
@@ -207,6 +219,12 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
 ### 如何优化3D质量
 - **提高精细度**：将 `face_limit` 从 15000 提高到 30000（成本加倍）
 - **提高轮廓质量**：优化 Nano Banana Pro 生成图的边缘清晰度（见步骤3）
+
+### 修改记录
+| 日期 | 修改内容 | 效果 |
+|------|---------|------|
+| 2026-07-26 | 初始版本上线；修正 model ID 为 `v3.1-20260211`；text-to-model prompt截断900字防400错误 | 未验证即上线 |
+| 2026-07-29 | **修复"图生3D主路径404、全线静默降级为文生3D"故障**：生产日志实测捕获 `404 Client Error: for url: https://openapi.tripo3d.ai/v3/upload/file`。排查发现本文件从第一次提交起就用了一套TripoAI官方SDK里完全不存在的host+路径组合（`openapi.tripo3d.ai/v3` + `/upload/file`、`/generation/image-to-model`、`/generation/text-to-model`、`/tasks/{id}`）；`openapi.tripo3d.ai/v3` 经查官方SDK源码注释确认只是"segment v2"网格分割功能的专用窄通道，从未开放过图生3D/文生3D用到的这几个路径。改用官方SDK真正用于图生3D/文生3D主流程的 `https://api.tripo3d.ai/v2/openapi`，上传端点改为 `POST {BASE_URL}/upload`，建任务统一改为 `POST {BASE_URL}/task`（body用`type`+`model_version`字段名，此前一直误用`model`——服务端很可能一直静默忽略这个不存在的字段、从未真正应用过我们指定的模型版本），查任务改为 `GET {BASE_URL}/task/{task_id}`（单数）。新增 `TripoAuthError` 独立异常类型 + `_parse_tripo_response()` 统一响应解析，明确区分"鉴权失败（Key无效/过期）"与"路径/参数错误"与"响应非JSON"三类故障，不再混在一条模糊报错里；新增 `_redact()` 防止网络层异常泄漏真实Key，与`gemini_image.py`等同款约定对齐 | **未做真实API Key端到端验证**（本地无真实`TRIPO_API_KEY`）。全部依据为TripoAI官方开源Python SDK源码逐行核对（非文档推测），置信度较高，但需部署后由总agent对生产环境实测确认。**已知直接关联但未同步修复**：`island_service/main.py`（backend-service领域）的 `_poll_tripo()` 读取 `output.model_url`/`message` 字段，按本次核实的真实响应结构应为 `output.model`/`error_msg`，不修正的话即使本文件的路径问题解决，任务成功后仍会因取不到`model`字段而报错，需backend-service一并修复才能真正打通 |
 
 ---
 

@@ -78,14 +78,16 @@ async def _poll_tripo(task_id: str, max_wait: int = 180) -> str:
         status = result.get("status", "")
 
         if status == "success":
-            # TripoAI v3：output.model 是GLB下载链接
-            url = result.get("output", {}).get("model_url")
+            # 官方SDK TaskOutput.from_dict 确认：output.model 是GLB下载链接字段名
+            # （不是 model_url——历史上这里一直读错字段，导致即使任务真正成功也拿不到URL）
+            url = result.get("output", {}).get("model")
             if not url:
                 raise RuntimeError(f"TripoAI返回成功但无model字段: {result}")
             return url
 
         if status in ("failed", "cancelled"):
-            raise RuntimeError(f"TripoAI任务失败({status}): {result.get('message','')}")
+            # 官方SDK Task.from_dict 确认：错误信息字段名是 error_msg（不是 message）
+            raise RuntimeError(f"TripoAI任务失败({status}): {result.get('error_msg','')}")
 
     raise TimeoutError(f"TripoAI超时（>{max_wait}s）")
 
