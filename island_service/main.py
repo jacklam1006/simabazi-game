@@ -78,11 +78,17 @@ async def _poll_tripo(task_id: str, max_wait: int = 180) -> str:
         status = result.get("status", "")
 
         if status == "success":
-            # 官方SDK TaskOutput.from_dict 确认：output.model 是GLB下载链接字段名
-            # （不是 model_url——历史上这里一直读错字段，导致即使任务真正成功也拿不到URL）
-            url = result.get("output", {}).get("model")
+            # GLB下载链接字段名在output对象里，实测发现字段名不止一种：
+            # - 官方SDK文档/TaskOutput.from_dict 标注为 output.model
+            # - 但2026-07-29生产环境实测：请求参数带 texture=True, pbr=True 时，
+            #   TripoAI实际返回的字段名是 output.pbr_model（不是model），
+            #   推测base mesh（无贴图）输出叫model，PBR材质输出叫pbr_model，
+            #   取决于请求参数。两种情况都要兼容，优先取pbr_model（更常见，
+            #   因为当前tripo_client默认开texture/pbr），取不到再退回model。
+            output = result.get("output", {})
+            url = output.get("pbr_model") or output.get("model")
             if not url:
-                raise RuntimeError(f"TripoAI返回成功但无model字段: {result}")
+                raise RuntimeError(f"TripoAI返回成功但无model/pbr_model字段: {result}")
             return url
 
         if status in ("failed", "cancelled"):
