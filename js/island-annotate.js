@@ -112,6 +112,27 @@ const IslandAnnotate = (() => {
     return new THREE.Vector3(x, y, z);
   }
 
+  // ── 定位锚点 / 视觉内容 解耦（教程流程排查，见已知问题记录）──
+  // 根因：CSS2DRenderer 每帧都会对传入 THREE.CSS2DObject 的那个DOM元素直接写
+  // element.style.transform = 'translate(-50%,-50%) translate(Xpx,Ypx)' 来定位。
+  // 但 Tutorial.highlightLabel() 会给同一个元素加 .label-highlighted class，
+  // 该class的 CSS @keyframes 动画同样animate了 transform（scale(...)）——
+  // 按CSS级联规则，运行中的 CSS Animation 对同一属性的优先级高于该元素自身的
+  // 内联style（即使内联style每帧都在重新赋值），于是"位移transform"被"缩放
+  // transform"完全顶掉，元素退回到未设置transform时的默认文档流位置（即标注
+  // 覆盖层容器的左上角，正好与页面Logo/HUD标题重叠）。用Playwright真实浏览器
+  // 实测复现：.label-highlighted元素的 getComputedStyle().transform 结果是
+  // 纯scale矩阵（无平移分量），而element.style.transform 内联值仍然是正确的
+  // translate(...)——证实二者确实互相打架。
+  // 修复：CSS2DObject 拿到的DOM元素("锚点"div)永远不挂任何视觉/动画class，
+  // 只负责被CSS2DRenderer定位；实际视觉内容 + highlight/dim class 挂在锚点
+  // 内部的子元素上，两者各自独立控制transform，互不覆盖。
+  function _wrapAnchor(contentDiv) {
+    const anchor = document.createElement('div');
+    anchor.appendChild(contentDiv);
+    return anchor;
+  }
+
   // 干支五行映射（诊断徽标用）
   const STEM_WX = {
     '甲':'木','乙':'木','丙':'火','丁':'火',
@@ -230,7 +251,7 @@ const IslandAnnotate = (() => {
     });
 
     _labelMap['pillar_' + col] = div;
-    return new THREE.CSS2DObject(div);
+    return new THREE.CSS2DObject(_wrapAnchor(div));
   }
 
   // ── 神煞标记 DOM ─────────────────────────────────────────
@@ -255,7 +276,7 @@ const IslandAnnotate = (() => {
     });
 
     _labelMap['shensha_' + name] = div;
-    return new THREE.CSS2DObject(div);
+    return new THREE.CSS2DObject(_wrapAnchor(div));
   }
 
   // ── 空亡标记 DOM ─────────────────────────────────────────
@@ -263,7 +284,7 @@ const IslandAnnotate = (() => {
     const div = document.createElement('div');
     div.className = 'island-label kongwang-label';
     div.innerHTML = `<span>空亡</span><span style="color:#EB5757;margin-left:4px">${kw.join('、')}</span>`;
-    return new THREE.CSS2DObject(div);
+    return new THREE.CSS2DObject(_wrapAnchor(div));
   }
 
   // ── Tutorial：高亮 / 清除高亮 ───────────────────────────
