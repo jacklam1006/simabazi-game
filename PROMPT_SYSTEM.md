@@ -287,8 +287,10 @@ Step6 大运与流年运势推演（当前大运+2026丙午流年）─┘
 本项目（无商城、无MBTI数据）。
 
 ### RAG知识检索 — rag_service.py（新增）
-- 用 `chromadb.PersistentClient`，路径 `./chroma_db`，与现有 `./analysis_cache` 同级，
-  落在 `render.yaml` 已挂载给 `island_service` 目录的1GB持久盘上，不需要改 `render.yaml`
+- 用 `chromadb.PersistentClient`，路径 `./persistent_data/chroma_db`，与现有
+  `./persistent_data/analysis_cache` 同级，落在 `render.yaml` 挂载给
+  `island_service/persistent_data`（不含代码的子目录，2026-07-30事故修复后的路径）
+  的1GB持久盘上
 - **不使用**ChromaDB官方 `embedding_function`（会触发下载约83MB的ONNX默认模型，拖慢
   Render冷启动）——改为手动调用 `gemini-embedding-001:embedContent` REST接口计算
   embedding，查询用 `taskType: RETRIEVAL_QUERY`，入库用 `taskType: RETRIEVAL_DOCUMENT`

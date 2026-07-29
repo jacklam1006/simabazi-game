@@ -53,8 +53,8 @@ ANALYSIS_MODEL_CHAIN = ([_ENV_ANALYSIS_MODEL] if _ENV_ANALYSIS_MODEL else []) + 
     'gemini-flash-latest',
     'gemini-3.6-flash',
 ]
-ANALYSIS_CACHE  = Path('./analysis_cache')
-ANALYSIS_CACHE.mkdir(exist_ok=True)
+ANALYSIS_CACHE  = Path('./persistent_data/analysis_cache')
+ANALYSIS_CACHE.mkdir(parents=True, exist_ok=True)
 
 
 class GeminiCallError(Exception):

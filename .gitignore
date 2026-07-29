@@ -27,3 +27,4 @@ __pycache__/
 island_service/analysis_cache/
 island_service/chroma_db/
 island_service/cache/
+island_service/persistent_data/

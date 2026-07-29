@@ -42,8 +42,12 @@ app.add_middleware(
 )
 
 # ── 存储（文件式 + Render持久化磁盘）─────────────────────────
-CACHE_DIR = Path("./cache")
-JOBS_DIR  = Path("./jobs")
+# 磁盘挂载在 persistent_data 子目录（而非 island_service 根目录），
+# 避免持久磁盘内容覆盖代码文件导致部署后服务找不到 main.py（2026-07-30生产事故）
+PERSIST_DIR = Path("./persistent_data")
+CACHE_DIR = PERSIST_DIR / "cache"
+JOBS_DIR  = PERSIST_DIR / "jobs"
+PERSIST_DIR.mkdir(exist_ok=True)
 CACHE_DIR.mkdir(exist_ok=True)
 JOBS_DIR.mkdir(exist_ok=True)
 

@@ -17,7 +17,7 @@ services:
         sync: false
     disk:
       name: island-cache
-      mountPath: /opt/render/project/src/island_service
+      mountPath: /opt/render/project/src/island_service/persistent_data
       sizeGB: 1
 
   # ── 未来扩展服务在此继续添加 ──────────────────────────────────

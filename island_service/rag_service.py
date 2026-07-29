@@ -12,10 +12,13 @@ gemini_analysis.py），每一步在生成前会先向本模块检索相关古�
 - 不使用 ChromaDB 官方 embedding_function（会触发下载约83MB的ONNX默认模型，
   拖慢 Render 冷启动）；改为手动调用 Gemini REST embedContent 接口计算 embedding，
   写法与 gemini_analysis.py 里已有的 requests.post 调 Gemini 保持一致风格
-- PersistentClient 路径 ./chroma_db，与现有 ./analysis_cache 同级——服务以
-  island_service 为 rootDir/cwd 启动（main.py 用 `uvicorn main:app` 且
-  render.yaml rootDir=island_service），这个相对路径会落在 render.yaml 已经
-  挂载给 island_service 目录的 1GB 持久盘上，不需要额外改 render.yaml
+- PersistentClient 路径 ./persistent_data/chroma_db，与现有
+  ./persistent_data/analysis_cache 同级——服务以 island_service 为 rootDir/cwd
+  启动（main.py 用 `uvicorn main:app` 且 render.yaml rootDir=island_service）。
+  2026-07-30事故修复：Render持久盘曾直接挂载到 island_service 本身（跟代码文件
+  同一层级），部署时代码会被磁盘内容整体覆盖导致服务宕机；现改为盘只挂载到
+  island_service/persistent_data 这个不含代码的子目录，本模块与
+  gemini_analysis.py 的缓存路径均需落在该子目录下，详见 render.yaml 与 main.py
 - **核心契约：query() 绝不抛异常**。RAG 只是六步生成流水线的"锦上添花"，
   任何失败（无API Key、collection为空、embedding失败、chromadb本身异常）
   都必须优雅降级返回空字符串——六步流水线在拿到空字符串时应当照常生成
@@ -33,7 +36,7 @@ import requests
 
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 EMBED_MODEL = 'gemini-embedding-001'
-CHROMA_DIR = './chroma_db'
+CHROMA_DIR = './persistent_data/chroma_db'
 
 # Phase A 只有一个知识库分类——不做 simabazi-api 那种 bazi/chakra/mbti/crystal
 # 多集合区分，本项目没有脉轮/水晶/MBTI数据。六步流水线的六个查询函数统一查这一个集合。

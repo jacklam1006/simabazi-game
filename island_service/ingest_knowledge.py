@@ -124,7 +124,8 @@ def ingest_markdown_file(filepath: Path) -> int:
         # 指定 embedding_function，会自动退回默认的 384 维 ONNX 模型（这正是本项目从
         # 一开始就要绕开的 83MB 下载）。一旦这个分支被触发过一次，collection 会被
         # 锁死在 384 维，之后任何正确的 3072 维 gemini-embedding-001 向量写入都会
-        # 因为维度不匹配报错，query() 也会失败，只能手动删掉整个 chroma_db/ 目录重来。
+        # 因为维度不匹配报错，query() 也会失败，只能手动删掉整个
+        # persistent_data/chroma_db/ 目录重来。
         # 因此这里直接跳过写入，不做任何 upsert。
         print(f"  ⚠️  {filepath.name}: 未获取到 embedding（检查 GEMINI_API_KEY），跳过写入——"
               f"若无向量写入会触发 ChromaDB 默认ONNX模型并把 collection 锁死在错误维度")
