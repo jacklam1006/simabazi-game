@@ -140,6 +140,8 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
                 model_url = await _poll_tripo(task_id, max_wait=300)
             except Exception as tripo_err:
                 # image-to-3D失败 → 降级为文生3D
+                tripo_err_msg = str(tripo_err)
+                print(f"[Tripo ERROR] {tripo_err_msg[:200]}")   # Render日志可见
                 update("tripo_fallback", 50,
                        warning=f"图生3D失败，改用文生3D: {tripo_err}")
                 image_bytes = None   # 触发下方文生3D路径
