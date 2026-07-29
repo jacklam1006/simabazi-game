@@ -301,7 +301,7 @@ const Analysis = (() => {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
           ${[1,2,3,4,5,6].map(()=>`<div style="height:90px;background:rgba(201,169,110,.04);border:1px solid rgba(201,169,110,.08);border-radius:10px"></div>`).join('')}
         </div>
-        <div style="font-size:10px;color:rgba(201,169,110,.35);letter-spacing:2px;margin-top:16px;text-align:center">✦ AI 正在定制六维建议 ✦</div>
+        <div style="font-size:10px;color:rgba(201,169,110,.35);letter-spacing:2px;margin-top:16px;text-align:center">✦ AI 正在推演运势详解 ✦</div>
       </div>`;
 
     // ── 组装 Tab 结构 ────────────────────────────────
@@ -309,7 +309,7 @@ const Analysis = (() => {
       <div class="r-tabs">
         <button class="r-tab active" data-tab="overview">总览</button>
         <button class="r-tab"        data-tab="deep">AI深析</button>
-        <button class="r-tab"        data-tab="advice">六维建议</button>
+        <button class="r-tab"        data-tab="advice">运势详解</button>
         <button class="r-tab"        data-tab="dayun">大运神煞</button>
       </div>
 
@@ -400,14 +400,16 @@ const Analysis = (() => {
     }
   }
 
-  // ── AI 内容填充 ─────────────────────────────────────
+  // ── AI 内容填充（六步命理框架）───────────────────────
+  // ai 结构：step1_foundation / step2_pattern_yongshen / step3_career_wealth /
+  //          step4_relationship / step5_health / step6_dayun_liunian / keywords
+  // 六步顺序按 step1→step6 依次渲染，分两个Tab承载：
+  //   Tab「AI深析」= step1（命局基础扫描）+ step2（格局与用神）
+  //   Tab「运势详解」= step3（事业财富）→ step4（婚恋）→ step5（健康）→ step6（大运流年）
   function _populateAiContent(container, ai, d) {
-    // ─ Tab 2：AI 深析 ─
-    const fav    = Array.isArray(d.favorable) ? d.favorable : (d.favorable ? [d.favorable] : []);
-    const mainFav= fav[0] || '';
-    const favCol = WX_COLOR[mainFav] || '#c9a96e';
+    ai = ai || {};
 
-    // 关键词
+    // 关键词（结构未变，逻辑不动）
     if (ai.keywords && ai.keywords.length) {
       const kwEl = container.querySelector('#r-keywords');
       if (kwEl) {
@@ -418,42 +420,33 @@ const Analysis = (() => {
       }
     }
 
-    // 格局 + 日主深读 + 四柱精解
-    const p  = d.pillars || {};
-    const PILLAR_LABELS = { year:'年柱', month:'月柱', day:'日柱', hour:'时柱' };
+    // ─ Tab 2：AI 深析 = step1 + step2 ─
+    const s1 = ai.step1_foundation || {};
+    const s2 = ai.step2_pattern_yongshen || {};
 
     let deepHtml = '';
-    if (ai.pattern) {
-      deepHtml += `<div style="margin-bottom:16px">
-        <div class="report-section-head" style="padding:0 0 10px;border-bottom:1px solid rgba(201,169,110,.1)"><span class="r-icon">✦</span>命格定位</div>
-        <div style="margin-top:12px"><span class="ai-pattern">⊞ ${ai.pattern}</span></div>
-      </div>`;
-    }
-    if (ai.day_master_reading) {
-      deepHtml += `<div class="report-section" style="margin-bottom:16px">
-        <div class="report-section-head"><span class="r-icon">◈</span>日主深度解读</div>
-        <div class="report-section-body"><p class="ai-narrative">${ai.day_master_reading}</p></div>
-      </div>`;
-    }
-    if (ai.four_pillars) {
-      const fp = ai.four_pillars;
+    if (s1.narrative || s1.title) {
       deepHtml += `<div class="report-section">
-        <div class="report-section-head"><span class="r-icon">⊞</span>四柱精解</div>
-        <div class="report-section-body">`;
-      ['year','month','day','hour'].forEach(col => {
-        if (!fp[col]) return;
-        const pl  = p[col] || {};
-        const sWx = STEM_WX[pl.stem] || '';
-        const sc  = WX_COLOR[sWx] || '#c9a96e';
-        deepHtml += `<div style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid rgba(201,169,110,.07)">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-            <span style="font-size:16px;color:${sc};font-weight:300">${pl.stem||''}${pl.branch||''}</span>
-            <span style="font-size:10px;color:rgba(201,169,110,.45);letter-spacing:1px">${PILLAR_LABELS[col]}</span>
-          </div>
-          <p class="ai-narrative" style="margin:0">${fp[col]}</p>
-        </div>`;
-      });
-      deepHtml += `</div></div>`;
+        <div class="report-section-head"><span class="r-icon">✦</span>${s1.title || '命局「出厂设置」扫描'}</div>
+        <div class="report-section-body">
+          ${s1.narrative ? `<p class="ai-narrative">${s1.narrative}</p>` : ''}
+          ${s1.wuxing_note ? `<div style="margin-top:10px">${insight(s1.wuxing_note, 'neutral')}</div>` : ''}
+        </div>
+      </div>`;
+    }
+    if (s2.narrative || s2.title || s2.pattern) {
+      const yongshenArr = Array.isArray(s2.yongshen) ? s2.yongshen : (s2.yongshen ? [s2.yongshen] : []);
+      const yongshenChips = yongshenArr.length
+        ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 4px">${yongshenArr.map(y => badge(y, 'neutral')).join('')}</div>`
+        : '';
+      deepHtml += `<div class="report-section">
+        <div class="report-section-head"><span class="r-icon">⊞</span>${s2.title || '定格局与找用神'}</div>
+        <div class="report-section-body">
+          ${s2.pattern ? `<span class="ai-pattern">⊞ ${s2.pattern}</span>` : ''}
+          ${yongshenChips}
+          ${s2.narrative ? `<p class="ai-narrative" style="margin-top:${(s2.pattern || yongshenChips) ? '12px' : '0'}">${s2.narrative}</p>` : ''}
+        </div>
+      </div>`;
     }
 
     const deepEl = container.querySelector('#ai-deep-content');
@@ -464,78 +457,130 @@ const Analysis = (() => {
     }
     if (loadEl) loadEl.style.display = 'none';
 
-    // ─ Tab 3：六维建议 ─
-    const DIM_CONFIG = [
-      { key:'career',        icon:'💼', title:'事业财运' },
-      { key:'wealth',        icon:'💰', title:'财富积累' },
-      { key:'relationships', icon:'💞', title:'感情婚姻' },
-      { key:'health',        icon:'🌿', title:'健康养生' },
-      { key:'development',   icon:'🎯', title:'个人成长' },
-      { key:'spirit',        icon:'✨', title:'精神内核' },
-    ];
-    const dims = ai.six_dimensions || {};
+    // ─ Tab 3：运势详解 = step3 → step4 → step5 → step6 ─
+    const s3 = ai.step3_career_wealth || {};
+    const s4 = ai.step4_relationship  || {};
+    const s5 = ai.step5_health        || {};
+    const s6 = ai.step6_dayun_liunian || {};
 
-    let adviceHtml = '<div class="r-dim-grid">';
-    DIM_CONFIG.forEach(({ key, icon, title }) => {
-      const text = dims[key] || (FAV_ADVICE[d.favorable?.[0]]?.[key] || '遵循喜用神方向，积极把握人生机遇');
-      adviceHtml += `<div class="r-dim-card">
-        <div class="r-dim-icon">${icon}</div>
-        <div class="r-dim-title">${title}</div>
-        <div class="r-dim-text">${text}</div>
-      </div>`;
-    });
-    adviceHtml += '</div>';
+    let adviceHtml = '';
 
-    // 流年
-    if (ai.year_advice) {
-      adviceHtml += `<div class="r-year-card">
-        <div class="r-year-title">▸ 2026 丙午年 · 流年参考</div>
-        <div class="r-year-text">${ai.year_advice}</div>
+    if (s3.narrative || s3.title) {
+      const dirs = Array.isArray(s3.career_directions) ? s3.career_directions : [];
+      const dirHtml = dirs.length
+        ? `<div style="margin-top:10px">${dirs.map(c => insight(c, 'good')).join('')}</div>`
+        : '';
+      adviceHtml += `<div class="report-section">
+        <div class="report-section-head"><span class="r-icon">💼</span>${s3.title || '事业与财富深度剖析'}</div>
+        <div class="report-section-body">
+          ${s3.narrative ? `<p class="ai-narrative">${s3.narrative}</p>` : ''}
+          ${dirHtml}
+        </div>
       </div>`;
+    }
+
+    if (s4.narrative || s4.title) {
+      const periods = Array.isArray(s4.key_periods) ? s4.key_periods : [];
+      const periodsHtml = periods.length
+        ? `<div style="margin-top:10px">${periods.map(p => insight(p, 'neutral')).join('')}</div>`
+        : '';
+      adviceHtml += `<div class="report-section">
+        <div class="report-section-head"><span class="r-icon">💞</span>${s4.title || '婚恋与感情世界'}</div>
+        <div class="report-section-body">
+          ${s4.narrative ? `<p class="ai-narrative">${s4.narrative}</p>` : ''}
+          ${s4.partner_traits ? `<div style="margin-top:10px;padding:10px 12px;border-left:2px solid rgba(201,169,110,.3);font-size:12px;color:rgba(232,224,208,.6);line-height:1.8">伴侣特质预测：${s4.partner_traits}</div>` : ''}
+          ${periodsHtml}
+        </div>
+      </div>`;
+    }
+
+    if (s5.narrative || s5.title) {
+      const watch = Array.isArray(s5.watch_points) ? s5.watch_points : [];
+      const watchHtml = watch.length
+        ? `<div style="margin-top:10px">${watch.map(w => insight(w, 'warn')).join('')}</div>`
+        : '';
+      adviceHtml += `<div class="report-section">
+        <div class="report-section-head"><span class="r-icon">🌿</span>${s5.title || '健康与潜在风险提示'}</div>
+        <div class="report-section-body">
+          ${s5.narrative ? `<p class="ai-narrative">${s5.narrative}</p>` : ''}
+          ${watchHtml}
+        </div>
+      </div>`;
+    }
+
+    if (s6.narrative || s6.title || s6.current_year_action) {
+      adviceHtml += `<div class="report-section">
+        <div class="report-section-head"><span class="r-icon">⏳</span>${s6.title || '大运与流年运势推演'}</div>
+        <div class="report-section-body">
+          ${s6.narrative ? `<p class="ai-narrative">${s6.narrative}</p>` : ''}
+        </div>
+      </div>`;
+      if (s6.current_year_action) {
+        adviceHtml += `<div class="r-year-card">
+          <div class="r-year-title">▸ 今年行动建议</div>
+          <div class="r-year-text">${s6.current_year_action}</div>
+        </div>`;
+      }
     }
 
     const adviceEl  = container.querySelector('#ai-advice-content');
     const dimLoadEl = container.querySelector('#dim-loading-block');
     if (adviceEl) {
-      adviceEl.innerHTML  = adviceHtml;
+      adviceEl.innerHTML  = adviceHtml || '<div style="color:rgba(232,224,208,.35);padding:20px;text-align:center">AI分析加载完成，暂无详细数据</div>';
       adviceEl.style.display = 'block';
     }
     if (dimLoadEl) dimLoadEl.style.display = 'none';
   }
 
   // ── AI 加载失败 → 显示静态 fallback ──────────────────
+  // 六步框架依赖AI生成，加载失败时无法伪造六步内容；改用规则引擎能直接算出的
+  // 日主/五行/喜用神数据拼一段极简兜底话术，不引用任何旧字段（four_pillars/six_dimensions等）
   function _showAiFallback(container, d) {
-    const dm  = getDayMaster(d);
-    const fav = Array.isArray(d.favorable) ? d.favorable : (d.favorable ? [d.favorable] : []);
+    const dm    = getDayMaster(d);
+    const dmWx  = d.dayMasterWx || STEM_WX[dm] || '土';
+    const fav   = Array.isArray(d.favorable) ? d.favorable : (d.favorable ? [d.favorable] : []);
+    const mainFav = fav[0] || '';
+    const scores  = d.wuxing || {};
+    const score   = scores[dmWx] || 0;
+    const level   = wxStrength(score);
+    const adv     = FAV_ADVICE[mainFav] || {};
 
-    const fallbackDeep = `<div class="report-section">
-      <div class="report-section-head"><span class="r-icon">◈</span>日主解读</div>
-      <div class="report-section-body"><p class="ai-narrative">${getDmDesc(dm)}</p></div>
-    </div>
-    <div style="text-align:center;padding:16px 0;font-size:11px;color:rgba(232,224,208,.25);letter-spacing:1px">
-      · 深度AI分析暂时无法连接，以上为基础解读 ·<br>
+    const reloadHint = `<div style="text-align:center;padding:16px 0 4px;font-size:11px;color:rgba(232,224,208,.25);letter-spacing:1px">
+      · 深度AI解读暂时无法连接，以下为规则引擎基础解读 ·<br>
       <span style="cursor:pointer;color:rgba(201,169,110,.4);text-decoration:underline;margin-top:6px;display:inline-block"
             onclick="location.reload()">刷新页面重试</span>
     </div>`;
+
+    // Tab「AI深析」兜底：日主 + 五行基础扫描
+    let fallbackDeep = `<div class="report-section">
+      <div class="report-section-head"><span class="r-icon">✦</span>命局基础扫描</div>
+      <div class="report-section-body">
+        <p class="ai-narrative">${getDmDesc(dm)}</p>
+        <div style="margin-top:10px">${insight('日主' + dmWx + '行，力量' + level + '（得分约' + score + '）', score >= 20 ? 'good' : score < 10 ? 'warn' : 'neutral')}</div>
+      </div>
+    </div>`;
+    if (fav.length) {
+      fallbackDeep += `<div class="report-section">
+        <div class="report-section-head"><span class="r-icon">⊞</span>喜用神方向</div>
+        <div class="report-section-body">${insight('命局喜用' + fav.join('、') + '，宜顺势而为、趋吉避凶', 'good')}</div>
+      </div>`;
+    }
+    fallbackDeep += reloadHint;
 
     const deepEl = container.querySelector('#ai-deep-content');
     const loadEl = container.querySelector('#ai-loading-block');
     if (deepEl) { deepEl.innerHTML = fallbackDeep; deepEl.style.display = 'block'; }
     if (loadEl) loadEl.style.display = 'none';
 
-    // 六维 → 静态 fallback
-    const DIM_CONFIG = [
-      { key:'career', icon:'💼', title:'事业财运' },
-      { key:'wealth', icon:'💰', title:'财富积累' },
-      { key:'relationships', icon:'💞', title:'感情婚姻' },
-      { key:'health', icon:'🌿', title:'健康养生' },
-      { key:'development', icon:'🎯', title:'个人成长' },
-      { key:'spirit', icon:'✨', title:'精神内核' },
+    // Tab「运势详解」兜底：规则引擎喜用神建议（沿用既有 FAV_ADVICE 静态文案）
+    const FALLBACK_ITEMS = [
+      { icon:'💼', title:'事业财运', text: adv.career        || '以喜用神行业为发展重心' },
+      { icon:'💞', title:'感情婚姻', text: adv.relationships || '结交喜用神五行属性的贵人' },
+      { icon:'🌿', title:'健康养生', text: adv.health        || '注意与喜用神五行对应的脏腑养护' },
+      { icon:'⏳', title:'大运流年', text: '大运流年走势建议以喜用神' + (mainFav || dmWx) + '行为参照，逢喜用之年宜积极进取' },
     ];
-    const mainFav = fav[0] || '';
     let adviceHtml = '<div class="r-dim-grid">';
-    DIM_CONFIG.forEach(({ key, icon, title }) => {
-      const text = FAV_ADVICE[mainFav]?.[key] || '遵循喜用神方向，积极把握人生机遇';
+    FALLBACK_ITEMS.forEach(({ icon, title, text }) => {
       adviceHtml += `<div class="r-dim-card">
         <div class="r-dim-icon">${icon}</div>
         <div class="r-dim-title">${title}</div>

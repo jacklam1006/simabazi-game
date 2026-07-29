@@ -20,3 +20,10 @@ build/
 # Python
 __pycache__/
 *.pyc
+
+# island_service 运行期生成的持久化数据（生产环境落在 render.yaml 挂载的
+# 持久盘上，本地/CI 不应提交；chroma_db 由 island_service/ingest_knowledge.py
+# 手动运行生成，见 rag_service.py 顶部注释）
+island_service/analysis_cache/
+island_service/chroma_db/
+island_service/cache/

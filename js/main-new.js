@@ -211,6 +211,16 @@ const App = (() => {
     // 启动八字洞察卡片（2s后出现，避免与初始UI冲突）
     setTimeout(() => { InsightCards.start(_baziData); }, 2000);
 
+    // AI深析预热：与3D岛屿生成请求并行发起，不等待/不处理返回值。
+    // 目的是让六步AI深析流水线尽早开始跑并写入localStorage（BaziAnalysis内部对同一
+    // 八字哈希做了in-flight请求去重，若报告弹窗在预热请求完成前打开，第二次调用会
+    // 复用同一个进行中的Promise而不是再发一次完整六步请求；命中localStorage缓存的
+    // 情况则直接瞬间返回），而不是等到用户点开报告弹窗那一刻才开始等，因为六步+RAG
+    // 检索耗时比旧版单次调用明显更长。
+    if (typeof BaziAnalysis !== 'undefined') {
+      BaziAnalysis.getAnalysis(_baziData, _gender).catch(() => {});
+    }
+
     IslandLoader.generateIsland(_baziData, {
       onProgress(stage, pct) { _applyStage(stage, pct); },
       onComplete(modelUrl) {

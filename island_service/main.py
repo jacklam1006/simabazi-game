@@ -292,7 +292,10 @@ async def analyze_bazi_endpoint(req: AnalyzeRequest):
     调用 Gemini 对八字命盘进行深度分析。
     后端有文件缓存：相同八字（干支+性别）只调用一次，后续即时返回。
     """
-    result = analyze_bazi(req.bazi_data, req.gender, req.birth_year)
+    # 2026-07-29 六步RAG流水线重构：analyze_bazi() 改为 async def（Step3-6 用
+    # asyncio.gather 并行发起），调用方必须 await；见 gemini_analysis.py::analyze_bazi()
+    # 顶部注释——同步直接调用会导致内部 asyncio.gather 语义失效/在某些路径下报错。
+    result = await analyze_bazi(req.bazi_data, req.gender, req.birth_year)
     if result.get('error') == 'no_api_key':
         raise HTTPException(status_code=503, detail="AI analysis service not configured")
     return result

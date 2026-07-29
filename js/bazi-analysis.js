@@ -11,7 +11,19 @@
 
 const BaziAnalysis = (() => {
   const BACKEND_URL = 'https://simabazi-island.onrender.com';
-  const LS_PREFIX   = 'bazi_ai_v1_';
+  const LS_PREFIX   = 'bazi_ai_v2_'; // v1→v2：后端AI深析改为六步命理框架JSON结构（2026-07-29），老v1缓存结构不兼容，换key前缀避免读到旧结构导致渲染报错
+
+  // ── 进行中请求去重（in-flight dedup）─────────────────
+  // 六步流水线+RAG检索耗时明显变长后，预热请求（main-new.js 生成开始时发起）与
+  // 用户点开报告弹窗时的请求很可能在预热还没跑完时就重叠——若不去重会对同一个
+  // 八字哈希并发发出两份完整的六步流水线请求（12次Gemini调用，配额直接翻倍）。
+  // 同一个 hash 的并发调用复用同一个 in-flight Promise，请求完成（无论成功/失败）
+  // 后从 Map 里清掉，不影响下一次真正的新请求。
+  const _inflight = new Map(); // hash -> Promise<analysis|null>
+
+  function _pendingFor(hash) {
+    return _inflight.get(hash) || null;
+  }
 
   // ── 哈希（与后端逻辑对齐：四柱干支 + 性别）──────────
   function _hash(baziData, gender) {
@@ -84,19 +96,32 @@ const BaziAnalysis = (() => {
       return cached;
     }
 
-    // 2. 后端（含文件缓存）
-    try {
-      console.log('[BaziAnalysis] fetching from backend...');
-      const analysis = await _fetchBackend(baziData, gender);
-      if (analysis) {
-        _lsSet(hash, analysis);
-        console.log('[BaziAnalysis] backend OK, wrote to localStorage');
-      }
-      return analysis;
-    } catch (e) {
-      console.warn('[BaziAnalysis] backend failed:', e.message);
-      return null;
+    // 2. 同一 hash 已有请求在途 → 复用同一个 Promise，不再发起第二次后端请求
+    const pending = _pendingFor(hash);
+    if (pending) {
+      console.log('[BaziAnalysis] in-flight request reused for hash:', hash);
+      return pending;
     }
+
+    // 3. 后端（含文件缓存）
+    const promise = (async () => {
+      try {
+        console.log('[BaziAnalysis] fetching from backend...');
+        const analysis = await _fetchBackend(baziData, gender);
+        if (analysis) {
+          _lsSet(hash, analysis);
+          console.log('[BaziAnalysis] backend OK, wrote to localStorage');
+        }
+        return analysis;
+      } catch (e) {
+        console.warn('[BaziAnalysis] backend failed:', e.message);
+        return null;
+      } finally {
+        _inflight.delete(hash);
+      }
+    })();
+    _inflight.set(hash, promise);
+    return promise;
   }
 
   function clearCache(baziData, gender) {

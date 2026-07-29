@@ -334,12 +334,9 @@ const Tutorial = (() => {
     const branch = p.branch || '—';
     var body = '';
 
-    if (_aiAnalysis && _aiAnalysis.four_pillars && _aiAnalysis.four_pillars[col]) {
-      body = '<p class="tut-text">' + _aiAnalysis.four_pillars[col] + '</p>';
-      if (col === 'day' && _aiAnalysis.day_master_reading) {
-        var preview = _aiAnalysis.day_master_reading.slice(0, 100);
-        body += '<p class="tut-text tut-ai-preview">' + preview + '…</p>';
-      }
+    if (col === 'day' && _aiAnalysis && _aiAnalysis.step1_foundation && _aiAnalysis.step1_foundation.narrative) {
+      var preview = _aiAnalysis.step1_foundation.narrative.slice(0, 100);
+      body = '<p class="tut-text tut-ai-preview">' + preview + '…</p>';
     } else {
       var role     = PILLAR_ROLE[col] || '';
       var stemDesc = col === 'day' ? (STEM_SHORT[stem] || '') : '';

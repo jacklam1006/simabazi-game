@@ -18,10 +18,11 @@
 | 子agent 名 | 负责范围 | 关键文件 |
 |-----------|---------|---------|
 | `frontend-3d` | Three.js 3D场景、相机、模型加载、视觉特效 | `js/scene-builder.js` `js/island-loader.js` `js/island-decorations.js` `js/island-annotate.js` `js/effects.js` `js/annotation.js` `models/` `assets/` |
-| `bazi-pipeline` | 八字算法 + AI生成流水线（提示词/图像/3D转换），产品核心逻辑 | `js/bazi-engine.js` `js/bazi-analysis.js` `js/analysis.js` `island_service/bazi_prompt.py` `island_service/gemini_enhance.py` `island_service/gemini_analysis.py` `island_service/gemini_image.py` `island_service/tripo_client.py` `PROMPT_SYSTEM.md` |
+| `bazi-pipeline` | 八字算法 + AI生成流水线（提示词/图像/3D转换/RAG知识检索），产品核心逻辑 | `js/bazi-engine.js` `js/bazi-analysis.js` `js/analysis.js` `island_service/bazi_prompt.py` `island_service/gemini_enhance.py` `island_service/gemini_analysis.py` `island_service/gemini_image.py` `island_service/tripo_client.py` `island_service/rag_service.py` `island_service/ingest_knowledge.py` `island_service/knowledge_base/` `PROMPT_SYSTEM.md` |
 | `backend-service` | FastAPI服务编排、Supabase存储、数据库结构 | `island_service/main.py` `island_service/supabase_storage.py` `supabase_setup.sql` `render.yaml` |
 | `user-system` | 登录注册、多语言、新手引导、每日任务、音效 | `js/auth.js` `js/user-state.js` `js/user-journey.js` `js/tutorial.js` `js/tasks.js` `js/i18n.js` `js/audio.js` `js/config.js` |
 | `devops` | 部署配置、PWA缓存策略、开发脚本 | `vercel.json` `render.yaml` `sw.js` `manifest.json` `setup.sh` `启动开发服务器.command` `部署手册.md` |
+| `knowledge-curator` | 玄学古籍知识库整理（OCR提取+标签化摘要，不碰生成逻辑代码），Phase B专用，尚未启动执行 | `island_service/knowledge_base/bazi/*.md`（只新增摘要文件，不碰RAG服务代码） |
 | `qa-reviewer`（harness，opus） | 不实现功能，只复查其他子agent的真实diff | 全项目只读 |
 
 一个需求跨多个领域是常态（比如"新增一个神煞的3D物件"会同时涉及 `bazi-pipeline` 的映射字典和 `frontend-3d` 的装饰渲染）——正常拆成多个子任务分发，不要因为跨领域就自己上手全包。
@@ -53,6 +54,15 @@
 3. **内容合规**：八字/命理属于占卜类内容，苹果审核可能要求"仅供娱乐"免责声明——`user-system`/`i18n` 涉及产品文案时要保留或补充这类声明
 4. **未来付费功能**：如果做会员/付费解锁，iOS端必须走 **Apple IAP**（不能直接用 Supabase/Stripe 之类外部支付完成App内计费）——`backend-service` 设计计费相关功能时要预留 IAP 校验的接口位置
 5. **原生重写的启动时机**：等网页版功能/内容打磨完善之后再启动，不是现在。启动时需要在 `.claude/agents/` 下新增一个 `ios-native` 领域子agent（负责Swift/SwiftUI/SceneKit代码），与现有专注Three.js网页版的 `frontend-3d` 明确区分开，避免混淆两套技术栈
+
+## 参考资料：已归档的前代项目 simabazi-api
+
+`/Users/linyu/Desktop/simabazi-api`（2026-07-24归档，独立git仓库，**不是**本项目一部分，不要往那边写代码）是更早期、功能更丰富的产品迭代（水晶商城/脉轮/会员系统/RAG古籍知识库AI对话），配套前端叫 simabazi-pwa。归档后当前的 `simabazi-game`（3D命盘岛屿）成为主线产品。simabazi-api 里有几处**已验证可行、值得复用模式（不是复用服务本身）**的实现：
+- `app/services/rag_service.py` — ChromaDB + 手动调Gemini REST embedding API（不用官方embedding_function，避免83MB ONNX模型下载）
+- `app/services/ai_service.py` 的"司马"人格设计（共情框架/回复结构/边界设定）
+- `knowledge_base/bazi/` 下已有2份标签化古籍摘要（`01_bazi_fundamentals.md`/`02_bazi_duanyu.md`），以及9本未提取的古籍原文PDF
+
+2026-07-29 把这套RAG模式移植进了 `island_service`（新增 `rag_service.py`/`ingest_knowledge.py`/`knowledge_base/`，见已知问题日志），用于"AI深析"六步命理框架生成流水线。
 
 ## 项目背景速览
 

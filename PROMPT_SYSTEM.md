@@ -1,5 +1,5 @@
 # 司马八字 · AI 提示词系统库
-> 版本：v1.0 | 最后更新：2026-07-26  
+> 版本：v1.1 | 最后更新：2026-07-29（AI深析改为六步RAG流水线）  
 > 维护原则：每次修改提示词后，在对应章节末尾记录"修改日期 + 修改内容 + 效果反馈"
 
 ---
@@ -29,8 +29,11 @@
 用户看到自己的3D命盘岛屿
 
 [并行分支] Gemini AI 命盘深度解读（gemini_analysis.py，模型链见文件内 ANALYSIS_MODEL_CHAIN）
-    八字数据 → JSON结构化命理解读（日主/命格/四柱/六维度/流年）
-    独立于图像流水线，供前端"AI深析"标签页展示
+    八字数据 → 六步命理框架JSON（命局扫描→格局用神→事业财富→婚恋→健康→大运流年）
+    每一步先经 rag_service.py 向量检索古籍/断语知识库，拿到原文片段拼进该步骤专属prompt
+    （检索失败/查不到内容时优雅降级为空字符串，不影响该步骤照常生成）
+    Step1→Step2 严格串行（Step2依赖Step1输出），Step3-6 用 asyncio.gather 并行发起
+    独立于图像流水线，供前端"AI深析"标签页展示，详见下方"六、"章节
 ```
 
 ---
@@ -228,12 +231,92 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
 
 ---
 
-## 六、并行分支：Gemini AI 命盘深度解读 — gemini_analysis.py
+## 六、并行分支：Gemini AI 命盘深度解读 — gemini_analysis.py + rag_service.py
 
-### 作用
-独立于"八字→图像→3D"主流水线的分支：直接把八字数据（四柱、日主、五行、喜用神、神煞、大运）
-组装成结构化中文提示词，要求 Gemini 输出严格 JSON（日主解读/命格/四柱解读/事业财富感情健康成长精神六维度/流年建议/关键词），
-供前端命盘报告"AI深析"标签页展示。有文件级永久缓存（相同八字+性别只调用一次）。
+### 作用（2026-07-29 架构重构：从"单次调用"改为"六步RAG流水线"）
+独立于"八字→图像→3D"主流水线的分支，供前端命盘报告"AI深析"标签页展示。有文件级
+永久缓存（相同八字+性别只调用一次）。
+
+**这次架构变化的核心**：原来是一次 Gemini 调用产出一份JSON（`day_master_reading`/
+`four_pillars`/`six_dimensions`/`year_advice`），内容单薄、无古籍依据。现在改为
+**六步独立命理框架**，每一步都是一次独立的 Gemini 调用，并且在生成前先向本地
+ChromaDB 知识库做一次 RAG（检索增强生成）向量检索，把命中的古籍/断语原文片段
+拼进该步骤专属 prompt，让输出更有专业依据（而不是模型凭空发挥）：
+
+```
+Step1 命局「出厂设置」扫描（日主/月令/五行强弱/性格底色）──┐
+    ↓ 输出作为Step2输入                                    │ 严格串行
+Step2 定格局与找用神（依赖Step1）────────────────────────────┘
+    ↓ Step1+2输出作为Step3-6的共享上下文
+Step3 事业与财富深度剖析（财官印组合）─┐
+Step4 婚恋与感情世界（日支夫妻宫+异性星）─┤ asyncio.gather 并行发起
+Step5 健康与潜在风险提示（五行偏弱+地支相冲）─┤（互不依赖，只依赖Step1+2）
+Step6 大运与流年运势推演（当前大运+2026丙午流年）─┘
+```
+
+每一步内部：① 用该步骤专属的数据（如日主、十神组合、财官印星、日支等）拼一句
+检索query → ② 调 `rag_service.query("bazi", query)` 检索知识库，拿到原文片段
+（查不到就是空字符串，正常继续，见下方"RAG检索契约"）→ ③ 把命盘核心资料 + 检索
+片段 + 该步骤专属输出格式要求拼成完整prompt → ④ 调用 `_call_gemini()`（复用原有
+的模型链+MAX_TOKENS重试机制，全六步共用同一套）→ ⑤ 解析成dict。
+
+**输出JSON结构**（替换原来的 `day_master_reading`/`four_pillars`/`six_dimensions`/
+`year_advice`）：
+```json
+{
+  "step1_foundation":       { "title": "...", "narrative": "...", "wuxing_note": "..." },
+  "step2_pattern_yongshen": { "title": "...", "pattern": "...", "yongshen": [...], "narrative": "..." },
+  "step3_career_wealth":    { "title": "...", "narrative": "...", "career_directions": [...] },
+  "step4_relationship":     { "title": "...", "narrative": "...", "partner_traits": "...", "key_periods": [...] },
+  "step5_health":           { "title": "...", "narrative": "...", "watch_points": [...] },
+  "step6_dayun_liunian":    { "title": "...", "narrative": "...", "current_year_action": "..." },
+  "keywords": ["...", "...", "...", "...", "..."]
+}
+```
+`keywords`（5个关键词）由 Step2 顺带生成后提升到顶层（Step2掌握格局+用神这个
+最能概括命盘特质的信息，不额外为了5个关键词多打一次请求）；若 Gemini 未返回该
+字段，`_fallback_keywords()` 用命盘已有确定性数据（日主/身强弱/喜用神/神煞）
+拼凑兜底，不调用AI。
+
+**人格设计**：用户原话要求——"专业且算命准确的百年玄学大师，同时能用通俗易懂的
+方式讲解，并结合现代社会发展给建议"。六步共用同一个 `PERSONA_SYSTEM` 常量，
+通过 Gemini REST API 的 `systemInstruction` 字段传入（原来的实现没有用这个字段，
+本轮改造顺带加上）。风格参考已归档前代项目 `simabazi-api/app/services/ai_service.py`
+里"司马"人格的回复框架（共情切入→命盘数据引用→现代视角融入→具体行动建议、口语化
+"少用您多用你"），但**去掉**水晶推荐/会员营销话术与MBTI语气适配——两者都不适用于
+本项目（无商城、无MBTI数据）。
+
+### RAG知识检索 — rag_service.py（新增）
+- 用 `chromadb.PersistentClient`，路径 `./chroma_db`，与现有 `./analysis_cache` 同级，
+  落在 `render.yaml` 已挂载给 `island_service` 目录的1GB持久盘上，不需要改 `render.yaml`
+- **不使用**ChromaDB官方 `embedding_function`（会触发下载约83MB的ONNX默认模型，拖慢
+  Render冷启动）——改为手动调用 `gemini-embedding-001:embedContent` REST接口计算
+  embedding，查询用 `taskType: RETRIEVAL_QUERY`，入库用 `taskType: RETRIEVAL_DOCUMENT`
+  （`ingest_knowledge.py` 使用），这是Gemini embedding API区分查询/文档向量的标准做法
+- **核心契约（六步流水线依赖此保证）**：`query(collection_name, question, n_results=3)`
+  绝不抛异常——无API Key、collection为空、embedding失败、chromadb本身异常，统统在
+  函数内部捕获并返回 `''`。六步流水线拿到空字符串时应当照常生成（只是这一步少了
+  古籍引用片段），RAG是"锦上添花"不是"必需依赖"，绝不能因为RAG层故障拖垮整条
+  AI深析流水线
+
+### 知识库 — island_service/knowledge_base/bazi/ + ingest_knowledge.py（新增）
+- `ingest_knowledge.py`：本地手动运行的一次性脚本（`python3 ingest_knowledge.py`，
+  **不**接入 `main.py` 启动流程），把 `knowledge_base/bazi/*.md` 按 `##` 二级标题
+  切块（每块携带文件级 `## 标签:` 元数据，供未来"标签加权检索"扩展用，本轮只存
+  标签不做真正的加权/过滤），逐块算embedding后 upsert 进同一个ChromaDB collection
+  （`"bazi"`）
+- **知识库范围分两阶段**：
+  - **Phase A（本轮已完成）**：只有2份现成的标签化摘要文件——`01_bazi_fundamentals.md`
+    （八字基础：天干地支/五行生克/十神/日主特质/大运流年框架）、`02_bazi_duanyu.md`
+    （十神断语/日主断语/格局断语/大运流年断语/神煞断语/特殊组合口诀），原样从已归档
+    前代项目 `simabazi-api/knowledge_base/bazi/` 拷贝，共约545行、12个检索块
+  - **Phase B（尚未开始，另立子agent负责）**：九本古籍原文（三命通会、渊海子平、
+    穷通宝鉴、滴天髓、子平真诠、千里命稿、四柱预测学、四柱命理学自修教程）的OCR
+    提取与标签化整理，由新增的 `.claude/agents/knowledge-curator.md` 子agent负责，
+    产出后追加进同一目录、重新跑一次 `ingest_knowledge.py` 即可自动扩充检索覆盖面，
+    `rag_service.py`/`gemini_analysis.py` 届时都不需要改动
+  - **⚠️ 明确提醒：本轮上线后"引用古籍"的知识密度仍是Phase A水平**（仅两份摘要，
+    非九本古籍原文），不要误以为这次上线=九本古籍已经全部生效
 
 ### 模型信息（2026-07-29 更新，修复"AI深析一直显示兜底文案"故障）
 - **故障现象**：生产环境 `/analyze-bazi` 返回 `{"analysis": null, "error": "Expecting value: line 1 column 1 (char 0)"}`，
@@ -245,16 +328,20 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
 - **模型链（当前，2026-07-29第三轮修复后）**：`ANALYSIS_MODEL_CHAIN`，依次尝试 `GEMINI_ANALYSIS_MODEL`环境变量
   （若设置）→ `gemini-flash-latest`（Google官方稳定别名，现指向Gemini 3.x系列）→ `gemini-3.6-flash`（显式版本号兜底）。
   `gemini-2.5-flash`/`gemini-2.0-flash`已被Google下线（HTTP 404），不再作为候选
-- **maxOutputTokens**：默认从 2200 提高到 4096，且遇到 `finishReason=MAX_TOKENS` 且文本为空时，会对同一模型自动
-  加倍预算重试一次（封顶8192），仍失败才换下一个候选模型
+- **maxOutputTokens**：2026-07-29六步重构后不再是单一全局值——`_call_gemini()` 默认值改为2048（原为4096，因为
+  拆成六步后单步输出内容量比原来"一次性产出全部"小很多），各步骤按自身JSON输出量传入具体预算（Step1/3/4/5/6
+  为2048，Step2因额外要求`keywords`字段用2560）；仍保留遇到 `finishReason=MAX_TOKENS` 且文本为空/被截断时对
+  同一模型自动加倍预算重试一次（封顶8192），仍失败才换下一个候选模型的机制，六步共用同一套 `_call_gemini()`
 - **防御性解析**：`_extract_text()` 显式检查响应结构（candidates是否为空、是否被安全过滤器/版权检测拦截、
   finishReason），拿不到有效文本时返回明确原因，不再让裸取字段的异常一路冒泡成语义不明的 JSONDecodeError；
   `analyze_bazi()` 返回的 `error` 字段现在会直接说明"哪个模型、什么原因"失败，不用再靠猜
 
 ### 如何优化解读质量
-- 调整六维度/四柱/流年的字数要求：直接改 `prompt` 模板里的字数提示
-- 想要更简洁：降低 `maxOutputTokens` 默认值，同时相应缩短 prompt 里各字段要求的字数
-- 切换到确认可用的更强模型：设置环境变量 `GEMINI_ANALYSIS_MODEL` 即可，无需改代码
+- 调整每一步 narrative/字段的字数要求：直接改对应 `_stepN_xxx_sync()` 函数里的 prompt 模板
+- 调整某一步的检索方向：改对应函数里拼接 `rag_query` 字符串的逻辑
+- 想要更简洁：降低对应步骤的 `max_tokens` 参数，同时相应缩短 prompt 里的字数要求
+- 切换到确认可用的更强模型：设置环境变量 `GEMINI_ANALYSIS_MODEL` 即可，无需改代码（六步共用同一条模型链）
+- 扩充古籍知识密度：往 `knowledge_base/bazi/` 加新的标签化 `.md` 文件（见Phase B），重新跑一次 `ingest_knowledge.py`
 
 ### 修改记录
 | 日期 | 修改内容 | 效果 |
@@ -263,6 +350,8 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
 | 2026-07-29 | 改为模型优先级链（`gemini-flash-latest` → `gemini-2.5-flash` → `gemini-2.0-flash`，支持环境变量强制指定）+ `maxOutputTokens` 2200→4096并支持MAX_TOKENS自动加倍重试 + `_extract_text()` 显式诊断响应结构 | 待测试（生产环境需配置真实 `GEMINI_API_KEY` 后实测；本地已用mock覆盖模型链切换/MAX_TOKENS重试/安全过滤诊断/无Key泄露等控制流路径） |
 | 2026-07-29（二次修复） | qa-reviewer复查发现三个问题并修复：①`RequestException`（网络超时/连接失败）的`str(e)`会内嵌含真实key的完整URL，经`analyze_bazi()`的`error`字段一路传到前端HTTP响应体导致Key泄漏——新增`_redact()`在所有可能字符串化异常的地方脱敏；②MAX_TOKENS截断时若candidate文本非空（如部分JSON），旧逻辑会当作"成功"返回、跳出重试循环后才在`_parse_json`失败且不再重试——`_extract_text()`新增返回`finish_reason`，`_call_gemini_once`对非空文本仍检查`finishReason==MAX_TOKENS`并抛出可重试错误；③`generationConfig`补充`thinkingConfig.thinkingBudget=0`（仅思考型模型，`gemini-2.0-flash`等非思考模型不附加以免400），关闭思考token消耗以缓解"HTTP 200但candidate为空"的根本原因 | 待测试（本地无真实`GEMINI_API_KEY`仍无法端到端验证；已用mock+真实`requests.exceptions.ConnectTimeout`复现场景补充11个单元测试，断言异常/日志中不含真实key字符串、MAX_TOKENS部分文本触发加倍预算重试与模型回退、thinkingConfig按模型区分生成，全部通过） |
 | 2026-07-29（第三轮修复） | 总agent对生产 `/analyze-bazi` 实测拿到确凿报错：`[gemini-flash-latest] HTTP 400 INVALID_ARGUMENT`；`[gemini-2.5-flash] HTTP 404 NOT_FOUND`（已不再对新用户开放）；`[gemini-2.0-flash] HTTP 404 NOT_FOUND`（已下线）。根因：`gemini-2.5-flash`/`gemini-2.0-flash`均已被Google正式下线；`gemini-flash-latest`别名现指向Gemini 3.x系列（如`gemini-3.6-flash`，2026-07-21发布），3.x系列已把数值型`thinkingConfig.thinkingBudget`换成字符串枚举`thinkingConfig.thinkingLevel`（minimal/low/medium/high），旧格式字段被3.x模型拒绝返回400。修复：`ANALYSIS_MODEL_CHAIN`移除已下线的`gemini-2.5-flash`/`gemini-2.0-flash`，改为`gemini-flash-latest` → `gemini-3.6-flash`；`_build_generation_config`改用`thinkingConfig: {thinkingLevel: "minimal"}`；`_NON_THINKING_MODELS`例外名单保留机制但清空（链中模型均为3.x，默认都支持thinkingConfig，若未来加入不支持的模型可放回此名单跳过） | 待测试（总agent将直接对生产端点发起真实请求验证是否返回有效analysis，本轮未做本地mock测试，交由部署后实测确认） |
+| 2026-07-29（六步RAG流水线重构） | **架构性重写**（非参数微调，见本章节上方"作用"完整说明）：`analyze_bazi()` 从单次Gemini调用改为六步独立调用（`_step1_foundation`…`_step6_dayun_liunian`，各自独立 prompt + 独立 max_tokens 预算），Step1→2严格串行、Step3-6用 `asyncio.gather` 并行发起（底层同步 `requests.post` 用 `asyncio.to_thread` 包一层，使 gather 真正并发而非排队）；每步生成前新增 RAG 检索（`rag_service.query()`，新增文件，见上方"RAG知识检索"小节），检索失败优雅降级不影响生成；新增六步共用的 `PERSONA_SYSTEM`，通过 Gemini REST `systemInstruction` 字段传入（原实现未用该字段）；输出JSON结构从 `day_master_reading`/`four_pillars`/`six_dimensions`/`year_advice` 整体替换为 `step1_foundation`...`step6_dayun_liunian`+`keywords`；`_cache_read()` 新增结构校验（检查 `step1_foundation` 字段），旧结构缓存文件视为未命中避免前端读到undefined；`analyze_bazi()` 改为 `async def`，联动 `main.py`（backend-service领域，`analyze_bazi_endpoint` 内改为 `await`）——这是本次唯一需要跨到 backend-service 文件的改动，因为 `asyncio.gather` 要求调用方运行在事件循环里才能真正并发，纯属技术必要性，未改动 `main.py` 其他任何逻辑 | 用mock测试验证控制流：①favorable字符串→数组等历史字段兼容问题在新 `_build_context()` 里仍正确处理；②`_cache_read()` 对旧结构缓存文件正确判定未命中、新结构正确命中；③`_redact()`（本文件+`rag_service.py`独立副本）脱敏均生效；④RAG `query()` 在无API Key等场景下确认优雅返回空字符串不抛异常；⑤模型链回退+MAX_TOKENS加倍重试机制在新代码结构下依然正确触发；⑥**用真实计时+线程级并发计数器实测**Step1严格先于Step2开始、Step2严格先于Step3-6开始、Step3-6起始时间差<0.001s且实测最大并发数=4（证明真并行而非伪并行/排队串行）、总耗时0.93s显著低于严格串行理论值1.8s；⑦文件缓存命中时完全跳过Gemini调用；⑧GeminiCallError从任一步骤正确传播为 `analysis:None`+明确诊断的 `error` 字段。`ingest_knowledge.py` 本地用真实 `chromadb` 包（无GEMINI_API_KEY环境）跑通一次完整流程：两份知识库文件各自正确切成6个块（共12块，字段/标签元数据核对无误），embedding失败时按预期重试2次后优雅降级为写入无向量原文、不抛异常。**本轮全部验证均无真实 `GEMINI_API_KEY`/真实向量数据支撑**（mock模拟Gemini响应文本、真实chromadb但embedding必然因无Key失败），六步prompt的实际生成质量、RAG检索到的片段是否真的提升输出专业度、`asyncio.to_thread`包同步requests在真实网络延迟下的并发表现，均需部署后用真实API Key对生产 `/analyze-bazi` 端点实测确认 |
+| 2026-07-29（qa-reviewer复查二次修复） | 复查上一行"六步RAG流水线重构"发现4个问题，逐条修复：①**CONFIRMED，最高优先级**——`ingest_knowledge.py::ingest_markdown_file()` 在 `_embed_with_retry()` 返回空列表（无 `GEMINI_API_KEY` 等场景）时，原逻辑仍会 `col.upsert(documents=..., ids=..., metadatas=...)`（不传 `embeddings=`）。注释原以为"没有向量的文档在query()语义检索时不会被命中"，但实际上 ChromaDB 不传 `embeddings=` 时会用 collection 自带的 embedding function **当场计算**向量；`rag_service.get_collection()` 创建时未指定 `embedding_function`，会自动退回默认384维ONNX模型（正是本设计从一开始要绕开的83MB下载）。一旦触发，collection会被锁死在384维，之后任何正确的3072维 `gemini-embedding-001` 向量写入都会因维度不匹配报错、查询也失败，只能手动删 `chroma_db/` 目录重来——本地忘设 `GEMINI_API_KEY` 跑一次这个脚本就会触发。修复为：无embedding时直接跳过，不做任何upsert，只打印警告。②`rag_service.py::query()` 在 collection为空（`count()==0`）时原先完全静默返回`""`，无日志——与"AI深析"故障的教训同源（Phase A的 `ingest_knowledge.py` 是手动本地脚本，Render生产磁盘很可能从未真正跑过，导致RAG一直静默查空却无人发现）。新增一行 `print()` 日志，方便去Render日志搜"RAG"确认知识库是否注入生效，不改变返回值/契约。③`query()` 新增可选 `tags: list[str]` 参数，实现approved plan里要求但此前未接线的"标签加权检索"：传tags时先用语义相似度过取一批候选（`n_results`的4倍或至少10个，不超过collection实际大小），再按候选doc的 `metadata["tags"]`（逗号分隔字符串）与传入tags的重合度做后置重排序取回top-N（重合度优先、语义原始排名作为并列时的tie-breaker），不用ChromaDB `where`精确过滤（候选文档少、标签体系还在Phase A早期阶段，精确过滤容易把结果过滤到空）；六步各自的 `rag_query` 调用处按各步骤擅长领域补上对齐 `knowledge_base/bazi/*.md` 文件头部 `## 标签:` 实际取值的 `tags` 参数（Step1→日主/wuxing/daymaster/fundamentals，Step2→格局/用神/十神/ten-gods，Step3→十神/ten-gods/格局，Step4→日主/十神/ten-gods/神煞，Step5→wuxing/神煞，Step6→大运/流年）。④`js/bazi-analysis.js` 的 `getAnalysis()` 原本没有真正的"进行中请求"去重机制，与 `js/main-new.js` 预热调用处的注释（声称"BaziAnalysis自带去重"）不符——若报告弹窗在预热请求完成前打开会并发发出两份完整六步流水线请求（12次Gemini调用配额翻倍）。新增模块内 `Map<hash, Promise>` 做in-flight去重：同一八字哈希的并发调用复用同一个进行中Promise，完成后从Map清除；同步改正 `main-new.js` 里原本描述不准确的注释 | 无真实 `GEMINI_API_KEY`/`chromadb`向量数据支撑（问题依旧），全部用mock验证控制流：①mock `rag_service` 模块+空embedding场景，断言 `ingest_markdown_file()` 返回0且**零次**`upsert`调用（此前会调用1次，是本次修复的核心验证点）；②mock空collection，断言 `query()` 打印含"count=0"的日志且仍返回`""`；③mock带5个候选文档+分散tags的假collection，断言传 `tags=["格局"]` 时语义排名更低但tag重合度更高的文档被排到前面，同时验证不传tags时保持原有纯语义排序行为不变（向后兼容）；④用Node vm模块加载真实 `bazi-analysis.js` 源码、mock `fetch`/`localStorage`，对同一八字哈希发起两个并发 `getAnalysis()` 调用并在fetch resolve前用setTimeout探测，断言实际只发出1次网络请求（`fetchCallCount===1`）且两个Promise resolve到同一对象，随后第3次调用命中localStorage缓存、fetch计数仍为1。四项mock测试全部通过；未做真实API/生产端到端验证 |
 
 ---
 
@@ -274,11 +363,14 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
 - [ ] 补充缺失的神煞（目前只有26个，传统有百余个）
 - [ ] 优化空亡的视觉表现描述
 - [ ] 生产环境验证 gemini_analysis.py 模型链修复是否解决"AI深析"兜底文案问题
+- [ ] 生产环境用真实API Key验证六步RAG流水线：六步字段齐全、Step3-6并行发起确实比严格串行更快、RAG检索片段确实影响了输出内容
+- [ ] 运行一次 `ingest_knowledge.py`（配置真实 `GEMINI_API_KEY`）把Phase A两份摘要真正写入生产环境的ChromaDB持久盘
 
 ### 中期优化
 - [ ] 为不同日主定制专属 Gemini 提示词
 - [ ] 根据用户反馈调整各档五行的视觉密度
 - [ ] 增加季节/时辰对岛屿光线的影响
+- [ ] Phase B：knowledge-curator子agent完成九本古籍的OCR提取+标签化整理，扩充RAG知识库覆盖面
 
 ### 长期优化
 - [ ] 收集用户评分，建立提示词A/B测试机制
@@ -293,7 +385,10 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
 |---------|------|----------|
 | `island_service/bazi_prompt.py` | 规则引擎，八字→描述映射 | ✅ 直接编辑字典 |
 | `island_service/gemini_enhance.py` | Gemini 提示词增强系统提示词，模型链见 `ENHANCE_MODEL_CHAIN` | ✅ 修改 system_instruction |
-| `island_service/gemini_analysis.py` | Gemini AI命盘深度解读，模型链见 `ANALYSIS_MODEL_CHAIN` | ✅ 修改 prompt 模板 |
+| `island_service/gemini_analysis.py` | Gemini AI命盘深度解读，六步命理框架流水线，模型链见 `ANALYSIS_MODEL_CHAIN` | ✅ 修改各 `_stepN_xxx_sync()` 的 prompt 模板 |
+| `island_service/rag_service.py` | RAG知识库检索服务（ChromaDB + 手动Gemini embedding），六步流水线各步调用 `query()` | ✅ 修改检索逻辑/collection名 |
+| `island_service/ingest_knowledge.py` | 知识库注入脚本（本地手动运行，切块+embedding+写入ChromaDB） | ✅ 修改切块规则 |
+| `island_service/knowledge_base/bazi/*.md` | RAG知识来源，标签化古籍/断语摘要（Phase A仅2份，Phase B由knowledge-curator子agent扩充） | ✅ 新增/编辑 `.md` 文件后需重跑 `ingest_knowledge.py` |
 | `island_service/gemini_image.py` | Nano Banana Pro 图像生成，含附加样式提示 | ✅ 修改 enhanced_prompt |
 | `island_service/tripo_client.py` | TripoAI 3D转换参数 | ✅ 修改 face_limit 等参数 |
 | `island_service/main.py` | 流水线控制，含兜底逻辑 | ⚠️ 修改需谨慎 |
