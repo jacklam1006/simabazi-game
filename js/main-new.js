@@ -19,6 +19,16 @@ const App = (() => {
   // （islands.ai_analysis）时定位要更新的那条记录。未登录/未保存时始终为null。
   let _currentIslandId = null;
 
+  // "岛屿会话"世代计数器：每次开始一次全新生成（_startGenerate）或加载一个已有
+  // 存档（loadSavedIsland）时自增。AI深析六步流水线耗时可达数分钟到十分钟以上，
+  // _currentIslandId 存在从 null（生成刚开始/保存请求未落地）过渡到真实id（保存
+  // 成功）的正常情况，不能单纯靠"补写时 _currentIslandId 是否非空"判断补写是否
+  // 安全——若在流水线跑完前用户已切换去加载了另一个存档，_currentIslandId会被
+  // 重新赋值为新存档的id，此时补写就会写错记录。analysis.js 在发起AI深析请求的
+  // 那一刻记录当时的世代值，补写前与当前世代值比对，不一致则说明会话已切换，
+  // 静默跳过补写（见 claude-docs/已知问题与修复记录.md 对应条目）。
+  let _islandGeneration = 0;
+
   // ── 新用户引导流程状态 ────────────────────────────────────
   let _isNewUser     = false;  // 当前用户是否为新用户（无 tutorial_done 标记）
 
@@ -218,6 +228,7 @@ const App = (() => {
     // 连续生成了两个不同命盘，第二个生成完成前若AI深析先跑完，不应该补写回第一个岛屿）。
     // onComplete 里若本次生成成功保存，会重新赋值为本次真实的岛屿id。
     _currentIslandId = null;
+    _islandGeneration++; // 新会话开始，令此前请求快照的世代值失效
 
     // 启动八字洞察卡片（2s后出现，避免与初始UI冲突）
     setTimeout(() => { InsightCards.start(_baziData); }, 2000);
@@ -336,6 +347,7 @@ const App = (() => {
 
     // 记录当前加载的存档id，供AI深析补写逻辑使用（见 analysis.js buildReport）
     _currentIslandId = isl.id || null;
+    _islandGeneration++; // 新会话开始，令此前请求快照的世代值失效
 
     // 存档里已经保存过AI深析结果 → 直接种进本地缓存，之后报告弹窗调用
     // BaziAnalysis.getAnalysis() 会直接命中缓存，不会重新触发一次完整的
@@ -745,10 +757,14 @@ const App = (() => {
     // analysis.js 用于AI深析生成完成后"补写"回对应的已保存岛屿记录
     // （islands.ai_analysis）。未登录/本次会话未保存过岛屿时为 null。
     getCurrentIslandId: () => _currentIslandId,
+    // analysis.js 在发起AI深析请求的那一刻读取并快照当前世代值，补写前与届时的
+    // 世代值比对，用于识破"请求发起后用户已切换到另一个岛屿会话"的竞态（见上方
+    // _islandGeneration 声明处注释）。
+    getIslandGeneration: () => _islandGeneration,
     // auth.js::logout() 退出登录时调用，清除本次会话记录的岛屿id（防御性清理——
     // RLS+user_id过滤已经能防止跨账号误写，且报告只能从会设置这个id的入口打开，
     // 但退出登录后不应再残留上一个账号的岛屿id）
-    _resetCurrentIslandId: () => { _currentIslandId = null; },
+    _resetCurrentIslandId: () => { _currentIslandId = null; _islandGeneration++; },
   };
 })();
 

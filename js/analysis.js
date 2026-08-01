@@ -390,6 +390,11 @@ const Analysis = (() => {
     // ── 启动 AI 异步加载 ──────────────────────────────
     if (typeof BaziAnalysis !== 'undefined') {
       const gender = d.gender || (typeof _gender !== 'undefined' ? _gender : '男');
+      // 请求发起那一刻快照当前"岛屿会话世代"（见 main-new.js::_islandGeneration
+      // 注释）。六步AI深析流水线耗时可达数分钟以上，若在其运行期间用户切换去
+      // 生成/加载了另一个岛屿，_currentIslandId会被重新赋值，此时不应再把这次
+      // 请求的结果补写到（此刻已经不对应的）新岛屿记录里。
+      const _genAtRequest = (typeof App !== 'undefined' && App.getIslandGeneration) ? App.getIslandGeneration() : null;
       BaziAnalysis.getAnalysis(d, gender).then(analysis => {
         if (analysis) {
           _populateAiContent(container, analysis, d);
@@ -399,15 +404,20 @@ const Analysis = (() => {
           // 用户这次打开报告触发了真实生成/命中缓存，借这个时机把结果补写回那条
           // 记录，避免下次登录还要重新花token生成。fire-and-forget，不阻塞UI，
           // updateIslandAnalysis内部已有错误处理（未登录/无岛屿id/记录不存在等
-          // 情况均静默返回，不影响当前浏览体验）。
+          // 情况均静默返回，不影响当前浏览体验）。世代值比对：只有当前世代仍与
+          // 请求发起时一致（即用户未切换到别的岛屿会话），才执行补写。
           if (typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn() &&
-              typeof App !== 'undefined' && App.getCurrentIslandId && App.getCurrentIslandId()) {
+              typeof App !== 'undefined' && App.getCurrentIslandId && App.getCurrentIslandId() &&
+              App.getIslandGeneration && App.getIslandGeneration() === _genAtRequest) {
             AuthManager.updateIslandAnalysis(App.getCurrentIslandId(), analysis).catch((e) => {
               console.warn('[Analysis] AI深析补写回岛屿记录失败:', e);
             });
           }
         } else {
-          _showAiFallback(container, d);
+          const lastErr = (typeof BaziAnalysis !== 'undefined' && BaziAnalysis.getLastError)
+            ? BaziAnalysis.getLastError(d, gender)
+            : null;
+          _showAiFallback(container, d, lastErr && lastErr.isTimeout);
         }
       });
     }
@@ -548,7 +558,10 @@ const Analysis = (() => {
   // ── AI 加载失败 → 显示静态 fallback ──────────────────
   // 六步框架依赖AI生成，加载失败时无法伪造六步内容；改用规则引擎能直接算出的
   // 日主/五行/喜用神数据拼一段极简兜底话术，不引用任何旧字段（four_pillars/six_dimensions等）
-  function _showAiFallback(container, d) {
+  // isTimeout: true 时说明是 BaziAnalysis 内部 AbortController 超时（见
+  // bazi-analysis.js::AI_ANALYSIS_TIMEOUT_MS，2026-08-01订正为400秒），
+  // 与其它网络/服务端错误区分展示，避免用户看到语义不明的"无法连接"
+  function _showAiFallback(container, d, isTimeout) {
     const dm    = getDayMaster(d);
     const dmWx  = d.dayMasterWx || STEM_WX[dm] || '土';
     const fav   = Array.isArray(d.favorable) ? d.favorable : (d.favorable ? [d.favorable] : []);
@@ -558,8 +571,11 @@ const Analysis = (() => {
     const level   = wxStrength(score);
     const adv     = FAV_ADVICE[mainFav] || {};
 
+    const fallbackReason = isTimeout
+      ? 'AI深析响应超时，请稍后重试'
+      : '深度AI解读暂时无法连接，以下为规则引擎基础解读';
     const reloadHint = `<div style="text-align:center;padding:16px 0 4px;font-size:11px;color:rgba(232,224,208,.25);letter-spacing:1px">
-      · 深度AI解读暂时无法连接，以下为规则引擎基础解读 ·<br>
+      · ${fallbackReason} ·<br>
       <span style="cursor:pointer;color:rgba(201,169,110,.4);text-decoration:underline;margin-top:6px;display:inline-block"
             onclick="location.reload()">刷新页面重试</span>
     </div>`;

@@ -10,22 +10,52 @@
 const IslandDecorations = (() => {
 
   // ── 装饰定义（id → 配置）─────────────────────────────────
+  // 2026-08-01：此前这里的 `pos` 是写死的绝对世界坐标（如 welcome_glow
+  // [0,6,0]），是针对某个假想"标准尺寸岛屿"手动调校的，跟 island-annotate.js
+  // 修复前的 PILLAR_POSITIONS/SHENSHA_POSITIONS 是同一类问题：TripoAI 针对
+  // 不同八字生成的岛屿模型长宽高比例差异很大，写死坐标在比例偏离较大的模型上
+  // 会出现装饰物悬空或埋进模型里。
+  //
+  // 修复：改用 `frac`（相对岛屿真实包围盒的比例，跟 island-annotate.js 的
+  // PILLAR_LAYOUT/SHENSHA_LAYOUT 同款格式：x/z ∈ 大致[-1,1]，y ∈ [0,1]表示
+  // 包围盒底→顶插值比例，可以略超出[0,1]表示"明显高于/低于模型本体"，
+  // hover 表示在地形射线检测命中点之上再叠加的悬浮高度）。实际换算复用
+  // island-annotate.js 已经验证过的 getIslandBox()/layoutToWorld()（见该文件
+  // 2026-08-01 新增的公开API），不重复实现一份容易失配的复制品。
+  //
+  // ring 类型（shensha_glow 环绕光环 / island_expand 岛屿扩展光环）的"位置"
+  // 含义是"围绕整个岛屿"而不是单点贴地，额外用 radiusFrac 表示光环半径相对
+  // 岛屿水平半径的比例，随模型尺寸动态缩放，不再是写死的 5.0/6.0。半径基准用
+  // Math.max(hx, hz)（水平最长维度）而不是 (hx+hz)/2（平均值）——footprint
+  // 非正方形时（如10×4的长条岛屿）用平均值算出的半径会比较窄的那个维度还窄，
+  // 导致"环绕全岛"的光环反而比岛屿本体窄、被埋进模型里看不见（2026-08-01
+  // qa-reviewer 用真实模块代码实测复现，见已知问题日志同日期条目）。
+  // island_expand 额外标记 noRaycast:true——它的原始设计意图是贴着岛屿"基座"
+  // 环绕一圈（原绝对坐标 y=-0.5 接近包围盒底部），如果对它做地形射线检测，
+  // 命中的会是光环中心那一列（x=0,z=0）的地形高度，对多峰/不规则模型来说
+  // 那一点可能正好是最高的山峰而不是岛屿边缘的基座高度，反而更容易算错；
+  // 所以这类"环绕全岛"的光环改用纯包围盒线性插值，不做地形吸附。
   const DECOR_DEFS = {
     // 任务解锁
-    welcome_glow    : { pos:[0,6,0],    type:'glow',    color:0xc9a96e, size:0.8, glb:null },
-    sprout_plant    : { pos:[-2,1,-2],  type:'crystal', color:0x6FCF97, size:0.4, glb:'sprout.glb' },
-    cherry_blossom  : { pos:[2,1.5,2],  type:'tree',    color:0xffb7c5, size:1.2, glb:'cherry.glb' },
-    moon_shrine     : { pos:[0,1.5,-4], type:'crystal', color:0xaad4ff, size:1.5, glb:'moon_shrine.glb' },
-    share_flower    : { pos:[3,0.5,-1], type:'crystal', color:0xff9cdf, size:0.5, glb:'flower.glb' },
-    shensha_glow    : { pos:[0,4,0],    type:'ring',    color:0xc9a96e, size:5.0, glb:null },
-    island_expand   : { pos:[0,-0.5,0], type:'ring',    color:0x6EB5FF, size:6.0, glb:null },
+    welcome_glow    : { frac:{x: 0.00, z: 0.00, y:1.40, hover:2.50}, type:'glow',    color:0xc9a96e, size:0.8, glb:null },
+    sprout_plant    : { frac:{x:-0.40, z:-0.40, y:0.40, hover:0.15}, type:'crystal', color:0x6FCF97, size:0.4, glb:'sprout.glb' },
+    cherry_blossom  : { frac:{x: 0.40, z: 0.40, y:0.50, hover:0.20}, type:'tree',    color:0xffb7c5, size:1.2, glb:'cherry.glb' },
+    moon_shrine     : { frac:{x: 0.00, z:-0.80, y:0.50, hover:0.25}, type:'crystal', color:0xaad4ff, size:1.5, glb:'moon_shrine.glb' },
+    share_flower    : { frac:{x: 0.60, z:-0.20, y:0.30, hover:0.15}, type:'crystal', color:0xff9cdf, size:0.5, glb:'flower.glb' },
+    shensha_glow    : { frac:{x: 0.00, z: 0.00, y:1.00, hover:1.00}, type:'ring', color:0xc9a96e, size:5.0, radiusFrac:1.0, glb:null },
+    island_expand   : { frac:{x: 0.00, z: 0.00, y:0.10, hover:0.00}, type:'ring', color:0x6EB5FF, size:6.0, radiusFrac:1.2, noRaycast:true, glb:null },
 
     // 水晶商品购买后（预留）
-    crystal_water   : { pos:[-3,0.5,1], type:'crystal', color:0x6EB5FF, size:0.8, glb:'basin_clear.glb' },
-    crystal_amethyst: { pos:[0,0.5,-3], type:'crystal', color:0x9b59b6, size:0.8, glb:'pillar_amethyst.glb' },
-    crystal_rose    : { pos:[3,0.5,-1], type:'crystal', color:0xffb7c5, size:0.6, glb:'bracelet_rose.glb' },
-    crystal_obsidian: { pos:[-3,0.5,-2],type:'crystal', color:0x1a1a2e, size:0.7, glb:'bracelet_obsidian.glb' },
+    crystal_water   : { frac:{x:-0.60, z: 0.20, y:0.30, hover:0.15}, type:'crystal', color:0x6EB5FF, size:0.8, glb:'basin_clear.glb' },
+    crystal_amethyst: { frac:{x: 0.00, z:-0.60, y:0.30, hover:0.15}, type:'crystal', color:0x9b59b6, size:0.8, glb:'pillar_amethyst.glb' },
+    crystal_rose    : { frac:{x: 0.60, z:-0.20, y:0.30, hover:0.15}, type:'crystal', color:0xffb7c5, size:0.6, glb:'bracelet_rose.glb' },
+    crystal_obsidian: { frac:{x:-0.60, z:-0.40, y:0.30, hover:0.15}, type:'crystal', color:0x1a1a2e, size:0.7, glb:'bracelet_obsidian.glb' },
   };
+
+  // IslandAnnotate 计算包围盒失败/未就绪时的最终兜底（与 island-annotate.js
+  // 的 FALLBACK_BOX 保持一致比例），只在异常路径触发，正常情况下走
+  // IslandAnnotate.getIslandBox() 现算真实包围盒
+  const FALLBACK_BOX = { min:{x:-5,y:-1,z:-5}, max:{x:5,y:4,z:5} };
 
   const GLB_BASE  = '/assets/decorations/';
   let _scene      = null;
@@ -35,9 +65,24 @@ const IslandDecorations = (() => {
   function init(scene) { _scene = scene; }
 
   // ── 恢复已解锁装饰（每次进岛屿后调用）──────────────────
+  // 2026-08-01：`_placed` 是模块级变量，整个浏览器会话共用同一个 THREE.Scene
+  // （island-loader.js 的 initScene 有 `if (_scene) return` 守卫，不会重建
+  // 场景），切换岛屿（loadSavedIsland/retryGenerate）时旧岛屿的装饰物从未被
+  // 清理——`add()` 里 `if (_placed[decorId]) return` 会认为"已经摆过"直接跳过，
+  // 导致装饰带着上一个岛屿的包围盒坐标残留在新岛屿上（形状差异越大越明显）。
+  // 修复：每次 restoreAll（换岛屿必经的唯一装饰恢复入口）开头先 clearAll()，
+  // 保证按当次岛屿的真实包围盒重新摆放。
   function restoreAll(baziData) {
+    clearAll();
     const decorations = UserState.getDecorations();
     decorations.forEach(d => add(d.id, baziData));
+  }
+
+  // ── 清空当前场景里所有已摆放的装饰（换岛屿前调用）──────
+  function clearAll() {
+    if (!_scene) { _placed = {}; return; }
+    Object.keys(_placed).forEach(decorId => remove(decorId));
+    _placed = {};   // 兜底：remove() 理论上已逐一删除，这里确保万无一失
   }
 
   // ── 添加单个装饰 ─────────────────────────────────────────
@@ -48,12 +93,63 @@ const IslandDecorations = (() => {
     const def = DECOR_DEFS[decorId];
     if (!def) return;
 
+    // 每次 add() 都现算一次真实包围盒——不同岛屿模型尺寸/比例不同，
+    // 不能复用上一次或其他装饰算出的结果
+    const placement = _computePlacement(def);
+
     // 有GLB文件优先加载，否则用几何占位
     if (def.glb && typeof THREE.GLTFLoader !== 'undefined') {
-      _loadGLB(decorId, def);
+      _loadGLB(decorId, def, placement);
     } else {
-      _addPlaceholder(decorId, def);
+      _addPlaceholder(decorId, def, placement);
     }
+  }
+
+  // ── 相对比例 → 世界坐标 ──────────────────────────────────
+  // 复用 island-annotate.js 已验证过的 getIslandBox()/layoutToWorld()（同一套
+  // "用当次实际加载模型的真实包围盒按比例换算+地形射线检测贴合"逻辑，见该文件
+  // 2026-08-01 新增的公开API），避免在这里重复实现一份容易失配的复制品。
+  function _computePlacement(def) {
+    let box = null, group = null;
+    if (typeof IslandAnnotate !== 'undefined' && IslandAnnotate.getIslandBox) {
+      try {
+        ({ box, group } = IslandAnnotate.getIslandBox());
+      } catch (e) {
+        console.warn('[IslandDecorations] IslandAnnotate.getIslandBox() 失败，改用兜底比例', e);
+      }
+    }
+
+    let pos, hx, hz;
+    if (box && typeof IslandAnnotate !== 'undefined' && IslandAnnotate.layoutToWorld) {
+      // ring 类型且标记 noRaycast 时传 group=null，让 layoutToWorld 退化为
+      // 纯包围盒线性插值，不做地形吸附（见 DECOR_DEFS 上方注释）
+      const useGroup = def.noRaycast ? null : group;
+      pos = IslandAnnotate.layoutToWorld(def.frac, box, useGroup);
+      hx  = (box.max.x - box.min.x) / 2;
+      hz  = (box.max.z - box.min.z) / 2;
+    } else {
+      // IslandAnnotate 理论上不会缺席（index.html 已保证 island-annotate.js
+      // 先于 island-decorations.js 加载），这里只是极端异常下的最终安全网
+      const f  = def.frac || { x:0, z:0, y:0.4 };
+      hx = (FALLBACK_BOX.max.x - FALLBACK_BOX.min.x) / 2;
+      hz = (FALLBACK_BOX.max.z - FALLBACK_BOX.min.z) / 2;
+      const sizeY = FALLBACK_BOX.max.y - FALLBACK_BOX.min.y;
+      pos = new THREE.Vector3(
+        f.x * hx,
+        FALLBACK_BOX.min.y + f.y * sizeY,
+        f.z * hz
+      );
+    }
+
+    let size = def.size;
+    if (def.type === 'ring' && def.radiusFrac) {
+      // 用最长维度而不是水平半宽/半深的平均值——footprint 非正方形（如
+      // 10×4 的长条形岛屿）时，(hx+hz)/2 会比较窄的那个维度还窄，导致
+      // "环绕全岛"的光环反而被岛屿本体挡住/埋进模型里看不见
+      size = Math.max(hx, hz) * def.radiusFrac;
+    }
+
+    return { pos: [pos.x, pos.y, pos.z], size };
   }
 
   // ── 移除装饰 ─────────────────────────────────────────────
@@ -65,26 +161,27 @@ const IslandDecorations = (() => {
   }
 
   // ── 加载真实 GLB ─────────────────────────────────────────
-  function _loadGLB(decorId, def) {
+  function _loadGLB(decorId, def, placement) {
     new THREE.GLTFLoader().load(
       GLB_BASE + def.glb,
       (gltf) => {
         const model = gltf.scene;
-        model.position.set(...def.pos);
-        model.scale.setScalar(def.size);
+        model.position.set(...placement.pos);
+        model.scale.setScalar(placement.size);
         model.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
         _scene.add(model);
         _placed[decorId] = model;
         _addEntryAnimation(model);
       },
       undefined,
-      () => _addPlaceholder(decorId, def)   // 加载失败回退占位
+      () => _addPlaceholder(decorId, def, placement)   // 加载失败回退占位
     );
   }
 
   // ── 几何占位符（GLB未就绪时）────────────────────────────
-  function _addPlaceholder(decorId, def) {
+  function _addPlaceholder(decorId, def, placement) {
     let mesh;
+    const size = placement.size;
     const mat = new THREE.MeshStandardMaterial({
       color      : def.color,
       emissive   : def.color,
@@ -96,17 +193,20 @@ const IslandDecorations = (() => {
     switch (def.type) {
       case 'glow': {
         // 发光球
-        const geo = new THREE.SphereGeometry(def.size, 16, 16);
+        const geo = new THREE.SphereGeometry(size, 16, 16);
         mesh = new THREE.Mesh(geo, mat);
-        // 添加点光源
+        // 添加点光源——挂载为 mesh 的子对象（而不是直接 _scene.add），
+        // 这样 clearAll()/remove() 只需移除 mesh 本体，点光源作为其子节点
+        // 会随场景图一起被移除，不会残留成永久生效的孤儿光源（2026-08-01：
+        // 换岛屿时 restoreAll 会重复 add() 同一个已解锁装饰，若光源脱离
+        // mesh 单独挂在 _scene 上，每次都会新增一个删不掉的点光源）。
         const light = new THREE.PointLight(def.color, 1.5, 6);
-        light.position.set(...def.pos);
-        _scene.add(light);
+        mesh.add(light);   // 局部坐标 (0,0,0)，随 mesh.position 一起定位
         break;
       }
       case 'ring': {
-        // 光环
-        const geo = new THREE.TorusGeometry(def.size, 0.05, 8, 64);
+        // 光环（半径已在 _computePlacement 里按岛屿包围盒尺寸动态缩放）
+        const geo = new THREE.TorusGeometry(size, 0.05, 8, 64);
         mesh = new THREE.Mesh(geo, mat);
         mesh.rotation.x = Math.PI / 2;
         break;
@@ -115,26 +215,26 @@ const IslandDecorations = (() => {
         // 锥形树
         const group = new THREE.Group();
         const trunk = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.05, 0.1, def.size * 0.6, 6),
+          new THREE.CylinderGeometry(0.05, 0.1, size * 0.6, 6),
           new THREE.MeshStandardMaterial({ color: 0x8B6914 })
         );
         const crown = new THREE.Mesh(
-          new THREE.ConeGeometry(def.size * 0.5, def.size, 8),
+          new THREE.ConeGeometry(size * 0.5, size, 8),
           mat
         );
-        crown.position.y = def.size * 0.8;
+        crown.position.y = size * 0.8;
         group.add(trunk, crown);
         mesh = group;
         break;
       }
       default: {
         // 水晶柱
-        const geo = new THREE.ConeGeometry(def.size * 0.3, def.size, 6);
+        const geo = new THREE.ConeGeometry(size * 0.3, size, 6);
         mesh = new THREE.Mesh(geo, mat);
       }
     }
 
-    mesh.position.set(...def.pos);
+    mesh.position.set(...placement.pos);
     _scene.add(mesh);
     _placed[decorId] = mesh;
     _addEntryAnimation(mesh);
@@ -176,5 +276,5 @@ const IslandDecorations = (() => {
     }
   }
 
-  return { init, restoreAll, add, remove, applyLiunianEffect };
+  return { init, restoreAll, clearAll, add, remove, applyLiunianEffect };
 })();

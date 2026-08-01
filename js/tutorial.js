@@ -26,13 +26,51 @@
 const Tutorial = (() => {
 
   // ── 相机飞行配置 ──────────────────────────────────────────
+  // 2026-08-01 曾把 cam 也改成"相对岛屿包围盒比例"，被 qa-reviewer 打回：
+  // island-loader.js._loadGLB()（约第250-255行）在每个GLB模型加载完成后
+  // 都会做归一化——scale = 10 / max(size.x, size.y, size.z)，再把模型居中
+  // （position.sub(center*scale)）。这意味着运行时 IslandAnnotate.getIslandBox()
+  // 拿到的包围盒永远是"以原点对称、最大边=10"（min = -max），写死的绝对
+  // 相机坐标本来就是相对这个固定尺度调校出来的，尺度上是安全的，不需要
+  // 相对化。改成"x/y/z三轴各自按包围盒对应维度独立缩放"反而是错的——它
+  // 破坏了相机与模型的统一距离比例，导致扁平岛屿（如10×1.5×10）算出的
+  // 相机仰角低到10°（近乎贴地平视），瘦高岛屿（如2.5×10×2.5）又飙到80°
+  // （近乎正俯视），比原来的写死坐标还差。真正会因模型形状不同而跑偏的
+  // 只有"看向的点"（look target）——四柱/神煞标签是在模型表面用射线投射
+  // 出来的真实坐标，不同形状的岛屿这个点必然不同，这部分才需要动态化。
+  //
+  // 修复：cam 恢复为写死的绝对坐标（与本次改动前、也是本次改动最初的
+  // 版本完全一致，经过生产验证）；look 保留"优先复用 IslandAnnotate.
+  // getLabelPositions() 的真实标签世界坐标"这个有效修复，取不到时才退化
+  // 为写死坐标（同样是原始生产验证过的数值，不再依赖包围盒换算）。
   const STEP_CAM = {
-    pillar_day   : { cam: [0, 9, 11],   look: [0, 3.5, 0] },
-    pillar_year  : { cam: [-1, 7, 6],   look: [-3.5, 1.5, -3] },
-    pillar_month : { cam: [1, 7, 6],    look: [3.5, 1.5, -3] },
-    pillar_hour  : { cam: [0, 6, 13],   look: [0, 1.5, 3.8] },
-    shensha      : { cam: [0, 12, 18],  look: [0, 0, 0] },
+    pillar_day   : { cam: {x: 0,  y: 9,  z: 11}, look: {x: 0,    y: 3.5, z: 0}    },
+    pillar_year  : { cam: {x:-1,  y: 7,  z: 6},  look: {x:-3.5,  y: 1.5, z:-3}    },
+    pillar_month : { cam: {x: 1,  y: 7,  z: 6},  look: {x: 3.5,  y: 1.5, z:-3}    },
+    pillar_hour  : { cam: {x: 0,  y: 6,  z: 13}, look: {x: 0,    y: 1.5, z: 3.8}  },
+    shensha      : { cam: {x: 0,  y: 12, z: 18}, look: {x: 0,    y: 0,   z: 0}    },
   };
+
+  /**
+   * 计算某一步的注视目标（相机看向的点）。优先直接复用 IslandAnnotate 已经
+   * 算好的真实标签世界坐标（与该步骤高亮的标签位置完全一致，含地形射线
+   * 贴合，会随岛屿真实形状变化）；IslandAnnotate 不可用或对应标签尚未生成
+   * 时，才退化为写死坐标（与 cam 一样是生产验证过的固定数值）。
+   */
+  function _lookTargetFor(step, lookFallback) {
+    if (typeof IslandAnnotate !== 'undefined' && IslandAnnotate.getLabelPositions) {
+      try {
+        const positions = IslandAnnotate.getLabelPositions();
+        if (step.type === 'pillar' && positions.pillars && positions.pillars[step.col]) {
+          return positions.pillars[step.col].clone();
+        }
+        if (step.type === 'shensha' && positions.shensha && positions.shensha.length) {
+          return positions.shensha[0].clone();
+        }
+      } catch (e) { /* 静默回退到写死坐标 */ }
+    }
+    return new THREE.Vector3(lookFallback.x, lookFallback.y, lookFallback.z);
+  }
 
   const STEM_SHORT = {
     '甲':'甲木如参天大树，刚直领导，开拓创新',
@@ -215,8 +253,8 @@ const Tutorial = (() => {
 
     const camCfg = STEP_CAM[_stepKey(step)] || STEP_CAM.shensha;
     if (typeof IslandLoader !== 'undefined' && typeof THREE !== 'undefined') {
-      const camPos = new THREE.Vector3(...camCfg.cam);
-      const lookAt = new THREE.Vector3(...camCfg.look);
+      const camPos = new THREE.Vector3(camCfg.cam.x, camCfg.cam.y, camCfg.cam.z);
+      const lookAt = _lookTargetFor(step, camCfg.look);
       IslandLoader.flyTo(camPos, lookAt, 1200, () => {
         if (_active) _showHintBar(step, idx, total);
       });

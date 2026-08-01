@@ -392,5 +392,17 @@ const IslandAnnotate = (() => {
     return _labelMap[key] || null;
   }
 
-  return { attach, detach, highlightLabel, clearHighlight, getLabelPositions, getLabelElement };
+  // ── 供其他模块（island-decorations.js）复用的公开工具 ──────
+  // 2026-08-01：island-decorations.js 的 DECOR_DEFS 曾经历跟本文件早期
+  // PILLAR_POSITIONS/SHENSHA_POSITIONS 完全相同的"写死绝对世界坐标"问题
+  // （见已知问题记录），直接复用这里已经验证过的包围盒计算 + 比例换算逻辑，
+  // 而不是在 island-decorations.js 里重新实现一份容易失配的复制品。
+  // 命名沿用 getIslandBox/layoutToWorld（不带下划线前缀）表示这是有意导出的公开API。
+  function getIslandBox() { return _getIslandBox(); }
+  function layoutToWorld(frac, box, group) { return _layoutToWorld(frac, box, group); }
+
+  return {
+    attach, detach, highlightLabel, clearHighlight, getLabelPositions, getLabelElement,
+    getIslandBox, layoutToWorld,
+  };
 })();
