@@ -19,7 +19,10 @@ import hashlib
 import asyncio
 import uuid
 import time
+import requests
 from pathlib import Path
+from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -31,7 +34,41 @@ from gemini_image import generate_island_image
 from tripo_client import submit_image_to_3d, submit_text_to_3d, get_task_status
 from supabase_storage import download_glb, upload_glb
 
-app = FastAPI(title="司马八字 Island Generator API")
+# ── 默认线程池（asyncio.to_thread 底层用的executor）───────────
+# 2026-08-01 评估已知问题日志"代码质量/健壮性"第13条（asyncio.to_thread默认
+# 线程池在多用户并发时可能成为瓶颈）后显式设置，理由：
+#   1. 本服务单进程单event loop（uvicorn未开--workers），/analyze-bazi的
+#      Step3-6用asyncio.gather并行发起4次asyncio.to_thread（单个请求峰值占用
+#      4个线程）；同一次评估中还发现并修复了_run_generation/_poll_tripo里
+#      原本直接同步阻塞调用（未用to_thread）的问题（见下方改动），修复后
+#      /generate的每个生成中任务也会在其网络调用期间占用1个线程——两类端点
+#      叠加后，多用户同时使用时对线程数的需求比修复前更高，不是更低。
+#   2. Python默认executor大小是min(32, os.cpu_count()+4)。Render容器的
+#      os.cpu_count()在cgroup配额限制（当前用的Starter套餐，非整数vCPU）下
+#      具体返回什么值取决于host是否设置了CPU亲和性掩码——不同基础设施表现
+#      不一致，本地也无法在Render真实容器里验证，属于不确定量。
+#   3. 这些to_thread包裹的调用几乎全部是requests.post/get等阻塞网络I/O
+#      （等待Gemini/TripoAI/Supabase响应），线程在等待期间会释放GIL、不占用
+#      CPU，只是占着一个OS线程和少量内存——对"I/O密集型"场景，线程数适度
+#      超配的成本很低，不同于CPU密集型场景。
+#   4. 综合以上：与其依赖一个在容器环境下值不确定、且可能低至个位数
+#      （cpu_count()==1时默认池只有5）的隐式默认值，不如显式设一个有把握
+#      覆盖"数个用户同时触发生成/深析"场景的下限。20是估算值：可覆盖约
+#      5个用户同时处于/analyze-bazi的Step3-6并行阶段（5*4=20），或更多用户
+#      同时处于/generate的单线程网络调用阶段——不是压测得出的精确值，产品
+#      当前阶段用户规模尚小，如果后续实际观察到线程仍然不够用（Render
+#      监控里CPU持续高位、请求排队/超时增多），再回来上调或改用更专门的
+#      并发控制（如按端点分别限流）。
+_EXECUTOR = ThreadPoolExecutor(max_workers=20, thread_name_prefix="smb-worker")
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    asyncio.get_running_loop().set_default_executor(_EXECUTOR)
+    yield
+
+
+app = FastAPI(title="司马八字 Island Generator API", lifespan=_lifespan)
 
 # CORS：允许前端跨域
 app.add_middleware(
@@ -78,7 +115,12 @@ async def _poll_tripo(task_id: str, max_wait: int = 180) -> str:
     deadline = time.time() + max_wait
     while time.time() < deadline:
         await asyncio.sleep(3)
-        result = get_task_status(task_id)
+        # get_task_status 是同步阻塞的 requests.get 调用，2026-08-01评估并发
+        # 瓶颈问题时发现此前直接同步调用会在每次轮询（每3秒一次，持续最长
+        # 300秒）期间独占事件循环，导致该job运行期间整个单进程服务对其他所有
+        # 用户请求（含/status /health /ping /analyze-bazi）都失去响应——
+        # 改用 to_thread 把这次网络调用挪到线程池执行，事件循环不再被阻塞
+        result = await asyncio.to_thread(get_task_status, task_id)
         status = result.get("status", "")
 
         if status == "success":
@@ -111,6 +153,19 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
         data = {"job_id": job_id, "stage": stage, "progress": progress, **extra}
         _write(job_path, data)
 
+    # 2026-08-01 评估已知问题日志"asyncio.to_thread默认线程池瓶颈"待办时发现：
+    # 本函数以下调用 enhance_island_prompt/generate_island_image/
+    # submit_image_to_3d/submit_text_to_3d/download_glb/upload_glb 全部是同步
+    # 阻塞的requests调用，此前直接在这个async函数体内同步调用（没有用
+    # asyncio.to_thread包裹）。_run_generation本身是靠BackgroundTasks
+    # 调度的协程，Starlette对"传入的task本身是async def"的处理方式是直接
+    # await它、而不会自动丢进线程池——意味着这些同步网络调用会直接占用
+    # 唯一的事件循环线程，期间（单次最长可达90秒的图像生成或GLB下载/上传）整个
+    # 单进程服务对其他所有用户的所有请求（含另一个用户的/generate /status
+    # /health /ping /analyze-bazi）都会失去响应，是比"Step3-6线程池够不够"
+    # 更直接的并发瓶颈。改为 asyncio.to_thread 包裹，让这些调用真正在线程池
+    # 里执行、不阻塞事件循环。generate_island_prompt是纯规则引擎计算（无网络
+    # 调用），不需要包裹。
     try:
         # ── 阶段1：规则引擎生成基础提示词 ─────────────────
         update("generating_prompt", 5)
@@ -119,7 +174,7 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
 
         # ── 阶段1.5：Gemini 3.5 Flash 深度分析优化 ────────
         update("enhancing_prompt", 10)
-        enhanced = enhance_island_prompt(prompt, bazi_data)
+        enhanced = await asyncio.to_thread(enhance_island_prompt, prompt, bazi_data)
         if enhanced != prompt:
             print(f"[Gemini Enhance] 成功，长度 {len(prompt)} → {len(enhanced)}")
         else:
@@ -131,7 +186,7 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
         update("generating_image", 15)
         image_bytes = None
         try:
-            image_bytes = generate_island_image(prompt)
+            image_bytes = await asyncio.to_thread(generate_island_image, prompt)
             update("image_ready", 35)
         except Exception as img_err:
             # Gemini失败 → 跳过图生3D，直接用文生3D
@@ -147,7 +202,7 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
         if image_bytes:
             # 优先路径：Gemini图 → TripoAI image-to-3D
             try:
-                task_id = submit_image_to_3d(image_bytes)
+                task_id = await asyncio.to_thread(submit_image_to_3d, image_bytes)
                 update("tripo_processing", 45, tripo_task_id=task_id)
                 model_url = await _poll_tripo(task_id, max_wait=300)
             except Exception as tripo_err:
@@ -162,15 +217,15 @@ async def _run_generation(job_id: str, bazi_data: dict, cache_key: str):
             # 兜底路径：text-to-3D 用专用短提示词（长提示词会被TripoAI 400拒绝）
             short_prompt = generate_tripo_short_prompt(bazi_data)
             print(f"[TripoAI fallback] 短提示词({len(short_prompt)}字): {short_prompt}")
-            task_id = submit_text_to_3d(short_prompt)
+            task_id = await asyncio.to_thread(submit_text_to_3d, short_prompt)
             update("tripo_text_processing", 55, tripo_task_id=task_id)
             model_url = await _poll_tripo(task_id, max_wait=240)
 
         # ── 上传GLB到Supabase Storage（永久保存）──────────
         update("uploading", 90)
         try:
-            glb_bytes    = download_glb(model_url)
-            model_url    = upload_glb(glb_bytes)
+            glb_bytes    = await asyncio.to_thread(download_glb, model_url)
+            model_url    = await asyncio.to_thread(upload_glb, glb_bytes)
             print(f"[Pipeline] 永久URL: {model_url}")
         except Exception as storage_err:
             # Storage失败不阻断流程，继续用TripoAI临时URL（5分钟内仍可用）
@@ -257,8 +312,13 @@ def ping():
 
 
 # ── 端点5：检查邮箱是否已注册 ───────────────────────────────
+# 2026-08-01：此端点原为 async def，内部 requests.get 是同步阻塞调用，未用
+# asyncio.to_thread 包裹时会占用唯一的事件循环线程，冻结全服务器（跟
+# _run_generation/_poll_tripo 同类问题）。改为普通 def：Starlette 会自动把
+# 同步函数整体丢进 anyio 线程池执行，不占用事件循环——与本文件 /health、
+# /ping 的写法风格一致（方案A，见已知问题日志）。
 @app.post("/auth/check-email")
-async def check_email_endpoint(req: CheckEmailRequest):
+def check_email_endpoint(req: CheckEmailRequest):
     """检查邮箱是否已注册（主页表单用，判断新老用户）"""
     email = req.email.strip().lower()
     if not email or "@" not in email:
@@ -270,6 +330,9 @@ async def check_email_endpoint(req: CheckEmailRequest):
         return {"exists": False}
 
     try:
+        # TODO(2026-08-01): 只拉了第一页（per_page=1000），用户量超过1000后
+        # 第1001个及以后注册的用户在这里会被误判为"未注册"。当前用户规模下
+        # 不会触发，超过后需要补翻页逻辑（循环 page+1 直到返回的 users 为空）。
         resp = requests.get(
             f"{supabase_url}/auth/v1/admin/users",
             headers={

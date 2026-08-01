@@ -15,6 +15,13 @@ services:
         value: gemini-3-pro-image
       - key: TRIPO_API_KEY
         sync: false
+      # 2026-08-01：supabase_storage.py（GLB永久存储）与 /auth/check-email
+      # 端点均依赖这两个变量；此前只在Render面板手动配置、render.yaml未声明，
+      # 补上 sync:false 声明使配置可追溯（不含真实值，需在面板手动填写）。
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
     disk:
       name: island-cache
       mountPath: /opt/render/project/src/island_service/persistent_data

@@ -142,24 +142,59 @@ def upload_image(image_bytes: bytes, filename: str = 'island.png') -> str:
     上传PNG图像到TripoAI，返回image_token（后续建任务时作为 file.file_token 使用）。
     参照官方SDK legacy_client_impl.py upload_file()：POST {BASE_URL}/upload，
     multipart字段名"file"，响应结构 {"code":0,"data":{"image_token":"..."}}
+
+    2026-08-01 已知问题日志第12条排查（"Gemini出图改4K后从未压力测试过TripoAI的实际上传限制"）：
+    - Gemini `imageConfig:{imageSize:"4K"}` 对1:1宽高比实际产出 4096x4096 PNG（官方文档确认），
+      属于较大文件，且未找到TripoAI官方文档/SDK对上传文件大小的明确上限说明（SDK
+      legacy_client_impl.py `upload_file`/`upload_multipart` 均无客户端侧大小校验逻辑，
+      纯粹把文件整体读入内存后转发，说明SDK本身也不做预检查，交由服务端决定）
+    - 因此这里不假造一个"文件大小上限"去客户端拦截（没有依据的数字不如不写），
+      而是从"传输是否够稳"和"失败了能不能一眼看出原因"两个方向加固：
+      timeout 60s→120s（给大文件更宽松的传输时间余量）、网络层异常（超时/连接重置等，
+      不含TripoAI已正常响应但内容是显式错误的情况）重试1次、上传前后都记录文件字节数，
+      失败信息里也带上文件大小，方便和当前 image_token 的字节数对照排查是否与体积有关
     """
+    size_mb = len(image_bytes) / (1024 * 1024)
+    print(f"[TripoAI Upload] 准备上传图像，大小 {len(image_bytes)} bytes（约 {size_mb:.2f} MB）")
+
     upload_headers = {
         'Authorization': f'Bearer {TRIPO_API_KEY}',
     }
     files = {
         'file': (filename, image_bytes, 'image/png'),
     }
-    try:
-        resp = requests.post(
-            f'{BASE_URL}/upload',
-            headers=upload_headers,
-            files=files,
-            timeout=60
-        )
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"TripoAI上传图像请求异常: {_redact(str(e))[:300]}")
 
-    data = _parse_tripo_response(resp, "上传图像")
+    resp = None
+    max_attempts = 2  # 仅对网络层异常重试1次；TripoAI已正常响应但内容是显式错误（如413/400）不重试
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = requests.post(
+                f'{BASE_URL}/upload',
+                headers=upload_headers,
+                files=files,
+                timeout=120
+            )
+            break
+        except requests.exceptions.RequestException as e:
+            if attempt < max_attempts:
+                print(f"[TripoAI Upload] 第{attempt}次请求异常，1秒后重试: {_redact(str(e))[:200]}")
+                time.sleep(1)
+                continue
+            raise RuntimeError(
+                f"TripoAI上传图像请求异常（已重试{max_attempts - 1}次，文件大小 "
+                f"{len(image_bytes)} bytes/约{size_mb:.2f}MB，若持续失败可能与文件体积或网络不稳有关）: "
+                f"{_redact(str(e))[:300]}"
+            )
+
+    try:
+        data = _parse_tripo_response(resp, "上传图像")
+    except (TripoAuthError, RuntimeError) as parse_err:
+        # 把文件大小附加进异常信息，方便一眼判断这次失败是否可能与"文件过大"有关，
+        # 不改变异常类型（TripoAuthError仍是TripoAuthError），只丰富消息内容
+        raise type(parse_err)(
+            f"{parse_err}（本次上传文件大小 {len(image_bytes)} bytes/约{size_mb:.2f}MB）"
+        ) from parse_err
+
     payload = data.get('data') or {}
     # 官方SDK确认这个端点字段名是 image_token；保留 file_token 兜底，
     # 防止TripoAI未来把这个端点也统一成 /v3/files 那套命名却没人注意到。
@@ -169,6 +204,7 @@ def upload_image(image_bytes: bytes, filename: str = 'island.png') -> str:
             f"TripoAI上传图像HTTP成功但响应里找不到 image_token/file_token 字段，"
             f"完整响应: {_redact(str(data))[:500]}"
         )
+    print(f"[TripoAI Upload] 上传成功，image_token={token[:12]}...")
     return token
 
 

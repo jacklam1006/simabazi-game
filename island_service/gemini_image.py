@@ -106,6 +106,12 @@ ADDITIONAL STYLE NOTES FOR 3D CONVERSION:
     for part in data.get('candidates', [{}])[0].get('content', {}).get('parts', []):
         if 'inlineData' in part:
             img_b64 = part['inlineData']['data']
-            return base64.b64decode(img_b64)
+            img_bytes = base64.b64decode(img_b64)
+            # 2026-08-01 已知问题日志第12条排查：记录4K出图实际字节数，
+            # 用于确认"4K PNG输出量级"这个此前从未在生产环境实测过的假设，
+            # 也方便和 tripo_client.py 上传前的大小日志对照排查上传失败是否与文件体积相关
+            size_mb = len(img_bytes) / (1024 * 1024)
+            print(f"[Gemini Image] 生成图像 {len(img_bytes)} bytes（约 {size_mb:.2f} MB），imageSize=4K aspectRatio=1:1")
+            return img_bytes
 
     raise RuntimeError(f"Gemini未返回图像数据: {_redact(str(data))[:300]}")
