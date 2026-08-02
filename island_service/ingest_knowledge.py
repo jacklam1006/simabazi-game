@@ -268,6 +268,41 @@ def reset_collection() -> None:
     print(f"✅ 已重新创建空 collection \"{rag_service.COLLECTION_NAME}\"，可以重新 ingest\n")
 
 
+def _get_existing_sources() -> set:
+    """返回 collection 里当前所有 chunk 的 `source`（文件名）去重集合，或在读取异常
+    时返回 `None`（哨兵值，表示"无法判断"，调用方需要保守处理）。
+
+    2026-08-02 新增：非 `--reset` 模式下，如果某个文件本次 embedding 失败，
+    `ingest_all()` 需要区分两种严重程度不同的情况：
+    1. 该文件此前从未成功入库过（collection 里没有它的 `source` 记录）——这次失败
+       意味着这份内容**完全缺失**，是真正的净损失，需要醒目提示；
+    2. 该文件此前已经入库过（`ingest_markdown_file()` 里"embedding 失败时不删除
+       旧版本、直接跳过写入"的设计生效）——这次失败只是"沿用了旧版本、本次没能
+       更新到最新内容"，相对安全，可以用温和一点的提示。
+
+    这里在 `ingest_all()` 循环开始前调用一次并把结果作为运行前快照使用，而不是在
+    每个文件失败时临时查询整个 collection——一是避免文件多时反复做 N 次全量
+    `col.get()` 的性能浪费，二是让判断基准明确是"本次运行开始前的状态"，不用
+    依赖"同一次运行里其它文件的成功写入不会影响这个判断"这个虽然目前成立、但
+    没必要引入的隐含假设。
+
+    与 `_warn_orphan_chunks()` 用途不同（那个是运行结束后检测目录里已不存在的
+    孤儿文件），实现方式相同（都是读取全部 metadata 取 `source` 字段去重），
+    这里没有合并复用是因为调用时机不同（一个在循环前，一个在循环后）、语义也不同，
+    强行合并会让两个函数的职责边界变得含糊。
+    """
+    try:
+        col = rag_service.get_collection(rag_service.COLLECTION_NAME)
+        all_items = col.get(include=["metadatas"])
+        metas = all_items.get("metadatas") or []
+        return {m.get("source") for m in metas if m and m.get("source")}
+    except Exception as e:
+        print(f"（既有 source 快照读取跳过，出现异常：{e}；若稍后有文件 embedding 失败，"
+              f"将无法区分'全新文件'与'已入库旧文件'，会保守地统一按更严重的'全新文件'"
+              f"提示处理，避免因判断失败反而漏报）")
+        return None
+
+
 def _warn_orphan_chunks(actual_filenames: set) -> None:
     """检测 collection 里是否存在"孤儿 chunk"——`source` 元数据指向的文件已经不在
     `knowledge_base/bazi/` 目录里（被重命名或删除），但 chunk 本身仍残留在向量库
@@ -304,6 +339,14 @@ def ingest_all(reset: bool = False) -> None:
             print("🛑 已中止：--reset 未执行，collection 保持原样，本次不会注入任何内容。")
             return
         reset_collection()
+
+    # 非 --reset 模式下，在开始逐文件处理前先拍一张"运行前 collection 里已有哪些
+    # source"的快照，供稍后区分失败文件的严重程度用（见 `_get_existing_sources()`
+    # 文档字符串）。--reset 模式下 reset_collection() 已经把 collection 清空，
+    # 这个区分没有意义——--reset 下任何失败文件都统一走上面已有的"未完整成功"
+    # 专属警告，不需要再细分。
+    existing_sources_before_run = None if reset else _get_existing_sources()
+
     print(f"\n📚 开始注入知识库 Markdown 文件（{KNOWLEDGE_DIR}）...\n")
     total = 0
     actual_filenames = set()
@@ -328,6 +371,37 @@ def ingest_all(reset: bool = False) -> None:
               f"   `python3 ingest_knowledge.py`（不带 --reset）以补齐缺失内容。\n")
     else:
         print(f"\n✨ 完成！共注入 {total} 个知识块（collection=\"{rag_service.COLLECTION_NAME}\"）\n")
+        # 2026-08-02 加固（qa-reviewer复查上一轮 --reset 加固时发现的 PLAUSIBLE
+        # P1）：非 --reset 模式（也就是日常最常用的普通 `python3 ingest_knowledge.py`）
+        # 下，即便有文件 embedding 失败，上面这行"✨完成"依然会打印——因为对于
+        # "之前已经入库过的旧文件"，失败只是暂时没更新到最新内容、旧版本仍在，
+        # 整体运行确实可以算"完成"。但如果失败的是一份**全新文件**（collection
+        # 里从未有过它的旧版本），这次失败意味着内容 100% 缺失，绝不能被"✨完成"
+        # 这种成功语气掩盖——中途那行 `⚠️ xxx.md: 未获取到 embedding` 提示在
+        # 二十几个文件的滚屏输出里很容易被刷过去，容易让运维人员误以为新知识已经
+        # 生效。这里追加一行区分说明，全新文件缺失用更醒目的 ⚠️，已入库旧文件降级
+        # 用相对温和的 ℹ️，不与前者混淆。
+        if failed_files:
+            if existing_sources_before_run is None:
+                # `_get_existing_sources()` 读取快照本身出了异常，无法判断——保守地
+                # 把全部失败文件都当作"可能是全新文件"处理，宁可提示过度醒目，也
+                # 不要因为判断失败反而漏报真正的内容缺失。
+                new_file_failures = list(failed_files)
+                existing_file_failures = []
+            else:
+                new_file_failures = [f for f in failed_files if f not in existing_sources_before_run]
+                existing_file_failures = [f for f in failed_files if f in existing_sources_before_run]
+            if new_file_failures:
+                print(f"⚠️  以下 {len(new_file_failures)} 个文件本次 embedding 失败，且 collection 里"
+                      f"此前也没有它们的旧版本——内容目前完全缺失，不是'沿用旧版本'那种相对安全的情况："
+                      f"{', '.join(sorted(new_file_failures))}\n"
+                      f"   请检查 GEMINI_API_KEY 是否配置正确 / 网络是否正常，然后重新运行本脚本"
+                      f"（不需要 --reset）以补齐这些文件的内容。\n")
+            if existing_file_failures:
+                print(f"ℹ️  以下 {len(existing_file_failures)} 个文件本次 embedding 失败，但 collection "
+                      f"里沿用了它们已有的旧版本 chunk（不是内容缺失，只是本次没能更新到最新版本）："
+                      f"{', '.join(sorted(existing_file_failures))}\n"
+                      f"   若这些文件近期有过内容订正，建议排查失败原因后重新运行本脚本以更新到最新内容。\n")
     _warn_orphan_chunks(actual_filenames)
 
 
