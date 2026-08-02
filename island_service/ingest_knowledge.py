@@ -35,6 +35,16 @@ collection 清零且无法回滚。现在 `--reset` 执行前会先做一次真�
 探测（见 `_check_embedding_available()`），确认能正常算出向量才会真的执行删除；
 探测失败会直接中止，不删除任何数据。
 
+**注意（本守卫的边界）**：`_check_embedding_available()` 只能拦住"开跑前就已经
+不可用"的情况（Key 未配置/已过期/配额耗尽在探测那一刻就能测出来）。它拦不住
+"探测通过、但跑到一半才失败"的情况——例如配额恰好在处理到某个文件时耗尽、或
+中途出现网络异常，导致 `reset_collection()` 已经清空旧数据，但后续部分文件
+embedding 持续失败、未能重新写回，造成本次 `--reset` 运行的净数据损失。这种情况
+下 `ingest_all()` 结尾不会再打印成功语气的"✨完成"，而是打印醒目的
+"⚠️ --reset 未完整成功"警告并列出具体哪些文件被跳过（详见 `ingest_all()` 内的
+汇总逻辑）；源 Markdown 文件本身仍完整保存在 git 仓库里，重新运行一次不带
+`--reset` 的普通 ingest 即可完整恢复，不是不可逆问题。
+
 Phase A / Phase B 范围提醒：本轮（2026-07-29）knowledge_base/bazi/ 下只有两份
 现成的标签化摘要（01_bazi_fundamentals.md、02_bazi_duanyu.md）。九本古籍原文的
 深度知识整理是 Phase B，由 knowledge-curator 子agent负责产出同样格式的
@@ -125,6 +135,12 @@ def _embed_with_retry(texts: List[str], max_retries: int = 3) -> list:
 
 # ─── 注入单个 Markdown 文件 ───────────────────────────────
 def ingest_markdown_file(filepath: Path) -> int:
+    """返回值语义（`ingest_all()` 依赖此约定判断 `--reset` 是否完整成功）：
+    - `> 0`：成功写入的 chunk 数
+    - `0`：文件本身没有解析出有效内容块（不是失败，无需写入）
+    - `-1`：解析出了内容块，但 embedding 调用失败导致本次未能写入（真正的失败，
+      `--reset` 模式下意味着该文件的旧版本已被清空且这次没能补回）
+    """
     text = filepath.read_text(encoding='utf-8')
     chunks = parse_markdown_chunks(text, str(filepath.name))
     if not chunks:
@@ -155,7 +171,9 @@ def ingest_markdown_file(filepath: Path) -> int:
         # 检索结果整体消失要安全）。
         print(f"  ⚠️  {filepath.name}: 未获取到 embedding（检查 GEMINI_API_KEY），跳过写入——"
               f"若无向量写入会触发 ChromaDB 默认ONNX模型并把 collection 锁死在错误维度")
-        return 0
+        # 用 -1 区分"embedding 真的失败了"和上面"文件没有有效内容块"的 0——
+        # `ingest_all()` 靠这个区分判断 --reset 模式下是否发生了真正的数据损失。
+        return -1
 
     # 2026-08-02 修复"重新ingest=覆盖旧版本"这个假设不成立的问题（详见
     # claude-docs/已知问题与修复记录.md "代码质量/健壮性"第20条）：id 用随机
@@ -289,10 +307,27 @@ def ingest_all(reset: bool = False) -> None:
     print(f"\n📚 开始注入知识库 Markdown 文件（{KNOWLEDGE_DIR}）...\n")
     total = 0
     actual_filenames = set()
+    failed_files = []
     for md_file in sorted(KNOWLEDGE_DIR.glob("*.md")):
         actual_filenames.add(md_file.name)
-        total += ingest_markdown_file(md_file)
-    print(f"\n✨ 完成！共注入 {total} 个知识块（collection=\"{rag_service.COLLECTION_NAME}\"）\n")
+        result = ingest_markdown_file(md_file)
+        if result < 0:
+            failed_files.append(md_file.name)
+        else:
+            total += result
+
+    # `--reset` 模式下，reset_collection() 已在函数开头把整个 collection 清空——
+    # 如果这里有任何文件因 embedding 中途失败而没能写回，就是本次运行造成的真实
+    # 数据损失，不能再用成功语气的"✨完成"收尾，否则运维人员很容易误以为一切正常。
+    if reset and failed_files:
+        print(f"\n⚠️  --reset 未完整成功！collection 已被清空，但以下 {len(failed_files)} "
+              f"个文件因 embedding 失败未能重新写入：{', '.join(failed_files)}\n"
+              f"   本次运行实际只成功写入 {total} 个知识块（collection="
+              f"\"{rag_service.COLLECTION_NAME}\"），上述文件的内容目前在向量库中缺失。\n"
+              f"   这不是不可逆问题——源 Markdown 文件仍完整保存在 git 仓库中，请尽快重新运行一次\n"
+              f"   `python3 ingest_knowledge.py`（不带 --reset）以补齐缺失内容。\n")
+    else:
+        print(f"\n✨ 完成！共注入 {total} 个知识块（collection=\"{rag_service.COLLECTION_NAME}\"）\n")
     _warn_orphan_chunks(actual_filenames)
 
 
