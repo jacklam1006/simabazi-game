@@ -249,12 +249,20 @@ ChromaDB 知识库做一次 RAG（检索增强生成）向量检索，把命中�
 Step1 命局「出厂设置」扫描（日主/月令/五行强弱/性格底色）──┐
     ↓ 输出作为Step2输入                                    │ 严格串行
 Step2 定格局与找用神（依赖Step1）────────────────────────────┘
-    ↓ Step1+2输出作为Step3-6的共享上下文
-Step3 事业与财富深度剖析（财官印组合）─┐
+    ↓ Step1+2输出作为Step2b+Step3-6的共享上下文
+Step2b 十神详解（命盘实际出现的十神组合逐一详解）─┐
+Step3 事业与财富深度剖析（财官印组合）─┤
 Step4 婚恋与感情世界（日支夫妻宫+异性星）─┤ asyncio.gather 并行发起
 Step5 健康与潜在风险提示（五行偏弱+地支相冲）─┤（互不依赖，只依赖Step1+2）
 Step6 大运与流年运势推演（当前大运+2026丙午流年）─┘
 ```
+
+**2026-08-03 新增 Step2b「十神详解」**：跟Step2「定格局与找用神」角度不同、互补而
+非重复——Step2从格局/用神策略角度给人生方向指导，Step2b更聚焦"十神"这个维度本身，
+说明命盘里实际出现的十神组合具体对应怎样的性格特质/行为模式/人生课题。只依赖
+Step1+2的结果，因此跟Step3-6同一依赖层级、加入同一个 `asyncio.gather` 并行批次，
+不单独占用一个串行阶段（否则会多出一整段串行耗时）。字段名 `step2b_shishen`——
+故意不占用 `step3`~`step6` 这几个已被前端/缓存依赖的字段名，只新增一个新字段。
 
 每一步内部：① 用该步骤专属的数据（如日主、十神组合、财官印星、日支等）拼一句
 检索query → ② 调 `rag_service.query("bazi", query)` 检索知识库，拿到原文片段
@@ -263,11 +271,13 @@ Step6 大运与流年运势推演（当前大运+2026丙午流年）─┘
 的模型链+MAX_TOKENS重试机制，全六步共用同一套）→ ⑤ 解析成dict。
 
 **输出JSON结构**（替换原来的 `day_master_reading`/`four_pillars`/`six_dimensions`/
-`year_advice`）：
+`year_advice`；2026-08-03 内容深度扩充后追加 `step2b_shishen` + Step1新增
+`strengths`/`cautions`，其余步骤字段名不变、只是narrative等目标字数加长）：
 ```json
 {
-  "step1_foundation":       { "title": "...", "narrative": "...", "wuxing_note": "..." },
+  "step1_foundation":       { "title": "...", "narrative": "...", "wuxing_note": "...", "strengths": [...], "cautions": [...] },
   "step2_pattern_yongshen": { "title": "...", "pattern": "...", "yongshen": [...], "narrative": "..." },
+  "step2b_shishen":         { "title": "...", "narrative": "...", "shishen_items": [{"name": "...", "meaning": "..."}] },
   "step3_career_wealth":    { "title": "...", "narrative": "...", "career_directions": [...] },
   "step4_relationship":     { "title": "...", "narrative": "...", "partner_traits": "...", "key_periods": [...] },
   "step5_health":           { "title": "...", "narrative": "...", "watch_points": [...] },
@@ -341,10 +351,10 @@ Step6 大运与流年运势推演（当前大运+2026丙午流年）─┘
 - **模型链（当前，2026-07-29第三轮修复后）**：`ANALYSIS_MODEL_CHAIN`，依次尝试 `GEMINI_ANALYSIS_MODEL`环境变量
   （若设置）→ `gemini-flash-latest`（Google官方稳定别名，现指向Gemini 3.x系列）→ `gemini-3.6-flash`（显式版本号兜底）。
   `gemini-2.5-flash`/`gemini-2.0-flash`已被Google下线（HTTP 404），不再作为候选
-- **maxOutputTokens**：2026-07-29六步重构后不再是单一全局值——`_call_gemini()` 默认值改为2048（原为4096，因为
-  拆成六步后单步输出内容量比原来"一次性产出全部"小很多），各步骤按自身JSON输出量传入具体预算（Step1/3/4/5/6
-  为2048，Step2因额外要求`keywords`字段用2560）；仍保留遇到 `finishReason=MAX_TOKENS` 且文本为空/被截断时对
-  同一模型自动加倍预算重试一次（封顶8192），仍失败才换下一个候选模型的机制，六步共用同一套 `_call_gemini()`
+- **maxOutputTokens**：2026-07-29六步重构后不再是单一全局值，各步骤按自身JSON输出量传入具体预算，仍保留遇到
+  `finishReason=MAX_TOKENS` 且文本为空/被截断时对同一模型自动加倍预算重试一次（封顶8192），仍失败才换下一个候选
+  模型的机制，全部步骤共用同一套 `_call_gemini()`。**2026-08-03内容深度扩充后当前值**：Step1=4096、Step2=5120
+  （额外要求`keywords`字段）、Step2b（新增）=4096、Step3/4/5/6=4096（原均为2048，Step2原2560）
 - **防御性解析**：`_extract_text()` 显式检查响应结构（candidates是否为空、是否被安全过滤器/版权检测拦截、
   finishReason），拿不到有效文本时返回明确原因，不再让裸取字段的异常一路冒泡成语义不明的 JSONDecodeError；
   `analyze_bazi()` 返回的 `error` 字段现在会直接说明"哪个模型、什么原因"失败，不用再靠猜
@@ -370,6 +380,8 @@ Step6 大运与流年运势推演（当前大运+2026丙午流年）─┘
 | 2026-08-02（qa-reviewer复查返工：`--reset`前置守卫+孤儿chunk警告） | qa-reviewer独立复现出上一行`delete-by-source`修复本身有效，但新增的`--reset`是"先毁后建"——`reset_collection()`在`ingest_all(reset=True)`一开始就无条件删除整个collection，之后才逐文件重新计算embedding写回；`ingest_markdown_file()`"embedding失败时保留旧版本更安全"这一设计被`--reset`完全架空（旧版本第一步就已被删）。实测出两种真实触发方式：①Render Shell漏加`GEMINI_API_KEY=xxx`前缀，`_embed_texts()`立刻返回`[]`；②API Key配额耗尽/429，130次独立embedContent请求跑到一半持续失败，重试放弃后半部分文件净损失。**CONFIRMED修复**：新增`_check_embedding_available()`前置守卫函数，`ingest_all(reset=True)`在调用`reset_collection()`之前必须先经过此函数返回`True`。守卫分两层：①检查`rag_service.GEMINI_API_KEY`是否为空，为空直接拒绝并打印明确提示；②非空时再真实调用一次`_embed_texts()`对一段测试文本算embedding，调用失败（配额耗尽/网络异常等）同样拒绝，均不删除任何数据。**另处理一个PLAUSIBLE建议**：新增`_warn_orphan_chunks()`，`ingest_all()`结束时把collection里全部`source`元数据集合与本次实际遍历到的文件名集合做差集，若有孤儿（文件被重命名或删除后旧chunk残留）打印明确警告（不自动清理，建议手动清理或`--reset`）；同步在模块docstring补充"delete-by-source不清理重命名/删除文件产生的孤儿chunk，需要`--reset`"的说明 | 本地装真实`chromadb`（Python 3.11独立venv）端到端验证`_check_embedding_available()`三种场景：①`GEMINI_API_KEY`为空时，`ingest_all(reset=True)`调用前后collection.count()保持不变（3→3），未被清空，且打印明确拒绝提示；②`GEMINI_API_KEY`非空但mock`_embed_texts`返回`[]`模拟调用失败，同样确认collection未被清空、打印拒绝提示；③mock`_embed_texts`返回正常向量的对照组，确认守卫正确放行返回`True`。另单独验证`_warn_orphan_chunks()`：手动写入一条`source`指向不存在文件的chunk，调用后确认打印警告；传入包含该文件名的集合后确认不再警告（无孤儿时静默）。`python3 -m py_compile ingest_knowledge.py`通过 |
 | 2026-08-02（qa-reviewer复查返工：非`--reset`模式全新文件失败被"✨完成"掩盖，PLAUSIBLE P1加固） | qa-reviewer复查上一行`--reset`加固时发现更常见的日常场景未覆盖：**非**`--reset`模式（即日常最常用的`python3 ingest_knowledge.py`）下，若某份**全新文件**（collection里此前从未有过它的`source`记录）embedding失败，`ingest_markdown_file()`按既有设计"跳过写入、不删旧版本"直接返回`-1`，但该文件根本没有旧版本可保留——内容100%缺失；而`ingest_all()`结尾此前只区分`reset`模式下是否完整成功，非`reset`模式无论`failed_files`是否非空，一律打印成功语气的"✨完成"，中途那行`⚠️ xxx.md: 未获取到embedding`提示在几十个文件的滚屏输出里很容易被刷过，运维人员容易误以为新知识已生效，实际RAG永远检索不到这份内容 | 新增`_get_existing_sources()`：在非`--reset`模式下、逐文件处理循环开始前，先对collection做一次`col.get(include=["metadatas"])`快照，取得运行前已存在的全部`source`集合（读取异常时返回`None`哨兵值，表示"无法判断"）；`ingest_all()`结尾非`--reset`分支里，若`failed_files`非空，先照常打印"✨完成"，再用这份快照把失败文件分成两组并分别追加提示：①**全新文件**（快照里没有它——`new_file_failures`）：追加醒目的`⚠️`警告，明确列出文件名，说明"内容目前完全缺失，不是沿用旧版本那种相对安全的情况"，并给出重新运行的恢复建议；②**已入库旧文件**（快照里已有它——`existing_file_failures`）：追加相对温和的`ℹ️`提示，说明"沿用了已有的旧版本chunk，不是内容缺失，只是本次没能更新到最新版本"。快照读取本身异常（`None`）时保守地把全部失败文件都当作"可能是全新文件"处理，避免因为判断失败反而漏报。`--reset`模式不受影响（继续沿用上一行已有的专属"未完整成功"警告，不需要这层区分，因为`--reset`下任何失败文件当前状态都是"完全没有"） | 本地装真实`chromadb`（独立venv）+mock`rag_service._embed_texts`端到端验证三个场景：①非`--reset`模式下，一个全新文件（collection中此前无该文件`source`记录）embedding失败，另一个已入库旧文件embedding成功——确认结尾在"✨完成"之后追加醒目`⚠️`警告并精确点名该全新文件，且未被误归类为"已入库旧文件"提示；②非`--reset`模式下，一个已经入库成功过的旧文件之后embedding失败——确认追加的是温和`ℹ️`提示，不包含"内容目前完全缺失"字样，与场景①的醒目警告互不混淆；③无任何文件失败的正常场景——确认输出中不出现任何"embedding 失败"相关字样，提示逻辑不误报。三场景断言全部通过。`python3 -m py_compile ingest_knowledge.py`通过 |
 | 2026-08-03（新功能：`analyze_bazi()` 新增 `force_refresh` 参数，支撑设置面板"轻量刷新AI深析"） | 用户需要一个能测试后端优化效果（RAG知识库更新/prompt改动等）的方式，不用每次都注册新账号或换八字才能看到变化——同一八字命中前端localStorage+后端文件缓存两层，重复请求 `/analyze-bazi` 永远拿到旧结果。完整方案见 `~/.claude/plans/iterative-dreaming-starlight.md`。`analyze_bazi(bazi_data, gender='男', birth_year=0, force_refresh=False)` 新增 `force_refresh` 形参，`force_refresh=True` 时跳过 `_cache_read()`（文件缓存读取）直接走完整六步生成流程；`_cache_write()` 覆盖写语义本就如此，不需要额外改动，生成结果照常覆盖同一哈希对应的缓存文件。联动改动：`main.py::AnalyzeRequest` 新增 `force_refresh: bool = False` 字段并透传；`js/bazi-analysis.js::getAnalysis()` 新增第三参数 `{forceRefresh}` 同步跳过前端 localStorage 命中判断和 in-flight 复用判断、请求体带上 `force_refresh` 字段。不传该参数时（现有 `main-new.js`/`analysis.js` 两参数调用点）行为与改动前完全一致 | mock测试通过：mock `_cache_read`/`_cache_write`/六个 `_stepN` 函数，验证 `force_refresh=False`（默认）命中缓存、`_cache_read` 恰好调用1次；`force_refresh=True` 时 `_cache_read` 调用0次、完整走六步生成、`_cache_write` 调用1次覆盖写。`python3 -m py_compile gemini_analysis.py main.py` 通过。未做真实 `GEMINI_API_KEY` 端到端验证——只验证了缓存跳过这一控制流分支，六步生成本身逻辑未改动 |
+| 2026-08-03（内容深度扩充：六步全部加长 + 新增Step2b「十神详解」+ Step1新增优势/短板 + 缓存版本v2→v3） | 用户反馈"AI深析报告内容太薄"——六步narrative目标此前只有150-220字/步，`max_tokens`早有2048-2560预算却从未被用满，纯属prompt设计保守，不是token撞墙。**内容扩充**：六步narrative目标全部大致翻倍（Step1 380-450字、Step2 350-420字、Step3/4/6 380-450字、Step5 350-420字，具体见对应 `_stepN_xxx_sync()` 函数）；career_directions（3→4条，各≤35字）、key_periods（2→3条，各≤35字）、watch_points（3→4条，各≤35字）等要点列表同步扩容；partner_traits（60-90→130-170字）、wuxing_note（50-80→110-150字）、current_year_action（40-60→90-130字）同步加长。**新增Step1 `strengths`/`cautions`两个数组字段**（各3条，≤30字/条）：从narrative拆解出的可扫读性格优势/短板要点，跟narrative连贯叙述互补不重复。**新增Step2b「十神详解」步骤**（`_step2b_shishen_sync`/`_step2b_shishen`，字段名`step2b_shishen`）：只依赖ctx+step1+step2，与Step3-6同一依赖层级，加入既有 `asyncio.gather` 并行批次（不新增串行阶段）；聚焦"十神"维度本身，结合`ctx['ten_gods_str']`真实数据逐一详解命盘中实际出现的十神组合，跟Step2策略视角互补不重复；`shishen_items`数组条数不固定，按命盘实际出现的十神种类走。**max_tokens按比例调大**：Step1 2048→4096、Step2 2560→5120、Step2b（新增）4096、Step3/4/5/6 2048→4096。**`_call_gemini_once`单次HTTP超时50s→90s**：输出字数翻倍后单次生成耗时明显变长，50s更容易触发MAX_TOKENS/超时重试拖慢整体响应。**联动`js/bazi-analysis.js`**：`AI_ANALYSIS_TIMEOUT_MS`注释里的耗时预算推导（单次Gemini调用超时值、单步/单阶段最坏耗时）需按新的90s重新推导，具体新值与推导过程见该文件对应位置注释。**缓存失效**：`_cache_read()`命中判定加严为同时要求`step1_foundation`与`step2b_shishen`两个字段都存在，否则视为旧版"薄"缓存、当作未命中重新生成覆盖；前端`LS_PREFIX`同步从`bazi_ai_v2_`升级为`bazi_ai_v3_`（见`js/bazi-analysis.js`），双重保证老用户不会命中新结构不兼容的旧缓存。**渲染层**`js/analysis.js::_populateAiContent()`同步新增Step1 `strengths`/`cautions`两个要点列表渲染、AI深析Tab新增`step2b_shishen`对应`report-section`（渲染`narrative`+`shishen_items`列表）；`_showAiFallback()`兜底逻辑未改动，新字段不存在时不渲染对应模块，不报错不空白 | mock覆盖`_call_gemini`+`rag_service.query`跑通一次完整`analyze_bazi()`：确认返回dict含`step2b_shishen`键、`step1_foundation`含`strengths`/`cautions`键，且`_parse_json()`正常解析各步prompt返回的mock JSON；额外验证`_cache_read()`新校验条件——只含`step1_foundation`不含`step2b_shishen`的旧结构缓存文件被正确判定为未命中，同时含两字段的新结构缓存文件正确命中。`python3 -m py_compile gemini_analysis.py`、`node --check js/analysis.js`、`node --check js/bazi-analysis.js`全部通过。**未做真实`GEMINI_API_KEY`端到端验证**——扩容后的prompt字数要求是否会让模型更容易输出格式错误的JSON、90s超时是否足够覆盖真实生成耗时，均需部署后用真实请求观察 |
+| 2026-08-03（qa-reviewer复查修复：seedCache绕过v3缓存失效 + 超时注释推导订正 + 十神prompt数量措辞订正） | qa-reviewer对上一行"内容深度扩充"改动复查真实diff发现1个CONFIRMED+2个PLAUSIBLE，逐条修复：①**CONFIRMED**——`js/bazi-analysis.js::seedCache()`（供`main-new.js`加载已存档岛屿时把`islands.ai_analysis`种入本地缓存）没有做任何结构校验，老用户存档是v2时代旧结构（无`step2b_shishen`），登录后会被原样种进新的`bazi_ai_v3_`前缀key，导致`getAnalysis()`命中本地缓存直接返回旧版薄内容、请求根本不会打到后端，v2→v3缓存版本升级设计在这条路径上完全失效。修复：`seedCache()`新增`if (!analysis.step2b_shishen) return;`拒绝写入老结构；`_lsGet()`读取时同步加一道相同校验作为双保险（读到老结构当作未命中）。②`AI_ANALYSIS_TIMEOUT_MS`推导注释订正：明确标注`ANALYSIS_MODEL_CHAIN`当前实际长度为2（非"至少2个"），并说明设置`GEMINI_ANALYSIS_MODEL`环境变量会使链长变为3、届时最坏上限从1125s变为约1665s（当前注释按链长=2的默认状态推导，不覆盖override场景）；"235秒余量"表述订正为"最多覆盖3个串行阶段中2个阶段各命中一次MAX_TOKENS重试（额外开销180s），不覆盖3个阶段全部命中一次重试的场景（额外开销270s会超出余量触发超时）"，此前"覆盖某一步命中一次重试"的表述夸大了实际覆盖范围。③`gemini_analysis.py::_step2b_shishen_sync()`的prompt订正："shishen_items数组条数按命盘实际出现的十神种类走（通常3-5个）"改为明确说明`tenGods`只由年/月/时三柱天干计算（日柱固定为"日主"不计入），一个命盘最多3种十神、重复时更少，只有1-2种时就只输出1-2条，绝不为凑数量虚构命盘中不存在的十神——原措辞与`js/bazi-engine.js`实际数据能力矛盾，命理测算类产品让AI编造命盘不存在信息是最忌讳的问题 | `node --check js/bazi-analysis.js`、`python3 -m py_compile gemini_analysis.py`均通过。`seedCache()`修复用两个场景人工核对逻辑：传入不含`step2b_shishen`的老结构对象→函数在写入前直接return，不调用`_lsSet`；传入含`step2b_shishen`的新结构对象→正常走到`_lsSet(hash, analysis)`写入`bazi_ai_v3_`前缀key，函数对外签名/调用方式（`main-new.js`调用点）未改动。超时注释与十神prompt措辞订正属于纯文档/描述性改动，不影响运行时行为，无需额外功能测试 |
 
 ---
 

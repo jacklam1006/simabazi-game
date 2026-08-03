@@ -5,13 +5,22 @@
 RAG向量检索古籍/断语原文片段再生成"。完整背景与分工设计见项目根目录
 PROMPT_SYSTEM.md 对应"修改记录"、claude-docs/已知问题与修复记录.md 对应日期条目。
 
-六步框架（严格串行 Step1→Step2，Step3-6 用 asyncio.gather 并行发起）：
+六步框架（严格串行 Step1→Step2，Step2b+Step3-6 用 asyncio.gather 并行发起）：
   Step1 命局「出厂设置」扫描（日主/月令/五行强弱/性格底色）
   Step2 定格局与找用神（依赖Step1）
-  Step3 事业与财富深度剖析（依赖Step1+2）─┐
+  Step2b 十神详解        （依赖Step1+2）─┐
+  Step3 事业与财富深度剖析（依赖Step1+2）─┤
   Step4 婚恋与感情世界    （依赖Step1+2）─┤ 并行
   Step5 健康与潜在风险提示（依赖Step1+2）─┤
   Step6 大运与流年运势推演（依赖Step1+2）─┘
+
+2026-08-03 内容深度扩充（非bug修复，见 claude-docs/已知问题与修复记录.md 对应日期条目）：
+六步（现七步，新增Step2b）narrative目标字数大致翻倍，Step1新增strengths/cautions
+两个要点列表字段，新增Step2b「十神详解」步骤（字段名 step2b_shishen，与Step3-6并行
+发起，不新增串行阶段）。相应地各步 max_tokens 上调、单次Gemini调用HTTP超时
+（_call_gemini_once 的 timeout 参数）从50s上调，前端 AI_ANALYSIS_TIMEOUT_MS
+重新推导，缓存版本从 v2 升级到 v3（LS_PREFIX 'bazi_ai_v3_'），_cache_read()
+新增 step2b_shishen 字段校验。具体数值见本文件对应位置与 bazi-analysis.js 注释。
 
 **必须保留、不改的机制**（都是踩过生产坑才做对的，见已知问题日志2026-07-29多轮记录）：
 - _redact()：API Key脱敏，防止网络层异常把真实Key泄漏进响应体
@@ -21,7 +30,8 @@ PROMPT_SYSTEM.md 对应"修改记录"、claude-docs/已知问题与修复记录.
 - MAX_TOKENS截断检测 + 加倍预算重试
 - 三层缓存里的"文件缓存"这一层（_bazi_hash/_cache_read/_cache_write），但因为输出JSON
   结构整体变了，_cache_read() 新增了"是否含 step1_foundation 新字段"的校验，命中旧结构
-  缓存文件时视为未命中，重新生成并覆盖（详见 _cache_read 注释）
+  缓存文件时视为未命中，重新生成并覆盖（详见 _cache_read 注释）。2026-08-03 内容深度
+  扩充时追加了"是否含 step2b_shishen 字段"的第二道校验，理由同上（详见 _cache_read 注释）
 
 **RAG检索的核心契约**：每一步生成前调用 rag_service.query()，检索失败/查不到内容时
 返回空字符串——这是"锦上添花"，不是必需依赖，绝不能因为RAG层故障拖垮整条AI深析流水线。
@@ -125,7 +135,16 @@ def _cache_read(h: str):
     # undefined，报表整体空白但不会报错、很难排查。因此命中判定新增一道校验：
     # 必须含有 step1_foundation 这个新结构的标志字段，否则当作未命中，走全新生成
     # 覆盖掉旧缓存文件。
-    if isinstance(data, dict) and 'step1_foundation' in data:
+    #
+    # 2026-08-03 内容深度扩充：六步（现七步）narrative目标字数翻倍 + 新增
+    # step2b_shishen 步骤 + step1_foundation 新增 strengths/cautions 字段，输出
+    # JSON结构又一次整体扩充。同样的道理：老版本（2026-07-29~2026-08-02生成）的
+    # 缓存文件虽然含 step1_foundation，但字数薄、且不含 step2b_shishen/strengths/
+    # cautions，如果只校验 step1_foundation 存在就直接返回，老用户会一直命中这份
+    # "薄"缓存，永远看不到新内容（除非手动点"轻量刷新"）。因此命中判定加严：必须
+    # 同时含有 step2b_shishen 这个新步骤的标志字段，否则也视为未命中，重新生成并
+    # 覆盖掉旧缓存文件。
+    if isinstance(data, dict) and 'step1_foundation' in data and 'step2b_shishen' in data:
         return data
     return None
 
@@ -191,7 +210,11 @@ def _call_gemini_once(model: str, prompt: str, max_tokens: int, system_instructi
     if system_instruction:
         payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
     try:
-        resp = requests.post(url, json=payload, timeout=50)
+        # 2026-08-03 内容深度扩充：narrative目标字数大致翻倍，单次生成耗时也明显
+        # 变长，原 timeout=50 在实测中更容易撞到超时触发重试（不是失败，但会拖长
+        # 整体请求耗时）。上调到90，同步重新推导了前端 AI_ANALYSIS_TIMEOUT_MS
+        # （见 js/bazi-analysis.js 对应注释，此处改动必须同步该文件，不能只改一侧）。
+        resp = requests.post(url, json=payload, timeout=90)
     except requests.exceptions.RequestException as e:
         # RequestException 的 str(e) 常含完整请求URL（含 ?key=真实KEY），必须脱敏后才能
         # 抛出——这条消息会一路传播到 analyze_bazi() 的 error 字段、再到HTTP响应体。
@@ -475,16 +498,20 @@ def _step1_foundation_sync(ctx: dict) -> dict:
 
     prompt = f"""{_shared_chart_block(ctx)}
 {_rag_block(rag_snippet)}
-【本步骤任务】命局"出厂设置"扫描——这是六步命理分析的第一步，只做基础盘面判断，
-不涉及格局用神（那是下一步的任务，这一步不用提格局）。
+【本步骤任务】命局"出厂设置"扫描——这是命理分析的第一步，只做基础盘面判断，
+不涉及格局用神（那是下一步的任务，这一步不用提格局）。narrative是连贯的整体
+叙述；strengths/cautions是从narrative里拆解出来的可扫读要点列表（供UI做成
+列表展示），内容上不要跟narrative逐句重复，但结论要一致。
 
 请输出严格JSON（不含markdown代码块，不含JSON之外的任何文字）：
 {{
   "title": "命局「出厂设置」扫描",
-  "narrative": "对{ctx['dm']}日主整体命局的深度解读，180-220字：结合生于{ctx['month_zhi']}月的月令旺衰、四柱五行分布、{ctx['strength_str']}的身强身弱判断，说明这个人天生的性格底色、核心优势与潜在短板，语气要让人觉得'这说的就是我'",
-  "wuxing_note": "五行力量分布的具体解读，50-80字：哪个五行最旺、哪个最弱，这对日常状态/精力/情绪有什么直接影响"
+  "narrative": "对{ctx['dm']}日主整体命局的深度解读，380-450字：结合生于{ctx['month_zhi']}月的月令旺衰、四柱五行分布、{ctx['strength_str']}的身强身弱判断，展开说明这个人天生的性格底色、行为模式、待人接物的方式、核心优势与潜在短板，可以举一两个具体生活场景让判断更有画面感，语气要让人觉得'这说的就是我'",
+  "wuxing_note": "五行力量分布的具体解读，110-150字：哪个五行最旺、哪个最弱，这对日常状态/精力/情绪/身体感受有什么直接影响，可以结合现代生活场景（工作节奏/作息/人际相处）具体展开",
+  "strengths": ["性格优势1（不超过30字）", "性格优势2", "性格优势3"],
+  "cautions": ["需要留意的性格短板/注意事项1（不超过30字）", "需要留意的性格短板/注意事项2", "需要留意的性格短板/注意事项3"]
 }}"""
-    raw = _call_gemini(prompt, max_tokens=2048, system_instruction=PERSONA_SYSTEM)
+    raw = _call_gemini(prompt, max_tokens=4096, system_instruction=PERSONA_SYSTEM)
     return _parse_json(raw)
 
 
@@ -528,10 +555,10 @@ def _step2_pattern_yongshen_sync(ctx: dict, step1: dict) -> dict:
   "title": "定格局与找用神",
   "pattern": "命格定位，如'伤官生财格'/'杀印相生格'/'从强格'等，20字以内",
   "yongshen": ["用神1", "用神2"],
-  "narrative": "150-200字：说明为什么是这个格局、用神忌神各自的作用，以及这套判断能给这个人带来什么样的人生策略指导（比如往什么方向努力更顺、要有意识避开什么）",
+  "narrative": "350-420字：说明为什么是这个格局、用神忌神各自的作用，以及这套判断能给这个人带来什么样的人生策略指导（比如往什么方向努力更顺、要有意识避开什么），可以适当展开格局形成的具体命理依据，让判断有理有据",
   "keywords": ["关键词1", "关键词2", "关键词3", "关键词4", "关键词5"]
 }}"""
-    raw = _call_gemini(prompt, max_tokens=2560, system_instruction=PERSONA_SYSTEM)
+    raw = _call_gemini(prompt, max_tokens=5120, system_instruction=PERSONA_SYSTEM)
     return _parse_json(raw)
 
 
@@ -540,10 +567,60 @@ async def _step2_pattern_yongshen(ctx: dict, step1: dict) -> dict:
 
 
 def _step2_context_block(step1: dict, step2: dict) -> str:
-    """Step3-6 共享：把Step1+2的结论浓缩成一小段上下文，供后续步骤衔接语气/判断，
-    避免每步都把Step1+2的完整narrative整段复制进prompt（浪费token预算）。"""
+    """Step2b/Step3-6 共享：把Step1+2的结论浓缩成一小段上下文，供后续步骤衔接语气/
+    判断，避免每步都把Step1+2的完整narrative整段复制进prompt（浪费token预算）。"""
     return (f"日主底色：{step1.get('narrative','')[:80]}...\n"
             f"命格：{step2.get('pattern','')}｜用神：{'、'.join(step2.get('yongshen') or [])}")
+
+
+# ── Step2b 十神详解 ──────────────────────────────────────────
+# 2026-08-03 内容深度扩充新增。跟Step2「定格局与找用神」角度不同、互补而非重复：
+# Step2 是从格局/用神策略角度给人生方向指导；Step2b 更聚焦"十神"这个维度本身——
+# 命盘里实际出现的十神组合具体对应什么性格特质/行为模式/人生课题。只依赖
+# ctx+step1+step2，跟Step3-6同一依赖层级，因此在 analyze_bazi() 里跟Step3-6一起
+# 用 asyncio.gather 并行发起，不单独占用一个串行阶段。
+#
+# 字段名故意用 step2b_shishen（不是 step2_5 或重新编号成 step7）：刻意不占用
+# step3~step6 这几个已被前端 analysis.js / 缓存结构依赖的字段名，只新增一个新
+# 字段，避免历史上"改字段名前后端不同步"故障（见已知问题记录"API字段名契约"条）。
+def _step2b_shishen_sync(ctx: dict, step1: dict, step2: dict) -> dict:
+    present_shishen = sorted({v for v in ctx['ten_gods'].values() if v and v != '日主'})
+    rag_query = f"{'、'.join(present_shishen) or ctx['dm'] + '日主'} 十神 性格 行为模式"
+    # Step2b 十神详解，对应知识库标签里的十神/格局/用神相关条目（十神理论本就是
+    # 格局用神判断的基础，标签有意与Step2部分重合，但本步骤的任务视角不同）
+    rag_snippet = rag_service.query(rag_service.COLLECTION_NAME, rag_query,
+                                     tags=['十神', 'ten-gods', '格局', '用神'])
+
+    prompt = f"""{_shared_chart_block(ctx)}
+
+【前两步结论（供你衔接判断，不要重复输出）】
+{_step2_context_block(step1, step2)}
+命盘中实际出现的十神：{ctx['ten_gods_str'] or '未知'}
+{_rag_block(rag_snippet)}
+【本步骤任务】十神详解——聚焦"十神"这个维度本身，跟上一步"定格局与找用神"的
+策略视角不同、互补而非重复：不要重复讲格局判断，而是逐一说明命盘里实际出现的
+每一种十神（用上面列出的真实数据，不要泛泛而谈，也不要虚构命盘中不存在的十神）
+具体对应这个人怎样的性格特质、行为模式、容易遇到的人生课题，帮助读者理解"我命
+盘里的这些十神到底意味着什么"。
+
+请输出严格JSON（不含markdown代码块）：
+{{
+  "title": "十神详解",
+  "narrative": "350-420字：结合命盘里实际出现的十神组合，说明这些十神具体意味着什么性格特质/行为模式/人生课题，跟命局性格底色、格局判断形成互补而不是重复",
+  "shishen_items": [
+    {{"name": "十神名称（如'伤官'，必须是命盘中实际出现的十神）", "meaning": "这个十神在这个命盘里具体代表什么，30-40字"}}
+  ]
+}}
+shishen_items数组条数按命盘实际出现的十神种类走：ten_gods只由年、月、时三柱天干
+计算得出（日柱天干是日主本身，固定不算入十神），所以一个命盘最多只有3种不同的
+十神，天干重复时更少——如果只出现1种或2种十神，就只输出1条或2条，绝对不要为了
+凑数量而虚构命盘中实际不存在的十神类型。"""
+    raw = _call_gemini(prompt, max_tokens=4096, system_instruction=PERSONA_SYSTEM)
+    return _parse_json(raw)
+
+
+async def _step2b_shishen(ctx: dict, step1: dict, step2: dict) -> dict:
+    return await asyncio.to_thread(_step2b_shishen_sync, ctx, step1, step2)
 
 
 # ── Step3 事业与财富深度剖析 ──────────────────────────────────
@@ -573,10 +650,10 @@ def _step3_career_wealth_sync(ctx: dict, step1: dict, step2: dict) -> dict:
 请输出严格JSON（不含markdown代码块）：
 {{
   "title": "事业与财富深度剖析",
-  "narrative": "180-220字：财官印组合的具体解读，财运走向、事业发展节奏，以及单干还是团队协作更适合这个人的明确判断和理由",
-  "career_directions": ["具体职业方向建议1（不超过20字）", "具体职业方向建议2", "具体职业方向建议3"]
+  "narrative": "380-450字：财官印组合的具体解读，财运走向、事业发展节奏，以及单干还是团队协作更适合这个人的明确判断和理由，可以结合现代职业形态（如自由职业/创业/大厂打工/体制内）具体展开",
+  "career_directions": ["具体职业方向建议1（不超过35字）", "具体职业方向建议2", "具体职业方向建议3", "具体职业方向建议4"]
 }}"""
-    raw = _call_gemini(prompt, max_tokens=2048, system_instruction=PERSONA_SYSTEM)
+    raw = _call_gemini(prompt, max_tokens=4096, system_instruction=PERSONA_SYSTEM)
     return _parse_json(raw)
 
 
@@ -613,11 +690,11 @@ def _step4_relationship_sync(ctx: dict, step1: dict, step2: dict) -> dict:
 请输出严格JSON（不含markdown代码块）：
 {{
   "title": "婚恋与感情世界",
-  "narrative": "180-220字：夫妻宫与{spouse_label}状况的解读，感情相处模式、容易遇到的问题类型、经营感情的具体建议",
-  "partner_traits": "对伴侣特质/类型的预测，60-90字",
-  "key_periods": ["感情关键节点1（含大致时间与提示，不超过25字）", "感情关键节点2"]
+  "narrative": "380-450字：夫妻宫与{spouse_label}状况的解读，感情相处模式、容易遇到的问题类型、经营感情的具体建议，可以举一两个具体相处场景让判断更有代入感",
+  "partner_traits": "对伴侣特质/类型的预测，130-170字",
+  "key_periods": ["感情关键节点1（含大致时间与提示，不超过35字）", "感情关键节点2", "感情关键节点3"]
 }}"""
-    raw = _call_gemini(prompt, max_tokens=2048, system_instruction=PERSONA_SYSTEM)
+    raw = _call_gemini(prompt, max_tokens=4096, system_instruction=PERSONA_SYSTEM)
     return _parse_json(raw)
 
 
@@ -647,10 +724,10 @@ def _step5_health_sync(ctx: dict, step1: dict, step2: dict) -> dict:
 请输出严格JSON（不含markdown代码块）：
 {{
   "title": "健康与潜在风险提示",
-  "narrative": "150-190字：五行失衡对应的身体薄弱环节，以及为什么（用五行生克逻辑说明，但要转译成现代人能懂的表达，比如'某脏器/系统容易疲劳'而不是纯古文）",
-  "watch_points": ["日常保养建议/需留意的具体点1（不超过25字）", "日常保养建议/需留意的具体点2", "需要格外留意的年份或阶段（不超过25字）"]
+  "narrative": "350-420字：五行失衡对应的身体薄弱环节，以及为什么（用五行生克逻辑说明，但要转译成现代人能懂的表达，比如'某脏器/系统容易疲劳'而不是纯古文），可以结合现代生活方式（作息/饮食/运动/情绪管理）给出更具体的画面",
+  "watch_points": ["日常保养建议/需留意的具体点1（不超过35字）", "日常保养建议/需留意的具体点2", "日常保养建议/需留意的具体点3", "需要格外留意的年份或阶段（不超过35字）"]
 }}"""
-    raw = _call_gemini(prompt, max_tokens=2048, system_instruction=PERSONA_SYSTEM)
+    raw = _call_gemini(prompt, max_tokens=4096, system_instruction=PERSONA_SYSTEM)
     return _parse_json(raw)
 
 
@@ -677,10 +754,10 @@ def _step6_dayun_liunian_sync(ctx: dict, step1: dict, step2: dict) -> dict:
 请输出严格JSON（不含markdown代码块）：
 {{
   "title": "大运与流年运势推演",
-  "narrative": "180-220字：当前大运的整体基调 + {ctx['current_year']}年（{ctx['current_ganzhi']}年）流年与命局的生克关系解读，说明今年整体是适合猛冲还是适合沉淀积累",
-  "current_year_action": "今年可以立刻执行的一条具体行动建议，40-60字，要具体不要空泛"
+  "narrative": "380-450字：当前大运的整体基调 + {ctx['current_year']}年（{ctx['current_ganzhi']}年）流年与命局的生克关系解读，说明今年整体是适合猛冲还是适合沉淀积累，可以展开大运与流年叠加后具体在事业/财运/人际上会有怎样的具体表现",
+  "current_year_action": "今年可以立刻执行的一条具体行动建议，90-130字，要具体不要空泛，可以给出可执行的具体方式"
 }}"""
-    raw = _call_gemini(prompt, max_tokens=2048, system_instruction=PERSONA_SYSTEM)
+    raw = _call_gemini(prompt, max_tokens=4096, system_instruction=PERSONA_SYSTEM)
     return _parse_json(raw)
 
 
@@ -699,8 +776,8 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
 
     调用方（main.py）注意：本函数是 `async def`，必须 `await` 调用——这是2026-07-29
     六步重构里唯一需要同步改动 island_service/main.py（backend-service领域）一行调用
-    方式的地方：Step3-6 要用 asyncio.gather() 真正并行发起，前提是 analyze_bazi() 本身
-    运行在事件循环里，而不是被同步直接调用（同步直接调用 asyncio.run() 会在 FastAPI
+    方式的地方：Step2b+Step3-6 要用 asyncio.gather() 真正并行发起，前提是 analyze_bazi()
+    本身运行在事件循环里，而不是被同步直接调用（同步直接调用 asyncio.run() 会在 FastAPI
     已经运行的事件循环里抛 "cannot be called from a running event loop"）。
 
     force_refresh: True 时跳过 _cache_read() 直接走六步生成流程（用于"设置面板→轻量
@@ -727,9 +804,12 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
         step2 = await _step2_pattern_yongshen(ctx, step1)
         keywords = step2.pop('keywords', None) or _fallback_keywords(ctx)
 
-        # Step3-6 互相独立，只依赖 Step1+2 的结果，用 asyncio.gather 并行发起——
-        # 把墙钟时间从"6次严格串行"压缩到约等于"3次串行"（Step1 + Step2 + max(Step3..6)）
-        step3, step4, step5, step6 = await asyncio.gather(
+        # Step2b+Step3-6 互相独立，只依赖 Step1+2 的结果，用 asyncio.gather 并行发起——
+        # 把墙钟时间从"7次严格串行"压缩到约等于"3次串行"（Step1 + Step2 + max(Step2b..6)）。
+        # 2026-08-03 新增 Step2b「十神详解」时特意加进这个既有并行批次，而不是单独
+        # 起一个新的串行阶段——否则会多出一整段串行耗时，见对应修改记录。
+        step2b, step3, step4, step5, step6 = await asyncio.gather(
+            _step2b_shishen(ctx, step1, step2),
             _step3_career_wealth(ctx, step1, step2),
             _step4_relationship(ctx, step1, step2),
             _step5_health(ctx, step1, step2),
@@ -739,6 +819,7 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
         analysis = {
             'step1_foundation': step1,
             'step2_pattern_yongshen': step2,
+            'step2b_shishen': step2b,
             'step3_career_wealth': step3,
             'step4_relationship': step4,
             'step5_health': step5,

@@ -14,25 +14,47 @@
 
 const BaziAnalysis = (() => {
   const BACKEND_URL = 'https://simabazi-island.onrender.com';
-  const LS_PREFIX   = 'bazi_ai_v2_'; // v1→v2：后端AI深析改为六步命理框架JSON结构（2026-07-29），老v1缓存结构不兼容，换key前缀避免读到旧结构导致渲染报错
+  // v1→v2：后端AI深析改为六步命理框架JSON结构（2026-07-29），老v1缓存结构不兼容，换key前缀避免读到旧结构导致渲染报错
+  // v2→v3：2026-08-03内容深度扩充（六步narrative目标字数大致翻倍 + 新增Step2b「十神详解」
+  // 步骤 + Step1新增strengths/cautions两个数组字段），输出JSON结构又一次整体扩充，老v2
+  // 缓存虽然结构"能兼容"（字段名没变，只是内容更薄+缺step2b_shishen），但直接展示会让
+  // 用户看到旧版"薄"内容，且前端渲染step2b_shishen相关模块时找不到字段——同样换key前缀
+  // 避免命中旧版本内容（后端 _cache_read() 同步做了 step2b_shishen 字段校验，双重保证）
+  const LS_PREFIX   = 'bazi_ai_v3_';
 
-  // 后端六步RAG流水线（gemini_analysis.py::analyze_bazi()）真实耗时预算（2026-08-01
-  // qa-reviewer逐行核对 gemini_analysis.py/rag_service.py 后订正，此前75秒的设定是
-  // 错误的方案判断，见 claude-docs/已知问题与修复记录.md 对应订正记录）：
-  //   - 单次Gemini调用 timeout=50s（gemini_analysis.py::_call_gemini_once）
-  //   - _call_gemini() 每个模型最多重试2次（MAX_TOKENS加倍预算重试），
-  //     ANALYSIS_MODEL_CHAIN 至少2个候选模型 → 单步最坏情况 2模型×2次×50s = 200s
-  //   - 每步前还有 rag_service.query() timeout=15s（rag_service.py）
-  //   - Step1→Step2 严格串行，Step3-6 用 asyncio.gather 并行发起 → 相当于3个
-  //     串行阶段：Step1、Step2、max(Step3..6)，每阶段 rag(15s)+gemini(最坏200s)=215s
-  //   - 零重试零冷启动下限：3 × (15+50) = 195s；全部重试+换模型的绝对最坏上限：
-  //     3 × 215 = 645s（这种量级只会发生在模型链整体故障的灾难场景，不是正常慢请求）
-  // 75秒远低于195秒下限，必然误杀所有正常请求（预热必超时→报告弹窗再发一次完整
-  // 六步流水线→token双倍消耗，故障链详见已知问题记录）。改为400秒（约6.7分钟）：
-  // 高于195秒下限、覆盖"某一步命中一次MAX_TOKENS重试"等真实场景的合理余量，同时
-  // 低于10分钟（3D生成轮询沿用的惯例值，见已知问题记录2026-07-26条），只有整条模型
-  // 链持续挂起的灾难场景才会真正触发这个上限——那种场景下更早反馈失败反而是合理的。
-  const AI_ANALYSIS_TIMEOUT_MS = 400000;
+  // 后端七步RAG流水线（gemini_analysis.py::analyze_bazi()，Step1→Step2严格串行，
+  // Step2b+Step3-6并行）真实耗时预算：
+  // 2026-08-03 内容深度扩充重新推导（六步narrative字数翻倍 + 新增Step2b后单次调用
+  // 耗时明显变长，_call_gemini_once 的 timeout 从50s同步上调到90s，此推导必须跟着改，
+  // 不能只改后端一侧——否则前端超时值仍按旧的50s假设推导，会明显偏小）：
+  //   - 单次Gemini调用 timeout=90s（gemini_analysis.py::_call_gemini_once，2026-08-03从50s上调）
+  //   - _call_gemini() 每个模型最多尝试2次（原预算1次 + MAX_TOKENS加倍预算重试1次）
+  //   - ANALYSIS_MODEL_CHAIN 当前实际长度为2（gemini_analysis.py 硬编码
+  //     ['gemini-flash-latest','gemini-3.6-flash']）→ 单步最坏情况 2模型×2次×90s=360s。
+  //     注意：GEMINI_ANALYSIS_MODEL 环境变量会在链最前面插入一个override模型，
+  //     若该变量被设置，链长变为3，单步最坏情况变为 3模型×2次×90s=540s，
+  //     全流程绝对最坏上限也会从下面的1125s变为约1665s——下面所有数字均按
+  //     "未设置该环境变量、链长=2"的当前默认状态推导，设置该变量后本超时值
+  //     不再按比例覆盖，需要重新核算（目前项目未使用该override）。
+  //   - 每步前还有 rag_service.query() timeout=15s（rag_service.py，本次未改动）
+  //   - Step1→Step2 严格串行，Step2b+Step3-6 用 asyncio.gather 并行发起（新增的
+  //     Step2b加入同一批次，不新增串行阶段）→ 相当于3个串行阶段：Step1、Step2、
+  //     max(Step2b..Step6)，每阶段 rag(15s)+gemini(最坏360s)=375s
+  //   - 零重试零冷启动下限：3 × (15+90) = 315s；全部重试+换模型的绝对最坏上限：
+  //     3 × 375 = 1125s（约18.75分钟，这种量级只会发生在模型链整体故障的灾难场景，
+  //     不是正常慢请求，不需要前端超时覆盖到这个量级）
+  // 改为550秒（约9.2分钟）：高于315秒下限，留出约235秒余量。这235秒余量具体能
+  // 覆盖到什么程度需要精确说明，不要夸大——单个阶段命中一次MAX_TOKENS重试的真实
+  // 代价是 rag(15s)+第一次gemini(90s)+重试gemini(90s)=195s，比零重试时该阶段的
+  // 105s(=15+90)多花90s。235s余量只够覆盖"3个串行阶段中最多2个阶段各命中一次
+  // 重试"（额外开销2×90=180s ≤ 235s余量）；如果3个阶段全部命中一次重试，额外开销
+  // 3×90=270s，超过235s余量，会触发超时。这不代表550s选错了——550000 仍明显大于
+  // 315000这个"不误杀正常无重试请求"的下限，只是这里如实说明它不覆盖"三阶段全部
+  // 重试"这种更极端的场景，避免后续会话照抄这段注释时误以为余量覆盖范围比实际更大。
+  // 同时550秒仍低于10分钟（3D生成轮询沿用的惯例值，见已知问题记录2026-07-26条），
+  // 只有整条模型链持续挂起的灾难场景才会真正触发这个上限——那种场景下更早反馈
+  // 失败反而是合理的。
+  const AI_ANALYSIS_TIMEOUT_MS = 550000;
 
   // ── 进行中请求去重（in-flight dedup）─────────────────
   // 六步流水线+RAG检索耗时明显变长后，预热请求（main-new.js 生成开始时发起）与
@@ -67,11 +89,17 @@ const BaziAnalysis = (() => {
   }
 
   // ── localStorage ──────────────────────────────────────
+  // v2→v3结构校验：即便某条记录意外地被写进了 LS_PREFIX（v3）前缀的 key 下，
+  // 读取时仍二次确认它具备 v3 结构标志字段 step2b_shishen——没有就当作未命中，
+  // 而不是把老结构（缺十神详解/strengths/cautions）当新内容展示给用户。
+  // 与 seedCache() 的写入校验是同一道防线的两端，双保险（见2026-08-03 qa复查记录）。
   function _lsGet(hash) {
     try {
       const raw = localStorage.getItem(LS_PREFIX + hash);
       if (!raw) return null;
-      return JSON.parse(raw).analysis || null;
+      const analysis = JSON.parse(raw).analysis || null;
+      if (analysis && !analysis.step2b_shishen) return null;
+      return analysis;
     } catch { return null; }
   }
 
@@ -221,8 +249,18 @@ const BaziAnalysis = (() => {
   // 加载存档直接把它种进本地缓存，之后 getAnalysis() 会像本地命中一样
   // 直接返回，不会再对同一份八字重新发起一次完整六步流水线请求
   // （避免重复消耗 Gemini token）。
+  //
+  // 2026-08-03 qa复查发现并修复：登录后 auth.js → main-new.js 会用
+  // islands.ai_analysis（Supabase存档列）调用这里种缓存，但老用户的存档是
+  // v2时代写入的旧结构（没有 step2b_shishen，Step1也没有 strengths/cautions）。
+  // 这里如果照单全收，会把老结构原样种进新的 v3 前缀 key 下，导致 getAnalysis()
+  // 命中本地缓存直接返回旧内容、请求根本不会打到后端，v2→v3 缓存版本升级
+  // （见上方 LS_PREFIX 定义处注释）设计的"老缓存自动失效"在这条路径上完全失效，
+  // 老用户会永久卡在升级前的薄内容上。这里补一道结构校验：老结构一律拒绝写入，
+  // 交给 getAnalysis() 走后端重新生成完整的 v3 内容。
   function seedCache(baziData, gender, analysis) {
     if (!baziData || !analysis) return;
+    if (!analysis.step2b_shishen) return; // 老结构（v2及更早）存档：不种缓存
     const hash = _hash(baziData, gender);
     _lsSet(hash, analysis);
   }

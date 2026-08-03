@@ -513,12 +513,17 @@ const Analysis = (() => {
     if (bar) bar.remove();
   }
 
-  // ── AI 内容填充（六步命理框架）───────────────────────
-  // ai 结构：step1_foundation / step2_pattern_yongshen / step3_career_wealth /
-  //          step4_relationship / step5_health / step6_dayun_liunian / keywords
-  // 六步顺序按 step1→step6 依次渲染，分两个Tab承载：
-  //   Tab「AI深析」= step1（命局基础扫描）+ step2（格局与用神）
+  // ── AI 内容填充（六步命理框架，2026-08-03内容深度扩充新增Step2b后实为七步）───
+  // ai 结构：step1_foundation（新增strengths/cautions两个数组字段）/
+  //          step2_pattern_yongshen / step2b_shishen（新增步骤：十神详解，
+  //          shishen_items数组） / step3_career_wealth / step4_relationship /
+  //          step5_health / step6_dayun_liunian / keywords
+  // 顺序按 step1→step2→step2b→step3→...→step6 依次渲染，分两个Tab承载：
+  //   Tab「AI深析」= step1（命局基础扫描，含性格优势/注意事项）+ step2（格局与用神）
+  //                  + step2b（十神详解）
   //   Tab「运势详解」= step3（事业财富）→ step4（婚恋）→ step5（健康）→ step6（大运流年）
+  // 新增字段一律遵循既有防御写法：字段不存在时不渲染对应模块，不报错不留空白
+  // （_showAiFallback() 兜底逻辑本身不涉及这些新字段，未改动）
   function _populateAiContent(container, ai, d) {
     ai = ai || {};
 
@@ -533,17 +538,28 @@ const Analysis = (() => {
       }
     }
 
-    // ─ Tab 2：AI 深析 = step1 + step2 ─
-    const s1 = ai.step1_foundation || {};
-    const s2 = ai.step2_pattern_yongshen || {};
+    // ─ Tab 2：AI 深析 = step1 + step2 + step2b ─
+    const s1  = ai.step1_foundation || {};
+    const s2  = ai.step2_pattern_yongshen || {};
+    const s2b = ai.step2b_shishen || {};
 
     let deepHtml = '';
     if (s1.narrative || s1.title) {
+      const strengths = Array.isArray(s1.strengths) ? s1.strengths : [];
+      const cautions  = Array.isArray(s1.cautions)  ? s1.cautions  : [];
+      const strengthsHtml = strengths.length
+        ? `<div style="margin-top:12px"><div class="ai-sublabel">✦ 性格优势</div>${strengths.map(s => insight(s, 'good')).join('')}</div>`
+        : '';
+      const cautionsHtml = cautions.length
+        ? `<div style="margin-top:12px"><div class="ai-sublabel">⚠ 注意事项</div>${cautions.map(c => insight(c, 'warn')).join('')}</div>`
+        : '';
       deepHtml += `<div class="report-section">
         <div class="report-section-head"><span class="r-icon">✦</span>${s1.title || '命局「出厂设置」扫描'}</div>
         <div class="report-section-body">
           ${s1.narrative ? `<p class="ai-narrative">${s1.narrative}</p>` : ''}
           ${s1.wuxing_note ? `<div style="margin-top:10px">${insight(s1.wuxing_note, 'neutral')}</div>` : ''}
+          ${strengthsHtml}
+          ${cautionsHtml}
         </div>
       </div>`;
     }
@@ -558,6 +574,27 @@ const Analysis = (() => {
           ${s2.pattern ? `<span class="ai-pattern">⊞ ${s2.pattern}</span>` : ''}
           ${yongshenChips}
           ${s2.narrative ? `<p class="ai-narrative" style="margin-top:${(s2.pattern || yongshenChips) ? '12px' : '0'}">${s2.narrative}</p>` : ''}
+        </div>
+      </div>`;
+    }
+    if (s2b.narrative || s2b.title) {
+      const shishenItems = Array.isArray(s2b.shishen_items) ? s2b.shishen_items : [];
+      const shishenHtml = shishenItems.length
+        ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">${shishenItems.map(it => {
+            const name = (it && it.name) || '';
+            const meaning = (it && it.meaning) || '';
+            if (!name && !meaning) return '';
+            return `<div style="flex:1 1 220px;min-width:180px;padding:10px 12px;border-radius:8px;background:rgba(201,169,110,.06);border:1px solid rgba(201,169,110,.18)">
+              ${name ? `<div style="font-size:13px;color:#c9a96e;font-weight:600;margin-bottom:4px">${name}</div>` : ''}
+              ${meaning ? `<div style="font-size:12px;color:rgba(232,224,208,.7);line-height:1.7">${meaning}</div>` : ''}
+            </div>`;
+          }).join('')}</div>`
+        : '';
+      deepHtml += `<div class="report-section">
+        <div class="report-section-head"><span class="r-icon">☯</span>${s2b.title || '十神详解'}</div>
+        <div class="report-section-body">
+          ${s2b.narrative ? `<p class="ai-narrative">${s2b.narrative}</p>` : ''}
+          ${shishenHtml}
         </div>
       </div>`;
     }

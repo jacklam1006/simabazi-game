@@ -38,8 +38,9 @@ from supabase_storage import download_glb, upload_glb
 # 2026-08-01 评估已知问题日志"代码质量/健壮性"第13条（asyncio.to_thread默认
 # 线程池在多用户并发时可能成为瓶颈）后显式设置，理由：
 #   1. 本服务单进程单event loop（uvicorn未开--workers），/analyze-bazi的
-#      Step3-6用asyncio.gather并行发起4次asyncio.to_thread（单个请求峰值占用
-#      4个线程）；同一次评估中还发现并修复了_run_generation/_poll_tripo里
+#      Step2b+Step3-6用asyncio.gather并行发起5次asyncio.to_thread（单个请求
+#      峰值占用5个线程，2026-08-03新增十神详解Step2b后从4个变为5个——见下方
+#      注释4的数字已同步更新）；同一次评估中还发现并修复了_run_generation/_poll_tripo里
 #      原本直接同步阻塞调用（未用to_thread）的问题（见下方改动），修复后
 #      /generate的每个生成中任务也会在其网络调用期间占用1个线程——两类端点
 #      叠加后，多用户同时使用时对线程数的需求比修复前更高，不是更低。
@@ -54,8 +55,11 @@ from supabase_storage import download_glb, upload_glb
 #   4. 综合以上：与其依赖一个在容器环境下值不确定、且可能低至个位数
 #      （cpu_count()==1时默认池只有5）的隐式默认值，不如显式设一个有把握
 #      覆盖"数个用户同时触发生成/深析"场景的下限。20是估算值：可覆盖约
-#      5个用户同时处于/analyze-bazi的Step3-6并行阶段（5*4=20），或更多用户
-#      同时处于/generate的单线程网络调用阶段——不是压测得出的精确值，产品
+#      4个用户同时处于/analyze-bazi的Step2b+Step3-6并行阶段（4*5=20，
+#      2026-08-03新增Step2b后从"5个用户(5*4)"降为"4个用户(4*5)"，20这个
+#      总数未变，只是新增一步分摊到每用户的线程数变多、能同时覆盖的用户数
+#      相应变少），或更多用户同时处于/generate的单线程网络调用阶段——不是
+#      压测得出的精确值，产品
 #      当前阶段用户规模尚小，如果后续实际观察到线程仍然不够用（Render
 #      监控里CPU持续高位、请求排队/超时增多），再回来上调或改用更专门的
 #      并发控制（如按端点分别限流）。
@@ -361,8 +365,9 @@ async def analyze_bazi_endpoint(req: AnalyzeRequest):
     调用 Gemini 对八字命盘进行深度分析。
     后端有文件缓存：相同八字（干支+性别）只调用一次，后续即时返回。
     """
-    # 2026-07-29 六步RAG流水线重构：analyze_bazi() 改为 async def（Step3-6 用
-    # asyncio.gather 并行发起），调用方必须 await；见 gemini_analysis.py::analyze_bazi()
+    # 2026-07-29 六步RAG流水线重构：analyze_bazi() 改为 async def（Step2b+Step3-6
+    # 用 asyncio.gather 并行发起，2026-08-03新增Step2b后从4路并行变为5路），调用方
+    # 必须 await；见 gemini_analysis.py::analyze_bazi()
     # 顶部注释——同步直接调用会导致内部 asyncio.gather 语义失效/在某些路径下报错。
     result = await analyze_bazi(req.bazi_data, req.gender, req.birth_year, req.force_refresh)
     if result.get('error') == 'no_api_key':
