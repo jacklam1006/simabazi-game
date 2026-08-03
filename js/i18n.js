@@ -30,6 +30,7 @@ const I18N = {
     'form.nickname':      '昵称',
     'form.email':         '邮箱',
     'form.submit':        '推演我的命盘',
+    'form.cancel_edit':   '取消，返回我的岛屿',
     'form.have_account':  '已有账户？',
     'form.login_link':    '直接登录',
     'form.note':          '· 所有计算在本地完成，不上传个人信息 ·',
@@ -109,6 +110,7 @@ const I18N = {
     // ── 顶部栏 ────────────────────────────────
     'nav.brand':           '司 马 八 字',
     'bar.my_islands':      '我的岛屿',
+    'bar.settings':        '⚙ 设置',
     'bar.login':           '登录 / 注册',
     'bar.logout':          '退出',
 
@@ -152,6 +154,19 @@ const I18N = {
     'islands.loading':     '加载中...',
     'islands.empty':       '暂无保存的岛屿',
     'islands.close':       '关 闭',
+
+    // ── 设置面板 ──────────────────────────────
+    'settings.title':          '设置',
+    'settings.profile_title':  '账户资料',
+    'settings.nickname':       '昵称',
+    'settings.save':           '保 存',
+    'settings.refresh_title':  '刷新测试内容',
+    'settings.refresh_ai_desc':'仅重新生成AI深析文字内容，保留3D岛屿模型不变。无付费成本，十几秒完成。',
+    'settings.refresh_ai_btn': '轻量刷新 AI 深析',
+    'settings.refresh_full_desc':'从八字重新走完整流程（提示词→AI绘图→3D建模→AI深析）。真实调用付费API，预计花费 $0.13–0.24 以上，且需要几分钟时间，生成完成后会新增一条岛屿存档。',
+    'settings.refresh_full_btn': '完全重新生成岛屿',
+    'settings.edit_birth_btn': '修改出生信息后重新生成',
+    'settings.close':          '关 闭',
 
     // ── 八字表 ────────────────────────────────
     'bazi.year':           '年柱',
@@ -210,6 +225,7 @@ const I18N = {
     'form.nickname':      'Nickname',
     'form.email':         'Email',
     'form.submit':        'Read My Destiny',
+    'form.cancel_edit':   'Cancel, back to my island',
     'form.have_account':  'Have an account?',
     'form.login_link':    'Sign in',
     'form.note':          '· All calculations done locally. No data uploaded. ·',
@@ -289,6 +305,7 @@ const I18N = {
     // ── Auth Bar ──────────────────────────────
     'nav.brand':           'Sima BaZi',
     'bar.my_islands':      'My Islands',
+    'bar.settings':        '⚙ Settings',
     'bar.login':           'Sign In',
     'bar.logout':          'Sign Out',
 
@@ -332,6 +349,19 @@ const I18N = {
     'islands.loading':     'Loading...',
     'islands.empty':       'No saved islands yet',
     'islands.close':       'Close',
+
+    // ── Settings Panel ─────────────────────────
+    'settings.title':          'Settings',
+    'settings.profile_title':  'Account Profile',
+    'settings.nickname':       'Nickname',
+    'settings.save':           'Save',
+    'settings.refresh_title':  'Refresh Test Content',
+    'settings.refresh_ai_desc':'Regenerates only the AI insight text, keeping the 3D island model unchanged. No cost, takes about 10-20 seconds.',
+    'settings.refresh_ai_btn': 'Refresh AI Insight',
+    'settings.refresh_full_desc':'Re-runs the full pipeline from your BaZi data (prompt → AI image → 3D model → AI insight). This makes real paid API calls, costs an estimated $0.13–0.24+, and takes several minutes. A new island record will be added when done.',
+    'settings.refresh_full_btn': 'Fully Regenerate Island',
+    'settings.edit_birth_btn': 'Edit Birth Info & Regenerate',
+    'settings.close':          'Close',
 
     // ── BaZi Table ────────────────────────────
     'bazi.year':           'Year',

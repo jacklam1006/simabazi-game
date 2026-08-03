@@ -93,7 +93,7 @@ const BaziAnalysis = (() => {
   // 超时抛出的错误带 isTimeout:true 标记，供上层区分"超时"与其它网络/服务端错误，
   // 展示更明确的提示而不是笼统的失败文案。超时时长见 AI_ANALYSIS_TIMEOUT_MS 定义处
   // 的详细耗时预算推导。
-  async function _fetchBackend(baziData, gender) {
+  async function _fetchBackend(baziData, gender, forceRefresh = false) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), AI_ANALYSIS_TIMEOUT_MS);
     try {
@@ -103,6 +103,7 @@ const BaziAnalysis = (() => {
         body: JSON.stringify({
           bazi_data: baziData,
           gender: gender || '男',
+          force_refresh: !!forceRefresh,
         }),
         signal: controller.signal,
       });
@@ -142,32 +143,41 @@ const BaziAnalysis = (() => {
    * 获取 AI 分析。优先读本地缓存，miss 则调后端（后端有文件缓存 + Gemini）。
    * @param {object} baziData - BaziEngine.calculate() 的结果
    * @param {string} gender   - '男' | '女'
+   * @param {object} [opts]
+   * @param {boolean} [opts.forceRefresh=false] - true 时跳过 localStorage 命中判断
+   *   和 in-flight 复用判断，强制发起一次新的后端请求（用于"设置面板→轻量刷新AI
+   *   深析"场景，绕过缓存验证后端/知识库更新效果）。请求体透传 force_refresh 给
+   *   后端，后端 gemini_analysis.py::analyze_bazi() 同步跳过 _cache_read()。
+   *   不传时（或显式 {forceRefresh:false}）行为与改动前完全一致——向后兼容现有
+   *   两参数调用点（main-new.js/analysis.js 里已有的 getAnalysis(d, gender) 调用）。
    * @returns {Promise<object|null>}
    */
-  async function getAnalysis(baziData, gender) {
+  async function getAnalysis(baziData, gender, { forceRefresh = false } = {}) {
     if (!baziData || !baziData.pillars) return null;
 
     const hash = _hash(baziData, gender);
 
-    // 1. localStorage 命中
-    const cached = _lsGet(hash);
-    if (cached) {
-      console.log('[BaziAnalysis] cache hit (localStorage)');
-      return cached;
+    if (!forceRefresh) {
+      // 1. localStorage 命中
+      const cached = _lsGet(hash);
+      if (cached) {
+        console.log('[BaziAnalysis] cache hit (localStorage)');
+        return cached;
+      }
+
+      // 2. 同一 hash 已有请求在途 → 复用同一个 Promise，不再发起第二次后端请求
+      const pending = _pendingFor(hash);
+      if (pending) {
+        console.log('[BaziAnalysis] in-flight request reused for hash:', hash);
+        return pending;
+      }
     }
 
-    // 2. 同一 hash 已有请求在途 → 复用同一个 Promise，不再发起第二次后端请求
-    const pending = _pendingFor(hash);
-    if (pending) {
-      console.log('[BaziAnalysis] in-flight request reused for hash:', hash);
-      return pending;
-    }
-
-    // 3. 后端（含文件缓存）
+    // 3. 后端（含文件缓存，forceRefresh 时后端也会跳过文件缓存读取）
     const promise = (async () => {
       try {
-        console.log('[BaziAnalysis] fetching from backend...');
-        const analysis = await _fetchBackend(baziData, gender);
+        console.log('[BaziAnalysis] fetching from backend...' + (forceRefresh ? ' (forceRefresh)' : ''));
+        const analysis = await _fetchBackend(baziData, gender, forceRefresh);
         if (analysis) {
           _lsSet(hash, analysis);
           _lastErrors.delete(hash);

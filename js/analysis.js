@@ -6,9 +6,24 @@
  *   Analysis.buildReport(baziData, container)  → 填充完整报告 Modal（含 AI 异步加载）
  *   Analysis.buildPillarPanel(col, baziData)   → HTML 字符串
  *   Analysis.buildShenshaPanel(name, baziData) → HTML 字符串
+ *   Analysis.refreshAiAnalysis(analysis)       → 用调用方已拿到的AI深析结果原地渲染已打开的报告
+ *     （供设置面板"轻量刷新"调用；不在内部发起任何网络请求——请求由调用方
+ *     BaziAnalysis.getAnalysis()负责，避免同一次刷新触发两次后端调用。
+ *     analysis 为空/falsy 时【不会】清空/替换 container 里已有的旧内容——只弹一条
+ *     非破坏性的失败提示，报告区保留刷新前最后一次成功渲染的内容。报告从未
+ *     打开过时静默返回）
+ *   Analysis.showAiRefreshing()                 → 供设置面板"轻量刷新AI深析"在发起
+ *     请求【之前】调用：在已打开的报告顶部插入一条不清空下方内容的"更新中"提示条。
+ *     refreshAiAnalysis() 被调用时（无论成功失败）会自动清除这条提示。报告从未
+ *     打开过时静默返回
  */
 
 const Analysis = (() => {
+
+  // ── 模块级：记住最近一次 buildReport() 打开的报告上下文，供 refreshAiAnalysis()
+  // 外部触发的刷新复用（不需要调用方重新持有 container/d/gender）。报告从未打开过
+  // 时为 null。
+  let _lastReportCtx = null; // { container, d, gender } | null
 
   // ── 五行色彩 ────────────────────────────────────────
   const WX_COLOR = {
@@ -390,37 +405,112 @@ const Analysis = (() => {
     // ── 启动 AI 异步加载 ──────────────────────────────
     if (typeof BaziAnalysis !== 'undefined') {
       const gender = d.gender || (typeof _gender !== 'undefined' ? _gender : '男');
-      // 请求发起那一刻快照当前"岛屿会话世代"（见 main-new.js::_islandGeneration
-      // 注释）。六步AI深析流水线耗时可达数分钟以上，若在其运行期间用户切换去
-      // 生成/加载了另一个岛屿，_currentIslandId会被重新赋值，此时不应再把这次
-      // 请求的结果补写到（此刻已经不对应的）新岛屿记录里。
-      const _genAtRequest = (typeof App !== 'undefined' && App.getIslandGeneration) ? App.getIslandGeneration() : null;
-      BaziAnalysis.getAnalysis(d, gender).then(analysis => {
-        if (analysis) {
-          _populateAiContent(container, analysis, d);
-
-          // ── 补写：把AI深析结果同步回用户已保存的岛屿记录 ──
-          // 场景：3D模型保存时AI深析尚未生成完（saveIsland的aiAnalysis传了null），
-          // 用户这次打开报告触发了真实生成/命中缓存，借这个时机把结果补写回那条
-          // 记录，避免下次登录还要重新花token生成。fire-and-forget，不阻塞UI，
-          // updateIslandAnalysis内部已有错误处理（未登录/无岛屿id/记录不存在等
-          // 情况均静默返回，不影响当前浏览体验）。世代值比对：只有当前世代仍与
-          // 请求发起时一致（即用户未切换到别的岛屿会话），才执行补写。
-          if (typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn() &&
-              typeof App !== 'undefined' && App.getCurrentIslandId && App.getCurrentIslandId() &&
-              App.getIslandGeneration && App.getIslandGeneration() === _genAtRequest) {
-            AuthManager.updateIslandAnalysis(App.getCurrentIslandId(), analysis).catch((e) => {
-              console.warn('[Analysis] AI深析补写回岛屿记录失败:', e);
-            });
-          }
-        } else {
-          const lastErr = (typeof BaziAnalysis !== 'undefined' && BaziAnalysis.getLastError)
-            ? BaziAnalysis.getLastError(d, gender)
-            : null;
-          _showAiFallback(container, d, lastErr && lastErr.isTimeout);
-        }
-      });
+      // 记住最近一次打开的报告上下文，供外部（设置面板"轻量刷新AI深析"）触发的
+      // refreshAiAnalysis() 复用，不需要调用方重新持有 container/d/gender。
+      _lastReportCtx = { container, d, gender };
+      _loadAndRenderAi(container, d, gender, { forceRefresh: false });
     }
+  }
+
+  // ── AI 深析拉取 + 渲染（首次打开报告 / 外部强制刷新共用）────────────
+  // forceRefresh 透传给 BaziAnalysis.getAnalysis()，跳过前端localStorage+in-flight
+  // 判断，强制向后端发起一次新请求（后端同步跳过文件缓存）。不传时（默认 false）
+  // 行为与改动前 buildReport() 内联的这段逻辑完全一致。
+  function _loadAndRenderAi(container, d, gender, { forceRefresh = false } = {}) {
+    // 请求发起那一刻快照当前"岛屿会话世代"（见 main-new.js::_islandGeneration
+    // 注释）。六步AI深析流水线耗时可达数分钟以上，若在其运行期间用户切换去
+    // 生成/加载了另一个岛屿，_currentIslandId会被重新赋值，此时不应再把这次
+    // 请求的结果补写到（此刻已经不对应的）新岛屿记录里。
+    const _genAtRequest = (typeof App !== 'undefined' && App.getIslandGeneration) ? App.getIslandGeneration() : null;
+    BaziAnalysis.getAnalysis(d, gender, { forceRefresh }).then(analysis => {
+      if (analysis) {
+        _populateAiContent(container, analysis, d);
+
+        // ── 补写：把AI深析结果同步回用户已保存的岛屿记录 ──
+        // 场景：3D模型保存时AI深析尚未生成完（saveIsland的aiAnalysis传了null），
+        // 用户这次打开报告触发了真实生成/命中缓存（或强制刷新），借这个时机把
+        // 结果补写回那条记录，避免下次登录还要重新花token生成。fire-and-forget，
+        // 不阻塞UI，updateIslandAnalysis内部已有错误处理（未登录/无岛屿id/记录
+        // 不存在等情况均静默返回，不影响当前浏览体验）。世代值比对：只有当前
+        // 世代仍与请求发起时一致（即用户未切换到别的岛屿会话），才执行补写。
+        if (typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn() &&
+            typeof App !== 'undefined' && App.getCurrentIslandId && App.getCurrentIslandId() &&
+            App.getIslandGeneration && App.getIslandGeneration() === _genAtRequest) {
+          AuthManager.updateIslandAnalysis(App.getCurrentIslandId(), analysis).catch((e) => {
+            console.warn('[Analysis] AI深析补写回岛屿记录失败:', e);
+          });
+        }
+      } else {
+        const lastErr = (typeof BaziAnalysis !== 'undefined' && BaziAnalysis.getLastError)
+          ? BaziAnalysis.getLastError(d, gender)
+          : null;
+        _showAiFallback(container, d, lastErr && lastErr.isTimeout);
+      }
+    });
+  }
+
+  // ── 供设置面板"轻量刷新AI深析"调用：用调用方已经拿到的AI深析结果原地渲染
+  // 当前已打开的报告。刻意不在这里发起任何网络请求——请求由调用方
+  // （SettingsUI.refreshAiOnly() → BaziAnalysis.getAnalysis({forceRefresh:true})）
+  // 负责，本函数只管渲染，避免"设置面板自己请求一次 + 这里又内部请求一次"
+  // 的双重后端调用（2026-08-03 修复，详见已知问题日志）。
+  // 若报告从未打开过（_lastReportCtx 为 null），静默返回，不做任何事——理论上
+  // 设置面板只会在已经打开过报告的场景下才会暴露这个入口，这里是防御性兜底。
+  //
+  // analysis 为空/falsy（调用方请求失败或返回空）时的行为与首次打开报告
+  // （_loadAndRenderAi）刻意不同：这里【不会】调用 _showAiFallback()，因为
+  // container 里此刻展示的是刷新前最后一次成功渲染的正常内容——把它整个替换
+  // 成失败兜底文案，会造成"点了刷新按钮反而把能看的内容弄没了"的体验倒退。
+  // 改为只弹一条非破坏性的提示（alert），旧内容原样保留在DOM里不动。
+  function refreshAiAnalysis(analysis) {
+    if (!_lastReportCtx) return;
+    const { container, d, gender } = _lastReportCtx;
+    // 无论成功失败，先清掉 showAiRefreshing() 插入的"更新中"提示条。
+    _clearAiRefreshingBanner();
+    if (analysis) {
+      _populateAiContent(container, analysis, d);
+    } else {
+      const lastErr = (typeof BaziAnalysis !== 'undefined' && BaziAnalysis.getLastError)
+        ? BaziAnalysis.getLastError(d, gender)
+        : null;
+      const isZh = (typeof Lang === 'undefined') || Lang.getLang() === 'zh';
+      const msg = lastErr && lastErr.isTimeout
+        ? (isZh ? 'AI深析响应超时，已为你保留刷新前的内容' : 'AI insight refresh timed out — your previous content has been kept.')
+        : (isZh ? 'AI深析刷新失败，已为你保留刷新前的内容' : 'Failed to refresh AI insight — your previous content has been kept.');
+      alert(msg);
+      // 刻意不调用 _showAiFallback()：container 里刷新前渲染好的旧内容原样保留，不清空/替换。
+    }
+  }
+
+  // ── 供设置面板"轻量刷新AI深析"在发起请求【之前】调用：在已打开报告的顶部
+  // 插入一条"更新中"提示条，不清空/替换下方已有内容（与 refreshAiAnalysis()
+  // 失败分支同一约束：旧内容必须原样保留）。多次调用幂等（复用同一个banner
+  // 节点，不会重复插入）。若报告从未打开过，静默返回。
+  function showAiRefreshing() {
+    if (!_lastReportCtx) return;
+    const { container } = _lastReportCtx;
+    if (!container) return;
+    const isZh = (typeof Lang === 'undefined') || Lang.getLang() === 'zh';
+    let bar = container.querySelector('#ai-refresh-banner');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'ai-refresh-banner';
+      bar.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 14px;margin-bottom:10px;'
+        + 'background:rgba(201,169,110,.1);border:1px solid rgba(201,169,110,.25);border-radius:8px;'
+        + 'font-size:12px;color:rgba(201,169,110,.9);letter-spacing:.5px;opacity:.9';
+      container.prepend(bar);
+    }
+    bar.textContent = isZh ? '⟳ AI 深析更新中…' : '⟳ Updating AI insight…';
+    bar.style.display = 'flex';
+  }
+
+  // 内部：清除 showAiRefreshing() 插入的提示条（refreshAiAnalysis 无论成功/
+  // 失败都会调用，确保"更新中"状态不会卡住残留）。
+  function _clearAiRefreshingBanner() {
+    if (!_lastReportCtx) return;
+    const { container } = _lastReportCtx;
+    const bar = container && container.querySelector('#ai-refresh-banner');
+    if (bar) bar.remove();
   }
 
   // ── AI 内容填充（六步命理框架）───────────────────────
@@ -778,5 +868,5 @@ const Analysis = (() => {
     return map[name] || `${name}入命，对${dm}日主的${wx}行格局产生深远影响，宜把握其吉意，化解其凶性`;
   }
 
-  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildReport };
+  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildReport, refreshAiAnalysis, showAiRefreshing };
 })();

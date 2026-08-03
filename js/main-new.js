@@ -222,7 +222,10 @@ const App = (() => {
     document.getElementById('loading-hint')?.classList.add('hidden');
   }
 
-  function _startGenerate() {
+  // forceRegen: true 时透传给 IslandLoader.generateIsland()，跳过前端本地缓存
+  // （UserState.getIslandUrl）直接重新走完整 /generate 流程。不传时（默认 false）
+  // 行为与改动前完全一致——向后兼容 retryGenerate()/submit() 里已有的无参调用。
+  function _startGenerate({ forceRegen = false } = {}) {
     // 重置当前岛屿记录id：本次是一次全新的生成（区别于 loadSavedIsland 加载已有存档），
     // 避免残留上一个岛屿的id导致后面AI深析"补写"写错记录（例如同一会话内未刷新页面
     // 连续生成了两个不同命盘，第二个生成完成前若AI深析先跑完，不应该补写回第一个岛屿）。
@@ -244,6 +247,7 @@ const App = (() => {
     }
 
     IslandLoader.generateIsland(_baziData, {
+      forceRegen,
       onProgress(stage, pct) { _applyStage(stage, pct); },
       onComplete(modelUrl) {
         _lastModelUrl = modelUrl;
@@ -310,6 +314,31 @@ const App = (() => {
     if (!_baziData) { _showScreen('screen-form'); return; }
     _resetLoadingUI();
     _startGenerate();
+  }
+
+  // ── 设置面板"修改出生信息"入口的返回/取消 ────────────────
+  // #screen-form 原本是全新用户专属首屏，没有"返回"出口；settings.js::editBirthInfo()
+  // 会把已有岛屿的用户带到这个屏幕，中途改主意时需要能安全返回岛屿画面。
+  // 防御性检查：_baziData 不存在（真正的新用户首次填表流程）时没有岛屿可返回，
+  // 静默不做任何事——对应 index.html 里 #form-cancel-btn 默认隐藏、只有
+  // editBirthInfo() 才会显式显示的机制。
+  function cancelEditBirthInfo() {
+    if (!_baziData) return;
+    document.getElementById('form-cancel-btn')?.classList.add('hidden');
+    _showScreen('screen-island');
+  }
+
+  // ── 设置面板"完全重新生成"入口 ──────────────────────────
+  // 防御性检查：理论上设置面板只会在已经生成过岛屿的场景下才会显示这个按钮，
+  // _baziData 不存在时静默返回，不做任何事。跳过前端+后端两层缓存，真实重新走
+  // 图像+3D生成完整流程（forceRegen:true）。生成完成后走现有 onComplete 回调，
+  // AuthManager.saveIsland() 保持 insert 语义不变——新增一条岛屿存档，不覆盖
+  // 当前记录（见 iterative-dreaming-starlight.md 方案）。
+  function regenerateCurrentIsland() {
+    if (!_baziData) return;
+    _showScreen('screen-loading');
+    _resetLoadingUI();
+    _startGenerate({ forceRegen: true });
   }
 
   // ── 加载已存档的岛屿（登录后直接进入命盘）────────────────
@@ -744,7 +773,8 @@ const App = (() => {
 
   // ── 公开接口 ──────────────────────────────────────────────
   return {
-    setGender, submit, retryGenerate, loadSavedIsland,
+    setGender, submit, retryGenerate, loadSavedIsland, regenerateCurrentIsland,
+    cancelEditBirthInfo,
     toggleBaziTable, toggleTaskPanel,
     closeZonePanel, showReport, closeReport,
     toggleBgm, toggleSfx,
@@ -761,6 +791,10 @@ const App = (() => {
     // 世代值比对，用于识破"请求发起后用户已切换到另一个岛屿会话"的竞态（见上方
     // _islandGeneration 声明处注释）。
     getIslandGeneration: () => _islandGeneration,
+    // settings.js::editBirthInfo() 用于关闭设置面板后切回表单屏幕，让用户修改
+    // 出生信息后自己点提交（走完全原生的 submit()→_startGenerate() 流程）。
+    // 直接导出既有的内部屏幕切换函数，不新增逻辑。
+    _showScreen: (id) => _showScreen(id),
     // auth.js::logout() 退出登录时调用，清除本次会话记录的岛屿id（防御性清理——
     // RLS+user_id过滤已经能防止跨账号误写，且报告只能从会设置这个id的入口打开，
     // 但退出登录后不应再残留上一个账号的岛屿id）

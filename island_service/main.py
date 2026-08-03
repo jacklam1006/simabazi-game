@@ -107,6 +107,8 @@ class AnalyzeRequest(BaseModel):
     bazi_data: dict
     gender: str = '男'
     birth_year: int = 0
+    force_refresh: bool = False  # true 时跳过后端文件缓存，强制重新走六步AI深析流水线
+                                  # （设置面板"轻量刷新AI深析"用，见 gemini_analysis.py::analyze_bazi()）
 
 
 # ── TripoAI 轮询（含超时）────────────────────────────────────
@@ -362,7 +364,7 @@ async def analyze_bazi_endpoint(req: AnalyzeRequest):
     # 2026-07-29 六步RAG流水线重构：analyze_bazi() 改为 async def（Step3-6 用
     # asyncio.gather 并行发起），调用方必须 await；见 gemini_analysis.py::analyze_bazi()
     # 顶部注释——同步直接调用会导致内部 asyncio.gather 语义失效/在某些路径下报错。
-    result = await analyze_bazi(req.bazi_data, req.gender, req.birth_year)
+    result = await analyze_bazi(req.bazi_data, req.gender, req.birth_year, req.force_refresh)
     if result.get('error') == 'no_api_key':
         raise HTTPException(status_code=503, detail="AI analysis service not configured")
     return result

@@ -164,16 +164,23 @@ const IslandLoader = (() => {
   }
 
   // ── 主入口：生成并展示岛屿 ────────────────────────────────
-  async function generateIsland(baziData, { onProgress, onComplete, onError } = {}) {
+  // forceRegen: true 时跳过 UserState.getIslandUrl() 本地缓存读取，直接进入正常的
+  // /generate 请求流程（请求体带 force_regen:true，后端 GenerateRequest.force_regen
+  // 字段已存在，main.py 不需要改动）。用于"设置面板→完全重新生成"场景，绕开前端本地
+  // 缓存 + 后端文件缓存两层，真实重新走图像+3D生成流程。不传时（默认 false）行为与
+  // 改动前完全一致——向后兼容现有调用点（main-new.js::_startGenerate() 默认调用）。
+  async function generateIsland(baziData, { onProgress, onComplete, onError, forceRegen = false } = {}) {
     try {
-      // 检查缓存
-      const cached = UserState.getIslandUrl(baziData);
-      if (cached) {
-        onProgress?.('completed', 95);
-        await _loadGLB(cached);
-        onProgress?.('completed', 100);
-        onComplete?.(cached);
-        return;
+      // 检查缓存（forceRegen 时跳过，不读取也不短路返回）
+      if (!forceRegen) {
+        const cached = UserState.getIslandUrl(baziData);
+        if (cached) {
+          onProgress?.('completed', 95);
+          await _loadGLB(cached);
+          onProgress?.('completed', 100);
+          onComplete?.(cached);
+          return;
+        }
       }
 
       // 提交任务
@@ -181,7 +188,7 @@ const IslandLoader = (() => {
       const genResp = await fetch(`${API_BASE}/generate`, {
         method : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body   : JSON.stringify({ bazi_data: baziData }),
+        body   : JSON.stringify({ bazi_data: baziData, force_regen: forceRegen }),
       });
       if (!genResp.ok) throw new Error(`服务器错误: ${genResp.status}`);
       const genData = await genResp.json();

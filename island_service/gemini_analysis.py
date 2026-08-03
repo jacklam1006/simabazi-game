@@ -689,7 +689,8 @@ async def _step6_dayun_liunian(ctx: dict, step1: dict, step2: dict) -> dict:
 
 
 # ── 主分析函数 ────────────────────────────────────────────
-async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0) -> dict:
+async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0,
+                        force_refresh: bool = False) -> dict:
     """
     分析八字命盘，六步命理框架流水线。
     Returns:
@@ -701,13 +702,19 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
     方式的地方：Step3-6 要用 asyncio.gather() 真正并行发起，前提是 analyze_bazi() 本身
     运行在事件循环里，而不是被同步直接调用（同步直接调用 asyncio.run() 会在 FastAPI
     已经运行的事件循环里抛 "cannot be called from a running event loop"）。
+
+    force_refresh: True 时跳过 _cache_read() 直接走六步生成流程（用于"设置面板→轻量
+    刷新AI深析"，测试RAG知识库/prompt改动效果时绕开文件缓存）。生成结果仍然经
+    _cache_write() 覆盖写入同一个哈希对应的缓存文件（覆盖写语义本就如此，不需要
+    额外改动），后续非 force_refresh 的正常请求会读到这次刷新后的最新结果。
     """
     bz_hash = _bazi_hash(bazi_data, gender)
 
-    # 命中文件缓存 → 即时返回
-    cached = _cache_read(bz_hash)
-    if cached:
-        return {'hash': bz_hash, 'analysis': cached, 'from_cache': True}
+    # 命中文件缓存 → 即时返回（force_refresh 时跳过，直接走下面的生成流程）
+    if not force_refresh:
+        cached = _cache_read(bz_hash)
+        if cached:
+            return {'hash': bz_hash, 'analysis': cached, 'from_cache': True}
 
     if not GEMINI_API_KEY:
         return {'hash': bz_hash, 'analysis': None, 'error': 'no_api_key'}

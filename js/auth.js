@@ -136,6 +136,21 @@ const AuthManager = (() => {
     return data;
   }
 
+  // ── 更新用户资料（目前仅昵称，供设置面板调用）──────────
+  // RLS：profiles 表 UPDATE / INSERT 策略 USING/WITH CHECK (auth.uid()=id) 已存在，不需要额外SQL。
+  // 用 upsert 而不是 update：如果 profiles 表里没有这一行（例如注册时因邮箱验证
+  // 时序问题、RLS 拒绝了 registerWithProfile() 里的首次 upsert），update 会静默
+  // 匹配 0 行成功返回（PostgREST 特性：UPDATE 匹配0行不报错），导致"假成功"——
+  // 界面显示保存成功，但数据库里其实什么都没写。upsert 能在行不存在时自愈补写。
+  async function updateProfile({ displayName }) {
+    if (!_sb || !_user) throw new Error('未登录');
+    const { data, error } = await _sb.from('profiles')
+      .upsert({ id: _user.id, display_name: displayName })
+      .select().maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+
   // ── 保存岛屿 ────────────────────────────────────────────
   async function saveIsland({ baziData, modelUrl, baziHash, birthInfo, name, aiAnalysis = null }) {
     if (!_sb || !_user) return null;
@@ -195,7 +210,7 @@ const AuthManager = (() => {
 
   return {
     init, login, register, registerWithProfile,
-    logout, sendPasswordReset, getProfile,
+    logout, sendPasswordReset, getProfile, updateProfile,
     saveIsland, updateIslandAnalysis, getMyIslands, checkEmailExists,
     isLoggedIn: () => !!_user,
     currentUser: () => _user,
@@ -365,33 +380,43 @@ const AuthUI = (() => {
     if (el && entry) el.textContent = entry.phone;
   }
 
+  // ── 顶部 #auth-user-info 展示刷新（优先 display_name，否则邮箱）─────
+  // 从 _onAuthChange() 抽出，供登录态变化和 SettingsUI.saveProfile() 保存
+  // 昵称成功后共同调用，确保改完昵称立刻在顶部同步、不用等下次登录/刷新页面。
+  function _refreshUserInfoDisplay() {
+    const user     = AuthManager.currentUser();
+    const userInfo = document.getElementById('auth-user-info');
+    if (!user || !userInfo) return;
+    AuthManager.getProfile()
+      .then(profile => {
+        userInfo.textContent = profile?.display_name || user.email;
+        userInfo.classList.remove('hidden');
+      })
+      .catch(() => {
+        userInfo.textContent = user.email;
+        userInfo.classList.remove('hidden');
+      });
+  }
+
   // ── 认证状态变化（AuthManager 回调）────────────────────
   function _onAuthChange(user) {
-    const loginBtn     = document.getElementById('auth-login-btn');
-    const logoutBtn    = document.getElementById('auth-logout-btn');
-    const userInfo     = document.getElementById('auth-user-info');
-    const myIslandsBtn = document.getElementById('auth-my-islands-btn');
+    const loginBtn      = document.getElementById('auth-login-btn');
+    const logoutBtn     = document.getElementById('auth-logout-btn');
+    const userInfo      = document.getElementById('auth-user-info');
+    const myIslandsBtn  = document.getElementById('auth-my-islands-btn');
+    const settingsBtn   = document.getElementById('auth-settings-btn');
 
     if (user) {
       loginBtn?.classList.add('hidden');
       logoutBtn?.classList.remove('hidden');
       myIslandsBtn?.classList.remove('hidden');
-      if (userInfo) {
-        // 优先显示 display_name
-        AuthManager.getProfile()
-          .then(profile => {
-            userInfo.textContent = profile?.display_name || user.email;
-            userInfo.classList.remove('hidden');
-          })
-          .catch(() => {
-            userInfo.textContent = user.email;
-            userInfo.classList.remove('hidden');
-          });
-      }
+      settingsBtn?.classList.remove('hidden');
+      _refreshUserInfoDisplay();
     } else {
       loginBtn?.classList.remove('hidden');
       logoutBtn?.classList.add('hidden');
       myIslandsBtn?.classList.add('hidden');
+      settingsBtn?.classList.add('hidden');
       if (userInfo) { userInfo.textContent = ''; userInfo.classList.add('hidden'); }
     }
   }
@@ -542,6 +567,6 @@ const AuthUI = (() => {
     doLogin, doForgotPassword, doRegister,
     clearFieldErr, onMainEmailBlur,
     showMyIslands, _loadIslandByIndex,
-    _onAuthChange,
+    _onAuthChange, _refreshUserInfoDisplay,
   };
 })();
