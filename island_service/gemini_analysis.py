@@ -22,6 +22,34 @@ PROMPT_SYSTEM.md 对应"修改记录"、claude-docs/已知问题与修复记录.
 重新推导，缓存版本从 v2 升级到 v3（LS_PREFIX 'bazi_ai_v3_'），_cache_read()
 新增 step2b_shishen 字段校验。具体数值见本文件对应位置与 bazi-analysis.js 注释。
 
+2026-08-04 再次加长Step1/Step2 + 新增六维打分字段（非bug修复，见已知问题记录对应
+日期条目）：Step1 narrative 380-450→550-650字、wuxing_note 110-150→160-200字，
+Step2 narrative 350-420→500-600字（Step3-6 narrative字数本身不变）。同时给
+Step2~Step6各自新增一个0-100的数值化打分字段（pattern_score/career_score+
+wealth_score/relationship_score/health_score/fortune_score，供前端总览Tab
+渲染"六维雷达图"）——这不是新增判断维度，是给这几步已有的narrative定性判断追加
+一致的量化打分，共用 `_score_field_instruction()` 措辞模板强制"必须与narrative
+一致""不要都往50分凑"两条要求。Step1/Step2 max_tokens 相应上调（4096→5632、
+5120→7168），Step3-6因只新增一两个数字字段、narrative字数不变，max_tokens保持
+4096不变。单次Gemini调用HTTP超时（90s）与前端 AI_ANALYSIS_TIMEOUT_MS（550s）
+本轮**均未改动**——本次只有Step1/Step2两步内容增幅约30-45%（而不是2026-08-03那
+轮六步全部翻倍），评估后判断现有超时预算余量足够覆盖，具体推导见
+claude-docs/已知问题与修复记录.md对应日期条目。缓存版本从 v3 升级到 v4
+（LS_PREFIX 'bazi_ai_v4_'），_cache_read() 新增六维打分字段校验。
+
+2026-08-04 qa-reviewer复查修复（CONFIRMED 2，见已知问题记录对应日期条目）：
+上一版 _cache_read() 只检查 fortune_score 一个字段"是否存在"作为六个新增
+打分字段的canary，前提"六个字段要么全部生成成功、要么整体不落盘"不成立——
+_parse_json() 只做JSON语法解析，模型漏返回某个字段不会抛异常，会被原样落盘，
+导致残缺数据被永久当作有效缓存返回、前端六维雷达图永久卡在"评分数据暂不
+完整"。修复为两处联动：analyze_bazi() 落盘前用 _validate_score_fields()
+对六个字段做 isinstance(x, (int, float)) 类型校验并兜底为50分（不是 in 存在
+性判断，因为JSON里可能出现 "fortune_score": "87" 这种字符串）；_cache_read()
+用同口径的 _score_fields_valid() 重新校验六个字段的类型（不只查存在性），
+两处共用 _SCORE_FIELD_PATHS 常量，避免各写一份。这个类型校验口径现在与
+js/analysis.js::_isValidScore()（typeof v !== 'number'）严格对齐，不会再出现
+"后端认为字符串分数是有效缓存、前端却拒绝读取"的两端不一致。
+
 **必须保留、不改的机制**（都是踩过生产坑才做对的，见已知问题日志2026-07-29多轮记录）：
 - _redact()：API Key脱敏，防止网络层异常把真实Key泄漏进响应体
 - GeminiCallError：统一的、带明确诊断信息的调用失败异常
@@ -31,7 +59,8 @@ PROMPT_SYSTEM.md 对应"修改记录"、claude-docs/已知问题与修复记录.
 - 三层缓存里的"文件缓存"这一层（_bazi_hash/_cache_read/_cache_write），但因为输出JSON
   结构整体变了，_cache_read() 新增了"是否含 step1_foundation 新字段"的校验，命中旧结构
   缓存文件时视为未命中，重新生成并覆盖（详见 _cache_read 注释）。2026-08-03 内容深度
-  扩充时追加了"是否含 step2b_shishen 字段"的第二道校验，理由同上（详见 _cache_read 注释）
+  扩充时追加了"是否含 step2b_shishen 字段"的第二道校验，2026-08-04 再追加了"六维打分
+  字段类型是否合法"的第三道校验（_score_fields_valid()，理由同上，详见 _cache_read 注释）
 
 **RAG检索的核心契约**：每一步生成前调用 rag_service.query()，检索失败/查不到内容时
 返回空字符串——这是"锦上添花"，不是必需依赖，绝不能因为RAG层故障拖垮整条AI深析流水线。
@@ -42,6 +71,7 @@ Phase A（本轮）knowledge_base/bazi/ 下只有2份摘要文件（约545行）
 
 import os
 import json
+import math
 import hashlib
 import asyncio
 import requests
@@ -120,6 +150,83 @@ def _bazi_hash(bazi_data: dict, gender: str = '') -> str:
     return hashlib.md5('|'.join(parts).encode()).hexdigest()
 
 
+# 2026-08-04 qa-reviewer复查修复（CONFIRMED 2）：六维打分字段（(step_key, field)
+# 二元组，覆盖 Step2/3/4/5/6 五步共六个字段——Step3一步产出两个）。之前的实现里
+# `_cache_read()` 只检查 `fortune_score` 一个字段"是否存在"作为六个新字段的canary，
+# 注释里称"六个新字段要么全部生成成功、要么整体不落盘"——这个前提不成立：
+# `_parse_json()` 只做JSON语法解析，完全不校验字段是否齐全；模型漏返回某个字段
+# （比如漏了 relationship_score）不会抛异常、不会走 GeminiCallError 分支，会被
+# 原样 `_cache_write()` 落盘。项目自己就有先例：`_fallback_keywords()` 的
+# docstring明写"Step2若未按要求返回keywords字段时的确定性兜底"——模型漏字段是
+# 已知会发生的事，不是理论风险。用统一的 (step_key, field) 列表驱动两处校验
+# （落盘前的兜底 `_validate_score_fields()` + 读缓存时的canary
+# `_score_fields_valid()`），避免两处各写一份容易漏改的重复逻辑。
+_SCORE_FIELD_PATHS = [
+    ('step2_pattern_yongshen', 'pattern_score'),
+    ('step3_career_wealth',    'career_score'),
+    ('step3_career_wealth',    'wealth_score'),
+    ('step4_relationship',     'relationship_score'),
+    ('step5_health',           'health_score'),
+    ('step6_dayun_liunian',    'fortune_score'),
+]
+
+
+def _is_valid_score(v) -> bool:
+    """类型 + 范围 + 有限值三重校验——不用 `in` 存在性判断，因为JSON里
+    完全合法地可能出现 "fortune_score": "87" 这种字符串（模型输出不稳定的常见
+    形态），`in` 判断不了类型；也显式排除 bool（Python里 bool 是 int 子类，
+    isinstance(True, int) 为 True，模型异常返回 true/false 时不能被误判为合法
+    分数）。这个口径必须和 `js/analysis.js::_isValidScore()`（前端用 `typeof
+    v === 'number' && isFinite(v) && v >= 0 && v <= 100`）完全对齐——此前
+    后端只校验类型、不校验范围/有限值，模型返回 105 这种越界但类型合法的
+    分数会被后端判定为"缓存命中"、永久落盘并在 `_cache_read()` canary里
+    判定通过，而前端范围校验会拒绝渲染，导致六维雷达图永久卡死在"评分数据
+    暂不完整"（跟历史上纯类型口径不一致故障同构，这次触发条件是越界值/
+    NaN/Infinity 而不是缺失字段）。`math.isfinite()` 同时排除 NaN 和
+    ±Infinity——Python 的 `json.loads` 默认会接受 NaN/Infinity 字面量，
+    `isinstance(float('nan'), float)` 为 True，不加 isfinite 判断的话
+    这两类值会绕过纯类型校验。"""
+    return (
+        isinstance(v, (int, float))
+        and not isinstance(v, bool)
+        and math.isfinite(v)
+        and 0 <= v <= 100
+    )
+
+
+def _validate_score_fields(analysis: dict) -> list:
+    """落盘前的最后一道校验：六个打分字段里任何一个类型不合法（缺失/字符串/
+    bool等），就地替换为中性兜底值50分——50分是"不确定"的中性占位，不是"这个
+    人这项就是中等"的判断，不做特殊标记（这本来就是需求方权衡后的选择，另一个
+    可选方案是让 analyze_bazi() 整体判定失败重新生成，但六维打分是给已完整
+    narrative追加的量化补充可视化、不是报告主体内容，Step2b+Step3-6又是
+    asyncio.gather并行发起的5次独立调用，其余narrative通常都完整可用，为了
+    一个小数字字段整体重试一轮六步生成，成本收益不划算，也不保证重试后就不
+    会再漏）。返回被兜底的字段名列表，供调用方打日志，方便后续观测模型在
+    这几个字段上的实际质量、需不需要收紧prompt措辞。"""
+    fallback_fields = []
+    for step_key, field in _SCORE_FIELD_PATHS:
+        step = analysis.get(step_key)
+        if not isinstance(step, dict):
+            continue
+        if not _is_valid_score(step.get(field)):
+            step[field] = 50
+            fallback_fields.append(f'{step_key}.{field}')
+    return fallback_fields
+
+
+def _score_fields_valid(data: dict) -> bool:
+    """`_cache_read()` 用的canary：六个打分字段必须**全部**通过 `_is_valid_score()`
+    类型校验才判定缓存完整命中。这是防止 `_validate_score_fields()`
+    万一有遗漏（比如未来新增第七个打分字段忘了同步进 `_SCORE_FIELD_PATHS`）时，
+    这一层依然不会把残缺/类型错误的数据误判为完整——双重保险，不是自我循环论证。"""
+    for step_key, field in _SCORE_FIELD_PATHS:
+        step = data.get(step_key)
+        if not isinstance(step, dict) or not _is_valid_score(step.get(field)):
+            return False
+    return True
+
+
 def _cache_read(h: str):
     path = ANALYSIS_CACHE / f"{h}.json"
     if not path.exists():
@@ -144,7 +251,29 @@ def _cache_read(h: str):
     # "薄"缓存，永远看不到新内容（除非手动点"轻量刷新"）。因此命中判定加严：必须
     # 同时含有 step2b_shishen 这个新步骤的标志字段，否则也视为未命中，重新生成并
     # 覆盖掉旧缓存文件。
-    if isinstance(data, dict) and 'step1_foundation' in data and 'step2b_shishen' in data:
+    #
+    # 2026-08-04 v3→v4：Step1/Step2 narrative目标字数再次加长 + Step2/3/4/5/6
+    # 各自新增一个数值化打分字段（pattern_score/career_score/wealth_score/
+    # relationship_score/health_score/fortune_score，供前端总览Tab渲染"六维雷达
+    # 图"）。沿用同一套模式：新增第三道校验，检查这六个新字段是否齐全。
+    #
+    # 2026-08-04 qa-reviewer复查修复（CONFIRMED 2）：上面这道第三道校验原本只
+    # 检查 fortune_score 一个字段"是否存在"，注释称"六个新字段要么全部生成成功、
+    # 要么整体不落盘，任选一个做canary效果等价"——这个前提不成立：`_parse_json()`
+    # 只做JSON语法解析，不校验字段是否齐全；模型漏返回某个字段（比如漏了
+    # relationship_score，其余5个都正常）不会抛异常，不会走 GeminiCallError
+    # 分支，会被原样 `_cache_write()` 落盘。故障链路：某次Step4漏了
+    # relationship_score → 这里只查fortune_score存在 → 判定命中，这份残缺结果
+    # 被**永久**当作有效缓存返回；而 `js/analysis.js` 里六维雷达图的渲染条件
+    # 是"6项全部有效才画图"——结果用户从此每次打开报告都卡在"评分数据暂不完整"，
+    # 缓存这层却一直认为数据没问题，永远不会自动重新生成。
+    # 现在改为 `_score_fields_valid()`：六个字段逐一做 `isinstance(x, (int,
+    # float))` 类型校验（不是 `in` 存在性判断，也排除bool），任何一个不合法
+    # 都判定未命中、重新生成覆盖。配合 `analyze_bazi()` 落盘前的
+    # `_validate_score_fields()` 兜底，这里是双重保险：即使落盘前的校验有遗漏，
+    # 这一层依然不会把残缺/类型错误的数据误判为完整。
+    if (isinstance(data, dict) and 'step1_foundation' in data and 'step2b_shishen' in data
+            and _score_fields_valid(data)):
         return data
     return None
 
@@ -466,6 +595,32 @@ def _rag_block(snippet: str) -> str:
     return f"\n【古籍/断语参考资料（可化用判断逻辑增强专业依据感，勿逐字大段照抄）】\n{snippet}\n"
 
 
+# 2026-08-04 新增：六维主题打分（Step2 pattern_score / Step3 career_score+
+# wealth_score / Step4 relationship_score / Step5 health_score / Step6
+# fortune_score）——不是凭空新增的AI判断，是给已有的Step2~6各自narrative定性
+# 判断追加一个数值化打分，供前端总览Tab渲染"六维雷达图"用。共用同一段措辞
+# 模板，确保六个字段的锚点描述风格一致、都强制要求"与narrative判断一致""不要
+# 无脑给50分"这两条要求，避免每个步骤各写一遍导致某一步漏掉某条要求。
+#
+# 2026-08-04 qa-reviewer复查修复（PLAUSIBLE P1）：此前这段措辞还要求"同一个人
+# 六个维度的分数不应该都差不多"（跨维度区分度）。但 Step2b/Step3/4/5/6 是
+# analyze_bazi() 里用 asyncio.gather 并行发起的5次互相看不见的独立Gemini调用，
+# 且 _step2_context_block()（传给下游步骤的上下文）只带了 step2 的 pattern/
+# yongshen 字符串，完全没有带上 pattern_score——各步骤在生成时根本不知道其它
+# 维度打了几分，"跨维度要有区分度"这条要求在当前并行架构下机制上不可能真正
+# 生效，属于误导性指令。不改变并行架构本身（改成串行会大幅拖慢整体耗时，
+# 得不偿失），只把要求收窄到这一步自己能做到的范围：这一步的分数要跟这一步
+# 自己的narrative判断一致、不要不假思索地给50分。
+def _score_field_instruction(field: str, dimension: str, low: str, mid: str, high: str) -> str:
+    return f"""
+另外，请你在JSON里额外给出一个字段 "{field}"：对"{dimension}"这个维度做0-100的
+量化打分，给你三段式锚点参考——0-30分＝{low}；30-70分＝{mid}；70-100分＝{high}。
+这个分数必须和你上面narrative里对这个维度的定性判断保持一致，不能出现narrative
+写的是需要谨慎/存在波动、分数却给到很高（或反过来）这种自相矛盾的情况；也不要
+不假思索地给50分敷衍了事，要结合这个具体命盘在这个维度上的真实情况给出有依据
+的分数。"""
+
+
 def _fallback_keywords(ctx: dict) -> list:
     """Step2 若未按要求返回 keywords 字段时的确定性兜底——不额外调用AI，用命盘
     已有的确定性数据（日主/身强弱/喜用神/神煞）拼凑5个关键词，避免为了补一个小
@@ -506,12 +661,17 @@ def _step1_foundation_sync(ctx: dict) -> dict:
 请输出严格JSON（不含markdown代码块，不含JSON之外的任何文字）：
 {{
   "title": "命局「出厂设置」扫描",
-  "narrative": "对{ctx['dm']}日主整体命局的深度解读，380-450字：结合生于{ctx['month_zhi']}月的月令旺衰、四柱五行分布、{ctx['strength_str']}的身强身弱判断，展开说明这个人天生的性格底色、行为模式、待人接物的方式、核心优势与潜在短板，可以举一两个具体生活场景让判断更有画面感，语气要让人觉得'这说的就是我'",
-  "wuxing_note": "五行力量分布的具体解读，110-150字：哪个五行最旺、哪个最弱，这对日常状态/精力/情绪/身体感受有什么直接影响，可以结合现代生活场景（工作节奏/作息/人际相处）具体展开",
+  "narrative": "对{ctx['dm']}日主整体命局的深度解读，550-650字：结合生于{ctx['month_zhi']}月的月令旺衰、四柱五行分布、{ctx['strength_str']}的身强身弱判断，展开说明这个人天生的性格底色、行为模式、待人接物的方式、核心优势与潜在短板，可以举一两个具体生活场景让判断更有画面感，语气要让人觉得'这说的就是我'",
+  "wuxing_note": "五行力量分布的具体解读，160-200字：哪个五行最旺、哪个最弱，这对日常状态/精力/情绪/身体感受有什么直接影响，可以结合现代生活场景（工作节奏/作息/人际相处）具体展开",
   "strengths": ["性格优势1（不超过30字）", "性格优势2", "性格优势3"],
   "cautions": ["需要留意的性格短板/注意事项1（不超过30字）", "需要留意的性格短板/注意事项2", "需要留意的性格短板/注意事项3"]
 }}"""
-    raw = _call_gemini(prompt, max_tokens=4096, system_instruction=PERSONA_SYSTEM)
+    # 2026-08-04 narrative/wuxing_note目标字数再加长（550-650/160-200，见本文件顶部
+    # docstring对应日期条目）：内容量比上一版（380-450/110-150）大致增加30-40%，
+    # 沿用同一比例上调max_tokens（4096→5632，见_build_generation_config调用处
+    # 附近PROMPT_SYSTEM.md修改记录的推导说明），不是整数翻倍，因为这次只是字数
+    # 目标提升而非新增字段。
+    raw = _call_gemini(prompt, max_tokens=5632, system_instruction=PERSONA_SYSTEM)
     return _parse_json(raw)
 
 
@@ -549,16 +709,32 @@ def _step2_pattern_yongshen_sync(ctx: dict, step1: dict) -> dict:
 
 同时请顺带给出5个能概括这个人命盘特质的关键词（2-4字词组，如"伤官生财""身弱用印"
 "天乙贵人"等，供UI标签展示用，不要写成一句话）。
-
+{_score_field_instruction(
+    field='pattern_score',
+    dimension='格局层次/成格纯度',
+    low='格局不够纯粹、成格条件有明显欠缺，需要靠大运流年后天补足',
+    mid='格局基本成立，有一定发挥空间但也有制约',
+    high='格局清纯、成格条件充分，先天格局层次较高',
+)}
 请输出严格JSON（不含markdown代码块）：
 {{
   "title": "定格局与找用神",
   "pattern": "命格定位，如'伤官生财格'/'杀印相生格'/'从强格'等，20字以内",
   "yongshen": ["用神1", "用神2"],
-  "narrative": "350-420字：说明为什么是这个格局、用神忌神各自的作用，以及这套判断能给这个人带来什么样的人生策略指导（比如往什么方向努力更顺、要有意识避开什么），可以适当展开格局形成的具体命理依据，让判断有理有据",
-  "keywords": ["关键词1", "关键词2", "关键词3", "关键词4", "关键词5"]
+  "narrative": "500-600字：说明为什么是这个格局、用神忌神各自的作用，以及这套判断能给这个人带来什么样的人生策略指导（比如往什么方向努力更顺、要有意识避开什么），可以适当展开格局形成的具体命理依据，让判断有理有据",
+  "keywords": ["关键词1", "关键词2", "关键词3", "关键词4", "关键词5"],
+  "pattern_score": 数字0-100，格局层次/成格纯度的量化打分（见上文说明，务必和narrative判断一致）
 }}"""
-    raw = _call_gemini(prompt, max_tokens=5120, system_instruction=PERSONA_SYSTEM)
+    # 2026-08-04：narrative目标350-420→500-600字（+约40%）+ 新增pattern_score量化
+    # 打分字段，JSON整体内容量增幅比Step1更大（Step2本身还有pattern/yongshen/
+    # keywords三个既有字段），max_tokens按比例上调5120→7168（约+40%）。
+    # 2026-08-04 qa-reviewer复查修复（PLAUSIBLE P3）：上一句"仍低于8192封顶，
+    # 重试逻辑不受影响"表述不准确——_call_gemini() 的 MAX_TOKENS加倍重试机制
+    # （min(budget*2, 8192)）从"5120→8192，+60%余量"变成了"7168→8192，只剩
+    # +14%余量"，余量确实变薄了，不是"不受影响"。只是实务上Step2实际输出约
+    # 800 tokens、离7168还差一个数量级，本来触发截断的概率就很低，不强制要求
+    # 现在就往下调max_tokens数值，但表述要如实反映余量变薄这个事实。
+    raw = _call_gemini(prompt, max_tokens=7168, system_instruction=PERSONA_SYSTEM)
     return _parse_json(raw)
 
 
@@ -646,13 +822,32 @@ def _step3_career_wealth_sync(ctx: dict, step1: dict, step2: dict) -> dict:
 {_rag_block(rag_snippet)}
 【本步骤任务】财官印组合分析：结合财星、官杀星、印星的力量与位置，精准定位最适合
 的职业赛道，并明确判断这个人更适合单干创业还是团队协作/打工，给出具体理由。
-
+{_score_field_instruction(
+    field='career_score',
+    dimension='事业运',
+    low='事业发展明显受阻、容易原地打转，需要重点关注方向选择',
+    mid='事业发展平稳，靠自身努力能稳步推进',
+    high='事业运旺盛，容易借势而起、发展顺遂',
+)}
+{_score_field_instruction(
+    field='wealth_score',
+    dimension='财运',
+    low='财运偏弱、进财不易或容易破财，需要格外谨慎理财',
+    mid='财运平稳，收支相对稳健',
+    high='财运旺盛，进财渠道多、容易积累财富',
+)}
 请输出严格JSON（不含markdown代码块）：
 {{
   "title": "事业与财富深度剖析",
   "narrative": "380-450字：财官印组合的具体解读，财运走向、事业发展节奏，以及单干还是团队协作更适合这个人的明确判断和理由，可以结合现代职业形态（如自由职业/创业/大厂打工/体制内）具体展开",
-  "career_directions": ["具体职业方向建议1（不超过35字）", "具体职业方向建议2", "具体职业方向建议3", "具体职业方向建议4"]
+  "career_directions": ["具体职业方向建议1（不超过35字）", "具体职业方向建议2", "具体职业方向建议3", "具体职业方向建议4"],
+  "career_score": 数字0-100，事业运的量化打分（见上文说明，务必和narrative判断一致）,
+  "wealth_score": 数字0-100，财运的量化打分（见上文说明，务必和narrative判断一致）
 }}"""
+    # 2026-08-04：narrative目标字数本身未改动（仍380-450字），只新增career_score/
+    # wealth_score两个数字字段，内容量增幅很小（各自只是一个数字+一小段measurement
+    # 说明文字进入prompt输入侧，不是输出侧），max_tokens保持4096不变——不属于
+    # 本轮"两步小幅加长"范围（那两步是Step1/Step2），Step3-6只加打分字段。
     raw = _call_gemini(prompt, max_tokens=4096, system_instruction=PERSONA_SYSTEM)
     return _parse_json(raw)
 
@@ -686,14 +881,23 @@ def _step4_relationship_sync(ctx: dict, step1: dict, step2: dict) -> dict:
 {_rag_block(rag_snippet)}
 【本步骤任务】婚恋与感情世界：结合日支夫妻宫与{spouse_label}的状况，预测伴侣的
 大致特质、两人相处模式，以及感情上值得留意的关键节点（如大运/流年带来的机会或波动）。
-
+{_score_field_instruction(
+    field='relationship_score',
+    dimension='婚姻情感运',
+    low='感情路上波折较多、需要更用心经营和沟通',
+    mid='感情整体平稳，偶有需要磨合的地方',
+    high='婚姻情感运旺盛，容易遇到合适的人、两人相处融洽',
+)}
 请输出严格JSON（不含markdown代码块）：
 {{
   "title": "婚恋与感情世界",
   "narrative": "380-450字：夫妻宫与{spouse_label}状况的解读，感情相处模式、容易遇到的问题类型、经营感情的具体建议，可以举一两个具体相处场景让判断更有代入感",
   "partner_traits": "对伴侣特质/类型的预测，130-170字",
-  "key_periods": ["感情关键节点1（含大致时间与提示，不超过35字）", "感情关键节点2", "感情关键节点3"]
+  "key_periods": ["感情关键节点1（含大致时间与提示，不超过35字）", "感情关键节点2", "感情关键节点3"],
+  "relationship_score": 数字0-100，婚姻情感运的量化打分（见上文说明，务必和narrative判断一致）
 }}"""
+    # 2026-08-04：narrative目标字数本身未改动，只新增relationship_score一个数字
+    # 字段，max_tokens保持4096不变（同Step3注释）。
     raw = _call_gemini(prompt, max_tokens=4096, system_instruction=PERSONA_SYSTEM)
     return _parse_json(raw)
 
@@ -720,13 +924,25 @@ def _step5_health_sync(ctx: dict, step1: dict, step2: dict) -> dict:
 【本步骤任务】健康与潜在风险提示：结合五行强弱分布与地支相冲等关系，预警身体
 相对薄弱的部位/系统，给出日常保养的具体建议，以及需要格外留意身体状况的年份
 （结合大运流年判断，不需要精确到某一天，给到年份或阶段即可）。
+{_score_field_instruction(
+    field='health_score',
+    dimension='健康运',
+    low='身体某些部位/系统相对薄弱、需要格外留意和保养（这是提醒不是评判，分数低不代表体质"差"，只代表这方面更需要花心思）',
+    mid='身体状态整体平稳，按常规方式保养即可',
+    high='五行相对均衡，身体底子较好，不代表可以完全不注意保养',
+)}
+健康这个维度的分数是提醒不是道德判断——narrative和health_score的措辞都不要用
+"差"这类带评判色彩的词，统一改用"需要留意""相对薄弱""容易疲劳"这类中性表达。
 
 请输出严格JSON（不含markdown代码块）：
 {{
   "title": "健康与潜在风险提示",
   "narrative": "350-420字：五行失衡对应的身体薄弱环节，以及为什么（用五行生克逻辑说明，但要转译成现代人能懂的表达，比如'某脏器/系统容易疲劳'而不是纯古文），可以结合现代生活方式（作息/饮食/运动/情绪管理）给出更具体的画面",
-  "watch_points": ["日常保养建议/需留意的具体点1（不超过35字）", "日常保养建议/需留意的具体点2", "日常保养建议/需留意的具体点3", "需要格外留意的年份或阶段（不超过35字）"]
+  "watch_points": ["日常保养建议/需留意的具体点1（不超过35字）", "日常保养建议/需留意的具体点2", "日常保养建议/需留意的具体点3", "需要格外留意的年份或阶段（不超过35字）"],
+  "health_score": 数字0-100，健康运的量化打分（见上文说明，分数低是"需要留意"不是"差"，务必和narrative判断一致）
 }}"""
+    # 2026-08-04：narrative目标字数本身未改动，只新增health_score一个数字字段，
+    # max_tokens保持4096不变（同Step3注释）。
     raw = _call_gemini(prompt, max_tokens=4096, system_instruction=PERSONA_SYSTEM)
     return _parse_json(raw)
 
@@ -750,13 +966,22 @@ def _step6_dayun_liunian_sync(ctx: dict, step1: dict, step2: dict) -> dict:
 【本步骤任务】大运与流年运势推演：结合当前大运（{ctx['current_dayun_ganzhi'] or '未知'}）
 与{ctx['current_year']}年（{ctx['current_ganzhi']}年）流年，给出该猛冲还是该沉淀的
 具体判断，以及今年可以立刻执行的一条具体行动建议。
-
+{_score_field_instruction(
+    field='fortune_score',
+    dimension='当前大运叠加今年流年的综合运势',
+    low='大运流年叠加对命局形成明显克制/消耗，宜沉淀积累、谨慎行事',
+    mid='大运流年整体平顺，按部就班推进即可',
+    high='大运流年叠加对命局形成明显助力，宜积极进取、把握机会',
+)}
 请输出严格JSON（不含markdown代码块）：
 {{
   "title": "大运与流年运势推演",
   "narrative": "380-450字：当前大运的整体基调 + {ctx['current_year']}年（{ctx['current_ganzhi']}年）流年与命局的生克关系解读，说明今年整体是适合猛冲还是适合沉淀积累，可以展开大运与流年叠加后具体在事业/财运/人际上会有怎样的具体表现",
-  "current_year_action": "今年可以立刻执行的一条具体行动建议，90-130字，要具体不要空泛，可以给出可执行的具体方式"
+  "current_year_action": "今年可以立刻执行的一条具体行动建议，90-130字，要具体不要空泛，可以给出可执行的具体方式",
+  "fortune_score": 数字0-100，当前大运+今年流年综合运势的量化打分（见上文说明，务必和narrative判断一致）
 }}"""
+    # 2026-08-04：narrative目标字数本身未改动，只新增fortune_score一个数字字段，
+    # max_tokens保持4096不变（同Step3注释）。
     raw = _call_gemini(prompt, max_tokens=4096, system_instruction=PERSONA_SYSTEM)
     return _parse_json(raw)
 
@@ -826,6 +1051,13 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
             'step6_dayun_liunian': step6,
             'keywords': keywords,
         }
+        # 2026-08-04 qa-reviewer复查修复（CONFIRMED 2）：落盘前校验六维打分字段类型，
+        # 不合法的（缺失/字符串/bool等）就地兜底为50分——见 _validate_score_fields()
+        # docstring里的兜底方案理由。这一步不会让请求整体失败，只是打个警告日志
+        # 方便观测模型在这几个字段上的实际质量。
+        fallback_fields = _validate_score_fields(analysis)
+        if fallback_fields:
+            print(f"[gemini_analysis WARN] 六维打分字段缺失/类型不合法，已兜底为50分: {fallback_fields}")
         _cache_write(bz_hash, analysis)
         return {'hash': bz_hash, 'analysis': analysis, 'from_cache': False}
     except GeminiCallError as e:

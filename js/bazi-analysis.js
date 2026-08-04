@@ -20,7 +20,14 @@ const BaziAnalysis = (() => {
   // 缓存虽然结构"能兼容"（字段名没变，只是内容更薄+缺step2b_shishen），但直接展示会让
   // 用户看到旧版"薄"内容，且前端渲染step2b_shishen相关模块时找不到字段——同样换key前缀
   // 避免命中旧版本内容（后端 _cache_read() 同步做了 step2b_shishen 字段校验，双重保证）
-  const LS_PREFIX   = 'bazi_ai_v3_';
+  // v3→v4：2026-08-04再次加长Step1/Step2 narrative + 新增六维打分字段（Step2的
+  // pattern_score、Step3的career_score/wealth_score、Step4的relationship_score、
+  // Step5的health_score、Step6的fortune_score，供总览Tab渲染"六维雷达图"）。
+  // 与v2→v3同一道理：老v3缓存字段名不冲突、结构"能兼容"，但渲染六维雷达图时会
+  // 发现6个打分字段全部缺失，走入"评分数据暂不完整"的兜底态而不是正常显示——
+  // 沿用同一套"新增结构标志字段校验+换key前缀"模式，同样双重保证（后端
+  // gemini_analysis.py::_cache_read() 同步新增了fortune_score字段校验）。
+  const LS_PREFIX   = 'bazi_ai_v4_';
 
   // 后端七步RAG流水线（gemini_analysis.py::analyze_bazi()，Step1→Step2严格串行，
   // Step2b+Step3-6并行）真实耗时预算：
@@ -54,6 +61,24 @@ const BaziAnalysis = (() => {
   // 同时550秒仍低于10分钟（3D生成轮询沿用的惯例值，见已知问题记录2026-07-26条），
   // 只有整条模型链持续挂起的灾难场景才会真正触发这个上限——那种场景下更早反馈
   // 失败反而是合理的。
+  //
+  // 2026-08-04评估未改动，2026-08-04 qa-reviewer复查修复（PLAUSIBLE P2）订正
+  // 推导过程：_call_gemini_once 的 timeout=90s 是 requests.post 的硬性物理超时——
+  // 到90s直接abort抛异常，不存在"单次调用部分按比例放大到约130s"这种说法（旧版
+  // 本注释这么写是错的，90s本身这次没有改动，物理上不可能超过90s还没被abort）。
+  // 正确的推导逻辑是"硬上限不变、期望耗时上升"：本轮只加长了Step1/Step2两步
+  // narrative（各约+30~45%，不是2026-08-03那轮"六步全部翻倍"），是7步流水线里
+  // 唯二会被串行等待的两步（Step1→Step2严格串行，是上面"3个串行阶段"里的前两个
+  // 阶段），Step3-6只新增一两个数字打分字段、narrative字数不变，生成耗时基本
+  // 不受影响。字数增长会让Step1/Step2的真实生成耗时的期望值上升，但每次单独调用
+  // 无论期望耗时多长，物理上都不可能超过90s这个硬性超时——因此零重试物理下限
+  // 仍然是3×(15+90)=315s，跟改动前完全一样，没有变化。550s这个前端超时值本身
+  // 也不需要因为这次内容加长而调整：它设置的初衷是覆盖"零重试到少量重试"之间
+  // 的真实耗时区间，硬上限没变意味着这个区间的覆盖范围没变；真正会变化的是
+  // Step1/Step2触发MAX_TOKENS重试的概率（内容更长，更接近max_tokens预算上限，
+  // 见gemini_analysis.py对应位置注释的字数增幅推导），但重试本身的物理耗时代价
+  // （见上方"235秒余量"那段推导）并未随本轮改动而改变。因此本轮不上调90s单次
+  // 调用超时，也不上调这里的550000ms前端超时。
   const AI_ANALYSIS_TIMEOUT_MS = 550000;
 
   // ── 进行中请求去重（in-flight dedup）─────────────────
@@ -88,17 +113,56 @@ const BaziAnalysis = (() => {
     return Math.abs(h).toString(16).padStart(8, '0');
   }
 
+  // ── 六维打分字段校验 ──────────────────────────────────
+  // 2026-08-04 qa三轮复查发现：此前 _lsGet/seedCache 只用单个 fortune_score
+  // 字段的 typeof 做canary，口径比 gemini_analysis.py::_is_valid_score()（类型+
+  // 范围+有限值三重校验）和 js/analysis.js::_isValidScore()（同样的范围校验）
+  // 都要弱——如果后端这层校验又出现回归（比如漏了某个字段/范围校验被绕过），
+  // 越界/NaN/Infinity这类"类型合法但数值非法"的坏数据会被当作完整缓存永久
+  // 写进 localStorage 并复用，六维雷达图永久卡在"评分数据暂不完整"。这里补成
+  // 六个打分字段全部类型+范围合法才算数据完整，作为独立于后端的第二道防线。
+  //
+  // isValidScore() 对外暴露，供 js/analysis.js 的同名校验直接复用（而不是像
+  // js/bazi-analysis.js 与 js/tutorial.js 的 _computeHash 那样各自维护一份独立
+  // 实现——那是本项目里明确记录过的反面教训，这次不重蹈覆辙）。口径必须与
+  // gemini_analysis.py::_is_valid_score() 完全对齐：数字类型 + 有限值 + [0,100]。
+  const SCORE_FIELD_PATHS = [
+    ['step2_pattern_yongshen', 'pattern_score'],
+    ['step3_career_wealth',    'career_score'],
+    ['step3_career_wealth',    'wealth_score'],
+    ['step4_relationship',     'relationship_score'],
+    ['step5_health',           'health_score'],
+    ['step6_dayun_liunian',    'fortune_score'],
+  ];
+
+  function isValidScore(v) {
+    return typeof v === 'number' && isFinite(v) && v >= 0 && v <= 100;
+  }
+
+  function _allScoreFieldsValid(analysis) {
+    if (!analysis) return false;
+    return SCORE_FIELD_PATHS.every(([stepKey, field]) => {
+      const step = analysis[stepKey];
+      return step && isValidScore(step[field]);
+    });
+  }
+
   // ── localStorage ──────────────────────────────────────
   // v2→v3结构校验：即便某条记录意外地被写进了 LS_PREFIX（v3）前缀的 key 下，
   // 读取时仍二次确认它具备 v3 结构标志字段 step2b_shishen——没有就当作未命中，
   // 而不是把老结构（缺十神详解/strengths/cautions）当新内容展示给用户。
   // 与 seedCache() 的写入校验是同一道防线的两端，双保险（见2026-08-03 qa复查记录）。
+  // v3→v4：新增第三道校验——不再只查单个 fortune_score 字段的 typeof，改为
+  // _allScoreFieldsValid() 六个打分字段全部类型+范围合法才算完整（理由见上方
+  // SCORE_FIELD_PATHS 定义处注释，详见已知问题记录2026-08-04条目）。
   function _lsGet(hash) {
     try {
       const raw = localStorage.getItem(LS_PREFIX + hash);
       if (!raw) return null;
       const analysis = JSON.parse(raw).analysis || null;
-      if (analysis && !analysis.step2b_shishen) return null;
+      if (!analysis) return null;
+      if (!analysis.step2b_shishen) return null;
+      if (!_allScoreFieldsValid(analysis)) return null;
       return analysis;
     } catch { return null; }
   }
@@ -258,12 +322,20 @@ const BaziAnalysis = (() => {
   // （见上方 LS_PREFIX 定义处注释）设计的"老缓存自动失效"在这条路径上完全失效，
   // 老用户会永久卡在升级前的薄内容上。这里补一道结构校验：老结构一律拒绝写入，
   // 交给 getAnalysis() 走后端重新生成完整的 v3 内容。
+  //
+  // 2026-08-04 v3→v4：结构又扩充了（Step2~6新增六维打分字段），必须同步更新这道
+  // 校验，不能只保留上一轮的 step2b_shishen 检查就当作已经做完——这正是"每次扩充
+  // JSON结构都要重复做一遍"的场景（详见已知问题记录2026-08-04条目）。改用
+  // _allScoreFieldsValid()（与 _lsGet() 共用同一份判断逻辑，两处不会再各自维护
+  // 一份容易漏改的独立实现）：六个打分字段任何一个类型/范围不合法（含越界值/
+  // NaN/Infinity），整份 analysis 一律拒绝写入本地缓存。
   function seedCache(baziData, gender, analysis) {
     if (!baziData || !analysis) return;
     if (!analysis.step2b_shishen) return; // 老结构（v2及更早）存档：不种缓存
+    if (!_allScoreFieldsValid(analysis)) return; // 老结构（v3及更早）/坏数据存档：不种缓存
     const hash = _hash(baziData, gender);
     _lsSet(hash, analysis);
   }
 
-  return { getAnalysis, clearCache, seedCache, getLastError };
+  return { getAnalysis, clearCache, seedCache, getLastError, isValidScore };
 })();

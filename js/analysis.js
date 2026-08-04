@@ -62,6 +62,227 @@ const Analysis = (() => {
     return '极弱';
   }
 
+  // ══════════════════════════════════════════════════════
+  //  2026-08-04 新增：总览Tab三个纯SVG可视化图表（不引入任何图表库/CDN依赖，
+  //  跟项目本身"无构建工具，直接字符串拼接HTML/内联SVG"的既有写法保持一致）
+  // ══════════════════════════════════════════════════════
+
+  // ── 通用雷达图（N边形）：五行强弱雷达图（5轴）与六维运势雷达图（6轴）共用 ──
+  // axes: [{ label, value, color? }]，value 统一按 0-100 处理（调用方自行归一化）
+  // opts.skeleton=true 时只画网格+轴线+轴标签，不画数据多边形（占位骨架屏用）
+  function _radarSvg(axes, opts) {
+    opts = opts || {};
+    const n = axes.length;
+    const size = opts.size || 320;
+    const cx = size / 2, cy = size / 2;
+    const R = opts.radius != null ? opts.radius : 90;
+    const labelR = R + (opts.labelGap != null ? opts.labelGap : 36);
+    const angleFor = (i) => -Math.PI / 2 + i * (2 * Math.PI / n);
+    const ptAt = (i, r) => {
+      const a = angleFor(i);
+      return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+    };
+    let grid = '';
+    [0.2, 0.4, 0.6, 0.8, 1.0].forEach((f) => {
+      const pts = axes.map((_, i) => ptAt(i, R * f).join(',')).join(' ');
+      grid += `<polygon points="${pts}" fill="none" stroke="rgba(232,224,208,.08)" stroke-width="1"/>`;
+    });
+    let spokes = '';
+    axes.forEach((_, i) => {
+      const [x, y] = ptAt(i, R);
+      spokes += `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="rgba(232,224,208,.1)" stroke-width="1"/>`;
+    });
+    let dataLayer = '';
+    if (!opts.skeleton) {
+      const clampedVals = axes.map((a) => Math.max(0, Math.min(100, Number(a.value) || 0)));
+      const dataPts = axes.map((a, i) => ptAt(i, R * (clampedVals[i] / 100)).join(',')).join(' ');
+      dataLayer = `<polygon points="${dataPts}" fill="rgba(201,169,110,.22)" stroke="#c9a96e" stroke-width="2"/>`;
+      dataLayer += axes.map((a, i) => {
+        const [x, y] = ptAt(i, R * (clampedVals[i] / 100));
+        return `<circle cx="${x}" cy="${y}" r="3.5" fill="${a.color || '#c9a96e'}"/>`;
+      }).join('');
+    }
+    const labels = axes.map((a, i) => {
+      const [x, y] = ptAt(i, labelR);
+      const showVal = opts.showValue && !opts.skeleton;
+      // labelValue 可选：调用方想让"画多边形用的半径值"和"标签上显示的数字"不是
+      // 同一个数（比如五行雷达图按最大值归一化画半径，但标签仍要显示真实百分比）
+      // 时传这个字段；不传则退回用 value（六维运势雷达图就是这种情况，未受影响）
+      const rawLabelVal = a.labelValue != null ? a.labelValue : a.value;
+      const valText = showVal ? ` ${Math.round(Math.max(0, Math.min(100, Number(rawLabelVal) || 0)))}${opts.suffix || ''}` : '';
+      return `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="middle" font-size="${opts.labelSize || 12}" fill="${a.color || 'rgba(232,224,208,.65)'}" font-weight="600">${a.label}${valText}</text>`;
+    }).join('');
+    return `<svg viewBox="0 0 ${size} ${size}" style="width:100%;max-width:${opts.maxWidth || 320}px;height:auto;display:block;margin:0 auto" xmlns="http://www.w3.org/2000/svg">${grid}${spokes}${dataLayer}${labels}</svg>`;
+  }
+
+  // ── 5a. 五行强弱雷达图：五个轴 木/火/土/金/水，数据来自 buildReport() 已算好的
+  // wx（d.wuxing 五行得分dict，bazi-engine.js 里已经是"占五行总权重的百分比"，
+  // 五项相加恒约等于100）。
+  // 2026-08-04修复（qa CONFIRMED 3）：此前直接把"占总分的百分比"当半径占比画，
+  // 但五项百分比本身合计就约等于100（均值20），现实里单项最大也就40%-45%左右
+  // ——于是多边形恒定挤在外圈半径的20%-45%以内，五行强弱差异在视觉上完全看不
+  // 出来。现在改为按"这一组五行分数里的最大值"归一化画半径（最旺的那个五行会
+  // 顶到雷达图最外圈），轴标签上仍然用 labelValue 单独带真实的百分比数字，不
+  // 丢失精确数值信息——雷达图只作为整体视觉呈现的补充，精确条形图（wxHtml）
+  // 仍保留在下方
+  function _wuxingRadarHtml(wx) {
+    const order = ['木', '火', '土', '金', '水'];
+    const vals = order.map((k) => wx[k] || 0);
+    const maxVal = Math.max(...vals, 1); // 全0兜底，避免除0
+    const axes = order.map((k, i) => ({
+      label: k,
+      value: Math.round((vals[i] / maxVal) * 100), // 画多边形半径：按组内最大值归一化
+      labelValue: Math.round(vals[i]), // 标签显示：真实占比百分比，不受归一化影响
+      color: WX_COLOR[k] || '#c9a96e',
+    }));
+    return _radarSvg(axes, { showValue: true, suffix: '%', maxWidth: 300, labelSize: 13 });
+  }
+
+  // ── 5b. 身强身弱仪表盘：0-100分三区间。
+  // 2026-08-04修复（qa CONFIRMED 1）：此前误以为 bazi-engine.js 的 strength 字段
+  // 会有"数字"形态、"字符串类别"形态两种可能，实际上 _strength() 永远只返回字符串
+  // 三分类（'身强'/'中和'/'身弱'），全项目没有任何地方产出数字 strength——旧版本
+  // 这里的"数字路径"是永远走不到的死代码，导致生产环境仪表盘从未画出过指针。
+  // 现在 bazi-engine.js::_strength() 新增了并行的 strengthScore 数值字段（0-100，
+  // 不改变 strength 字符串字段本身的语义），本函数改为接收两个参数：
+  //   strength      — 字符串类别（'身强'/'中和'/'身弱'），始终用于区间归属/文案
+  //   strengthScore — 0-100 数值（可能不存在，比如 Supabase 里改动前存的老记录），
+  //                    存在时画真实指针+精确刻度；不存在时保留静态图例+文字兜底
+  // 三个区间色块的分界线（约47.67 / 52.33）不是随手定的，而是与
+  // bazi-engine.js::_strength() 内部"score>±0.5 判身强/身弱"这个阈值、按同一套
+  // 线性映射公式换算到0-100刻度后的边界严格对齐（映射公式见该函数内注释：
+  // 0.5/total*50，total=10.75 是 _calcWuxing 权重方案下的结构性常量），确保色块
+  // 分界线与文字类别标签、以及指针实际落点在数学上自洽，不会互相矛盾。
+  function _strengthGaugeHtml(strength, strengthScore) {
+    const isNum = typeof strengthScore === 'number' && isFinite(strengthScore);
+    const NEUTRAL_HALF = (0.5 / 10.75) * 50; // ≈2.3256，与 _strength() 映射公式同源
+    const weakBoundary = 50 - NEUTRAL_HALF;   // ≈47.67
+    const strongBoundary = 50 + NEUTRAL_HALF; // ≈52.33
+    const category = strength
+      || (isNum ? (strengthScore >= strongBoundary ? '身强' : strengthScore <= weakBoundary ? '身弱' : '中和') : '中和');
+
+    const W = 300, barX = 10, barW = 280, barY = 36, barH = 14, H = 74;
+    const zone1W = barW * (weakBoundary / 100);
+    const zone2W = barW * ((strongBoundary - weakBoundary) / 100);
+    const zone3W = barW * ((100 - strongBoundary) / 100);
+    const zones = [
+      { x: barX, w: zone1W, fill: 'rgba(235,87,87,.16)', stroke: 'rgba(235,87,87,.4)', label: '身弱' },
+      { x: barX + zone1W, w: zone2W, fill: 'rgba(201,169,110,.16)', stroke: 'rgba(201,169,110,.4)', label: '中和' },
+      { x: barX + zone1W + zone2W, w: zone3W, fill: 'rgba(160,174,192,.16)', stroke: 'rgba(160,174,192,.4)', label: '身强' },
+    ];
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" xmlns="http://www.w3.org/2000/svg">`;
+    zones.forEach((z) => {
+      svg += `<rect x="${z.x}" y="${barY}" width="${z.w}" height="${barH}" rx="4" fill="${z.fill}" stroke="${z.stroke}" stroke-width="1"/>`;
+      svg += `<text x="${z.x + z.w / 2}" y="${barY + barH + 14}" text-anchor="middle" font-size="10" fill="rgba(232,224,208,.4)" letter-spacing="1">${z.label}</text>`;
+    });
+    if (isNum) {
+      const clamped = Math.max(0, Math.min(100, strengthScore));
+      const px = barX + barW * (clamped / 100);
+      svg += `<line x1="${px}" y1="${barY - 6}" x2="${px}" y2="${barY + barH + 4}" stroke="#c9a96e" stroke-width="2"/>`;
+      svg += `<polygon points="${px - 5},${barY - 6} ${px + 5},${barY - 6} ${px},${barY - 14}" fill="#c9a96e"/>`;
+      svg += `<text x="${px}" y="${barY - 18}" text-anchor="middle" font-size="12" fill="#c9a96e" font-weight="600">${Math.round(clamped)}</text>`;
+    }
+    svg += '</svg>';
+    const footer = isNum
+      ? `<div style="text-align:center;font-size:12px;color:rgba(232,224,208,.6);margin-top:4px">${category}（${Math.round(strengthScore)}分）</div>`
+      : `<div style="text-align:center;font-size:12px;color:rgba(232,224,208,.6);margin-top:4px">${category}<span style="color:rgba(232,224,208,.32);font-size:10px;margin-left:6px">（精确数值不可用）</span></div>`;
+    return `<div class="report-strength-gauge">${svg}${footer}</div>`;
+  }
+
+  // ── 5c. 六维主题雷达图：格局层次/事业运/财运/婚姻运/健康运/大运运势，数据来自
+  // AI异步生成结果（Step2的pattern_score、Step3的career_score/wealth_score、
+  // Step4的relationship_score、Step5的health_score、Step6的fortune_score）。
+  // 总览Tab在 buildReport() 里同步立即渲染，但这份数据是AI异步到达的——先渲染
+  // 占位骨架屏（固定id #r-sixdim-radar），等 _populateAiContent() 拿到AI结果后
+  // 原地替换。6个分数任一缺失时不渲染真实雷达图（不编造/不留空占位），展示明确的
+  // "评分数据暂不完整"兜底终态，不会卡在骨架屏loading状态出不来
+  const SIXDIM_LABELS = ['格局层次', '事业运', '财运', '婚姻运', '健康运', '大运运势'];
+
+  function _sixDimSectionHead() {
+    return `<div class="report-section-head"><span class="r-icon">⬡</span>六维运势评分</div>`;
+  }
+
+  function _sixDimSkeletonHtml() {
+    const axes = SIXDIM_LABELS.map((l) => ({ label: l, value: 0 }));
+    return `${_sixDimSectionHead()}
+      <div class="report-section-body">
+        <div class="ai-loading" style="margin-bottom:0">
+          ${_radarSvg(axes, { skeleton: true, maxWidth: 300, labelSize: 11 })}
+          <div style="font-size:10px;color:rgba(201,169,110,.35);letter-spacing:2px;margin-top:10px;text-align:center">✦ AI 评分生成中 ✦</div>
+        </div>
+      </div>`;
+  }
+
+  // scores: [{label, value}]（6项）。调用方需先确认全部6项 value 均为合法数字，
+  // 本函数本身不做该判断（判断逻辑见 _populateAiContent 调用处，职责分离）
+  function _sixDimRadarHtml(scores) {
+    return `${_sixDimSectionHead()}
+      <div class="report-section-body">
+        ${_radarSvg(scores, { showValue: true, maxWidth: 300, labelSize: 11 })}
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px">
+          ${scores.map((s) => `<div style="text-align:center;font-size:11px;color:rgba(232,224,208,.5)">${s.label}<br><span style="color:#c9a96e;font-weight:600;font-size:14px">${Math.round(s.value)}</span></div>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  function _sixDimFallbackHtml() {
+    return `${_sixDimSectionHead()}
+      <div class="report-section-body">
+        <div style="text-align:center;padding:20px 0;color:rgba(232,224,208,.35);font-size:12px;letter-spacing:.5px">评分数据暂不完整，暂无法生成六维运势图</div>
+      </div>`;
+  }
+
+  // 从AI结果中提取六维打分（哪一步生成哪个字段，见上方注释）；缺失/非数字时保留
+  // 为 undefined，交给调用方判断是否达到"全部6项齐全"的渲染条件
+  function _extractSixDimScores(ai) {
+    ai = ai || {};
+    const s2 = ai.step2_pattern_yongshen || {};
+    const s3 = ai.step3_career_wealth || {};
+    const s4 = ai.step4_relationship || {};
+    const s5 = ai.step5_health || {};
+    const s6 = ai.step6_dayun_liunian || {};
+    return [
+      { label: '格局层次', value: s2.pattern_score },
+      { label: '事业运',   value: s3.career_score },
+      { label: '财运',     value: s3.wealth_score },
+      { label: '婚姻运',   value: s4.relationship_score },
+      { label: '健康运',   value: s5.health_score },
+      { label: '大运运势', value: s6.fortune_score },
+    ];
+  }
+
+  // 2026-08-04修复（qa P5）：加上 0-100 范围校验。此前只判断"是数字且有限"，
+  // 如果模型返回105或-20这种越界分数，_radarSvg 内部会把半径clamp到0-100画
+  // 多边形，但下方数字图例是裸 Math.round(s.value) 直接显示原始越界值——会出现
+  // "图例写105，但多边形顶点画在外圈（相当于100）"这种数字和图形对不上的情况。
+  // 越界值直接判定无效，走跟"字段缺失"完全一样的兜底逻辑（六维雷达图缺一项就
+  // 整体不渲染真实图，见 _sixDimFallbackHtml），保证图例数字与多边形位置任何
+  // 时候都一致。
+  //
+  // 2026-08-04 qa三轮复查：这份校验逻辑与 js/bazi-analysis.js 的本地缓存canary
+  // 是同一个口径，直接委托给 BaziAnalysis.isValidScore()（该模块在 index.html
+  // 里于本文件之前加载，见 <script> 顺序），避免两处各自维护一份独立实现——
+  // 参考本项目已知问题记录里"哈希算法双实现耦合"那条教训，这次改成单一实现
+  // 两处共用。
+  //
+  // 2026-08-04 qa三轮复查发现并修正：最初版本用 `window.BaziAnalysis` 判断委托
+  // 是否可用——classic script 顶层的 `const BaziAnalysis = ...`（bazi-analysis.js:15）
+  // 进入的是全局*声明式*环境，不会挂到 `window` 对象上，`window.BaziAnalysis`
+  // 恒为 undefined，委托分支永远不会触发，一直在悄悄走下面的内联兜底（当前行为
+  // 恰好等价所以没有可见故障，但属于死代码+文档失实，且这正是本项目已知问题
+  // 记录里"CONFIG 是 const 声明不会自动挂到 window"那条教训的又一次重演）。
+  // 改用裸标识符 `typeof BaziAnalysis !== 'undefined'`——同一份 <script> 顶层
+  // 作用域下的 const/let 绑定，裸标识符能正常解析到，本文件其它委托逻辑
+  // （640/678/707行左右的 `typeof BaziAnalysis !== 'undefined'`）已经是这个写法，
+  // 这里改成一致写法即可，不需要新增 `window.BaziAnalysis = BaziAnalysis` 这种
+  // 本项目其它模块都没用过的新模式。
+  function _isValidScore(v) {
+    if (typeof BaziAnalysis !== 'undefined' && typeof BaziAnalysis.isValidScore === 'function') {
+      return BaziAnalysis.isValidScore(v);
+    }
+    return typeof v === 'number' && isFinite(v) && v >= 0 && v <= 100;
+  }
+
   function getDayMaster(baziData) {
     return (baziData.pillars && baziData.pillars.day) ? baziData.pillars.day.stem : '—';
   }
@@ -178,12 +399,17 @@ const Analysis = (() => {
     })();
 
     // ── 命格强弱 ──────────────────────────────────────
+    // strength 现在始终是字符串类别（'身强'/'中和'/'身弱'，bazi-engine.js 唯一
+    // 产出形态）；strengthScore 是并行的 0-100 数值字段（新数据才有，老存档/老
+    // Supabase 记录可能没有，_strengthGaugeHtml() 内部对此做兜底）
     const strength = d.strength || '';
-    const strengthText = typeof strength === 'number'
-      ? (strength >= 50 ? '身强' : strength >= 30 ? '中和' : '身弱')
-      : (strength || '中和');
+    const strengthScore = typeof d.strengthScore === 'number' && isFinite(d.strengthScore) ? d.strengthScore : undefined;
+    const strengthText = strength || '中和';
 
     // ── Tab 1：总览（静态，立即显示）────────────────────
+    // 2026-08-04新增：身强身弱仪表盘，放在命局摘要块内部（"最上方"位置，命局摘要
+    // 是总览Tab第一个展示的模块）
+    const strengthGaugeHtml = _strengthGaugeHtml(strength, strengthScore);
     const summaryHtml = `
       <div class="report-summary">
         <div class="report-summary-dm">
@@ -194,6 +420,10 @@ const Analysis = (() => {
           </div>
         </div>
         <div class="report-summary-desc">${getDmDesc(dm)}</div>
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,.05)">
+          <div style="font-size:10px;color:rgba(201,169,110,.5);letter-spacing:2px;margin-bottom:8px">身强身弱</div>
+          ${strengthGaugeHtml}
+        </div>
         <div id="r-keywords" class="r-keywords" style="display:none"></div>
       </div>`;
 
@@ -218,7 +448,8 @@ const Analysis = (() => {
     });
     pillarHtml += '</div>';
 
-    // 五行强弱
+    // 五行强弱：雷达图（整体视觉呈现）+ 既有横向条形图（保留，精确百分比数值参考）
+    const wxRadarHtml = _wuxingRadarHtml(wx);
     const totalWx = Object.values(wx).reduce((a,b)=>a+b,0) || 1;
     let wxHtml = '';
     Object.entries(wx).sort((a,b)=>b[1]-a[1]).forEach(([el, sc]) => {
@@ -337,11 +568,14 @@ const Analysis = (() => {
         </div>
         <div class="report-section">
           <div class="report-section-head"><span class="r-icon">◈</span>五行强弱</div>
-          <div class="report-section-body">${wxHtml}${wxNote}</div>
+          <div class="report-section-body">${wxRadarHtml}<div style="margin-top:18px">${wxHtml}${wxNote}</div></div>
         </div>
         <div class="report-section">
           <div class="report-section-head"><span class="r-icon">✦</span>喜用神与人生方向</div>
           <div class="report-section-body">${favHtml}</div>
+        </div>
+        <div class="report-section" id="r-sixdim-radar">
+          ${_sixDimSkeletonHtml()}
         </div>
       </div>
 
@@ -515,17 +749,35 @@ const Analysis = (() => {
 
   // ── AI 内容填充（六步命理框架，2026-08-03内容深度扩充新增Step2b后实为七步）───
   // ai 结构：step1_foundation（新增strengths/cautions两个数组字段）/
-  //          step2_pattern_yongshen / step2b_shishen（新增步骤：十神详解，
-  //          shishen_items数组） / step3_career_wealth / step4_relationship /
-  //          step5_health / step6_dayun_liunian / keywords
+  //          step2_pattern_yongshen（新增pattern_score） / step2b_shishen（新增
+  //          步骤：十神详解，shishen_items数组） / step3_career_wealth（新增
+  //          career_score/wealth_score） / step4_relationship（新增
+  //          relationship_score） / step5_health（新增health_score） /
+  //          step6_dayun_liunian（新增fortune_score） / keywords
   // 顺序按 step1→step2→step2b→step3→...→step6 依次渲染，分两个Tab承载：
   //   Tab「AI深析」= step1（命局基础扫描，含性格优势/注意事项）+ step2（格局与用神）
   //                  + step2b（十神详解）
   //   Tab「运势详解」= step3（事业财富）→ step4（婚恋）→ step5（健康）→ step6（大运流年）
   // 新增字段一律遵循既有防御写法：字段不存在时不渲染对应模块，不报错不留空白
   // （_showAiFallback() 兜底逻辑本身不涉及这些新字段，未改动）
+  //
+  // 2026-08-04新增：额外从Step2/3/4/5/6里提取六维打分字段，原地替换总览Tab里
+  // buildReport()渲染的占位骨架屏（固定id #r-sixdim-radar，见 _sixDimSkeletonHtml()
+  // 注释）。这个元素身处"总览"Tab，但由本函数（渲染"AI深析"/"运势详解"两个Tab
+  // 内容）触发更新——报告整体是同一个container里的一整棵DOM树，只是CSS用.active
+  // 控制哪个Tab可见，跨Tab更新DOM是允许的。防御性要求：6个分数任一缺失（老缓存/
+  // 老版本后端返回值/_showAiFallback()兜底场景，此时ai为{}，6项全部undefined）
+  // 都不渲染真实雷达图（不编造/不留一个歪掉的角），改为展示"评分数据暂不完整"的
+  // 简单兜底态（明确终态，不是无限转圈的骨架屏）。
   function _populateAiContent(container, ai, d) {
     ai = ai || {};
+
+    const sixDimEl = container.querySelector('#r-sixdim-radar');
+    if (sixDimEl) {
+      const scores = _extractSixDimScores(ai);
+      const allValid = scores.every(s => _isValidScore(s.value));
+      sixDimEl.innerHTML = allValid ? _sixDimRadarHtml(scores) : _sixDimFallbackHtml();
+    }
 
     // 关键词（结构未变，逻辑不动）
     if (ai.keywords && ai.keywords.length) {
@@ -689,6 +941,14 @@ const Analysis = (() => {
   // bazi-analysis.js::AI_ANALYSIS_TIMEOUT_MS，2026-08-01订正为400秒），
   // 与其它网络/服务端错误区分展示，避免用户看到语义不明的"无法连接"
   function _showAiFallback(container, d, isTimeout) {
+    // 2026-08-04新增：AI深析整体失败/超时（analysis为falsy）时，_populateAiContent()
+    // 根本不会被调用，若不在这里也处理#r-sixdim-radar，buildReport()渲染的占位
+    // 骨架屏会永远卡在"AI 评分生成中"的loading态出不来——这正是需求方特别点名要
+    // 规避的场景。六维打分本来就依赖AI生成，规则引擎无法伪造，因此这里跟其它
+    // AI专属模块一样：切换到明确的"评分数据暂不完整"兜底终态。
+    const sixDimEl = container.querySelector('#r-sixdim-radar');
+    if (sixDimEl) sixDimEl.innerHTML = _sixDimFallbackHtml();
+
     const dm    = getDayMaster(d);
     const dmWx  = d.dayMasterWx || STEM_WX[dm] || '土';
     const fav   = Array.isArray(d.favorable) ? d.favorable : (d.favorable ? [d.favorable] : []);

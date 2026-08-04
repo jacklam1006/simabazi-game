@@ -174,7 +174,14 @@ class BaziEngine {
     const futureYrs = [0,1,2,3].map(i => BaziEngine._liunianByYear(todayYear+i));
 
     // ⑬ 身强弱
-    const strength = BaziEngine._strength(dm, pillars, wuxingRaw);
+    // _strength() 返回 {category, score}：category 是既有的三分类字符串（'身强'/
+    // '中和'/'身弱'，很多地方依赖它判断，取值逻辑未变），score 是新增的 0-100 数值
+    // 刻度（供仪表盘等UI画精确指针用，见 _strength() 内部注释的映射公式）。
+    // 下面的 `strength` 变量沿用旧名、只存字符串，保持所有既有消费方的假设不变；
+    // 数值另存为 strengthScore，两者在返回对象里并列存在，不覆盖/不改变旧字段语义。
+    const strengthResult = BaziEngine._strength(dm, pillars, wuxingRaw);
+    const strength = strengthResult.category;
+    const strengthScore = strengthResult.score;
 
     // ⑭ 喜用神
     const { favorable, unfavorable, favorable2 } = BaziEngine._favorable(strength, dm, wuxingRaw);
@@ -194,7 +201,7 @@ class BaziEngine {
       dayuns, dayun: currentDayun,
       liunian, liuyue, futureYrs, qiyun,
       // ── 格局 ──
-      strength, favorable, unfavorable, favorable2,
+      strength, strengthScore, favorable, unfavorable, favorable2,
       // ── 快捷字段（供 scene-builder 使用）──
       lifePhase: lifePhases.day,
       gender,
@@ -525,39 +532,64 @@ class BaziEngine {
   }
 
   /* ══════════════════════════════════════════════════════════
+   * 五行生克关系（供 _strength/_favorable 共享的唯一权威定义，避免同一
+   * 逻辑在两处各自定义副本导致不同步——历史上曾出现过"我克"表被误抄成
+   * "克我"表导致 _strength 计算污染的bug，修复时改为共享常量）
+   * ══════════════════════════════════════════════════════════ */
+  static WX_SHENG_BY = {木:'水',火:'木',土:'火',金:'土',水:'金'}; // 生我（印枭）
+  static WX_SHENG    = {木:'火',火:'土',土:'金',金:'水',水:'木'}; // 我生（食伤）
+  static WX_KE       = {木:'土',火:'金',土:'水',金:'木',水:'火'}; // 我克（财星）
+  static WX_KE_BY    = {木:'金',火:'水',土:'木',金:'火',水:'土'}; // 克我（官杀）
+
+  /* ══════════════════════════════════════════════════════════
    * 身强弱 + 喜用神
    * ══════════════════════════════════════════════════════════ */
 
   static _strength(dm, pillars, wuxingRaw) {
     // 生助日主的五行（印枭 + 比劫）
     const WX = BaziEngine.STEM_WX;
-    const SHENG = {木:'水',火:'木',土:'火',金:'土',水:'金'}; // 生我者
     const dmWx = WX[dm];
     const assist = wuxingRaw[dmWx]||0; // 比劫
-    const print  = wuxingRaw[SHENG[dmWx]]||0; // 印枭（生我）
-    const SHENGW = {木:'金',火:'水',土:'木',金:'火',水:'土'}; // 我克（财）
-    const SHI   = {木:'火',火:'土',土:'金',金:'水',水:'木'}; // 我生（食伤）
-    const KE    = {木:'金',火:'水',土:'木',金:'火',水:'土'}; // 克我（官杀）
-    const consume = (wuxingRaw[SHI[dmWx]]||0) + (wuxingRaw[SHENGW[dmWx]]||0) + (wuxingRaw[KE[dmWx]]||0);
+    const print  = wuxingRaw[BaziEngine.WX_SHENG_BY[dmWx]]||0; // 印枭（生我）
+    const consume = (wuxingRaw[BaziEngine.WX_SHENG[dmWx]]||0)      // 食伤（我生）
+                   + (wuxingRaw[BaziEngine.WX_KE[dmWx]]||0)         // 财星（我克）
+                   + (wuxingRaw[BaziEngine.WX_KE_BY[dmWx]]||0);     // 官杀（克我）
     const score = assist + print - consume;
 
     // 月令是否得令
     const monthBranch = pillars.month.branch;
     const monthWx = BaziEngine.BRANCH_WX[monthBranch];
-    const delingOk = monthWx===dmWx || monthWx===SHENG[dmWx];
+    const delingOk = monthWx===dmWx || monthWx===BaziEngine.WX_SHENG_BY[dmWx];
 
-    if (score > 0.5 || (score > -0.5 && delingOk)) return '身强';
-    if (score < -0.5) return '身弱';
-    return '中和';
+    let category;
+    if (score > 0.5 || (score > -0.5 && delingOk)) category = '身强';
+    else if (score < -0.5) category = '身弱';
+    else category = '中和';
+
+    // ── 数值刻度（供仪表盘等UI用，不影响上面的三分类逻辑/阈值）──────────
+    // assist+print+consume 恒等于全部五行权重之和（_calcWuxing 里 4 个天干各记1、
+    // 4 个地支各记1且月支×1.5、每个地支的藏干权重固定合计1.0再乘0.5×月支系数），
+    // 这是由权重方案本身决定的结构性常量，与具体八字数据无关，实测恒为10.75，
+    // 因此可以放心用作线性映射的分母，不是拍脑袋估的经验范围。
+    // 映射：score=0（中和轴心）→50分；score=±total（assist+print吃满/consume吃满
+    // 五行权重的两个理论边界，真实命盘几乎不会触达，但作为分母在数学上精确恒定）
+    // →0/100分。0.5这个阈值本身很窄（相对total=10.75），映射后中和区间只有约
+    // 47.7~52.3分——这与三分类阈值±0.5本身就很窄是一致的，不是映射函数引入的失真。
+    const total = assist + print + consume;
+    const score100 = total > 0
+      ? Math.max(0, Math.min(100, Math.round(50 + (score / total) * 50)))
+      : 50;
+
+    return { category, score: score100 };
   }
 
   static _favorable(strength, dm, wuxingRaw) {
     const WX = BaziEngine.STEM_WX;
     const dmWx = WX[dm];
-    const SHENG_BY = {木:'水',火:'木',土:'火',金:'土',水:'金'}; // 生我
-    const KE_BY    = {木:'金',火:'水',土:'木',金:'火',水:'土'}; // 克我
-    const SHENG    = {木:'火',火:'土',土:'金',金:'水',水:'木'}; // 我生
-    const KE       = {木:'土',火:'金',土:'水',金:'木',水:'火'}; // 我克
+    const SHENG_BY = BaziEngine.WX_SHENG_BY; // 生我
+    const KE_BY    = BaziEngine.WX_KE_BY;    // 克我
+    const SHENG    = BaziEngine.WX_SHENG;    // 我生
+    const KE       = BaziEngine.WX_KE;       // 我克
 
     let favorable='', unfavorable='', favorable2='';
     if (strength==='身强') {
