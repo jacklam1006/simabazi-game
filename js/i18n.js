@@ -201,6 +201,7 @@ const I18N = {
     'tutorial.complete':   '✦ 探索完成 ✦',
     'tutorial.skip_top':   '跳过引导 ×',
     'tutorial.skip_modal': '跳过引导，自由探索',
+    'tutorial.hint_click': '点击命盘上高亮的标识',
 
     // ── Auth 错误 ─────────────────────────────
     'auth_err.invalid':    '邮箱或密码错误',
@@ -403,6 +404,7 @@ const I18N = {
     'tutorial.complete':   '✦ Explored ✦',
     'tutorial.skip_top':   'Skip ×',
     'tutorial.skip_modal': 'Skip Tutorial',
+    'tutorial.hint_click': 'Tap the highlighted marker',
 
     // ── Auth Errors ───────────────────────────
     'auth_err.invalid':    'Incorrect email or password',

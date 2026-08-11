@@ -595,6 +595,17 @@ def _flatten_shensha(bazi_data: dict) -> list:
     return _as_list(per_pillar)
 
 
+def _shensha_keys_present(bazi_data: dict) -> bool:
+    """2026-08-11修复（已知问题日志第22条）：`_flatten_shensha()`只返回拍平后的
+    列表，丢失了"payload里`shensha`/`shenshe`这两个键本身是否存在"这个信息——
+    这个信息对`_sanitize_shensha_detail()`区分"真零神煞"与"payload数据缺失"
+    是必需的（键缺失≠解析出来是空，前者应判定为数据缺失/生成失败，不能盖章
+    `no_shensha=True`永久当作有效缓存）。今天网页端`js/bazi-engine.js::calculate()`
+    必定同时输出这两个字段，不会触发；面向未来可能字段少传/改名的调用方
+    （例如尚未启动的iOS原生端）预先补上这层判断。"""
+    return isinstance(bazi_data, dict) and ('shenshe' in bazi_data or 'shensha' in bazi_data)
+
+
 def _ten_gods_matching(ten_gods: dict, names: list) -> list:
     """从 tenGods（各柱十神映射）里取出属于指定十神名称集合的条目。"""
     if not isinstance(ten_gods, dict):
@@ -679,6 +690,7 @@ def _build_context(bazi_data: dict, gender: str, birth_year: int) -> dict:
         'favorable2': _as_list(bazi_data.get('favorable2')),
         'unfavorable': _as_list(bazi_data.get('unfavorable')),
         'shensha': _flatten_shensha(bazi_data),
+        'shensha_keys_present': _shensha_keys_present(bazi_data),
         'kongwang': _as_list(bazi_data.get('kongwang')),
         'ten_gods': ten_gods,
         'ten_gods_str': ten_gods_str,
@@ -1352,8 +1364,21 @@ def _sanitize_shensha_detail(data, ctx: dict) -> dict:
     传值的正确性）。`ctx['shensha']`为空当且仅当这张命盘规则引擎算出来本来就
     没有神煞——`_step_shensha_detail_sync()`在这种情况下根本不会发起Gemini
     调用（见该函数开头的短路分支），所以"ctx['shensha']为空"与"这一步曾经尝试
-    生成但失败"两者互斥，用ctx判定不会有歧义。"""
+    生成但失败"两者互斥，用ctx判定不会有歧义。
+
+    2026-08-11修复（已知问题日志第22条）：上面这个"ctx['shensha']为空"的权威
+    判据本身还不够精确——它没有区分"前端payload确实传了`shensha`/`shenshe`键、
+    解析后就是空（真零神煞）"与"payload里这两个键根本不存在（数据缺失/未来
+    调用方少传或改名）"，`_flatten_shensha()`对这两种情况都返回`[]`，行为
+    上完全无法区分。现在改用`ctx['shensha_keys_present']`（`_build_context()`
+    里由`_shensha_keys_present()`保留下来的"键是否存在"信息，不是"解析结果是否
+    为空"）作为是否允许打`no_shensha`标记的前置条件：只有payload里确实存在这
+    两个键之一、且拍平结果为空，才是"真零神煞"；键本身缺失时，不打这个标记，
+    落盘结果里`shensha_items`和`no_shensha`都不满足`_shensha_detail_valid()`
+    的有效条件，会被判定为无效缓存，走生成失败/数据缺失分支允许重试，而不是
+    被永久当成"这张命盘没有神煞"锁死。"""
     valid_names = set(ctx.get('shensha') or [])
+    keys_present = bool(ctx.get('shensha_keys_present', True))
     items = data.get('shensha_items') if isinstance(data, dict) else None
     if not isinstance(items, list):
         items = []
@@ -1370,7 +1395,7 @@ def _sanitize_shensha_detail(data, ctx: dict) -> dict:
         cleaned.append({f: it[f] for f in _SHENSHA_ITEM_FIELDS})
         seen.add(name)
     result = {'shensha_items': cleaned}
-    if not valid_names:
+    if not valid_names and keys_present:
         result['no_shensha'] = True
     return result
 

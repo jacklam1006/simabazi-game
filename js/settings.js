@@ -134,7 +134,14 @@ const SettingsUI = (() => {
       // 静默丢弃（不渲染、不补写），避免把A岛屿的AI深析错误地展示/落库到B岛屿。
       const genNow = (typeof App !== 'undefined' && App.getIslandGeneration)
         ? App.getIslandGeneration() : null;
-      if (genNow !== genAtRequest) return;
+      if (genNow !== genAtRequest) {
+        // 这次提前return会跳过下面 Analysis.refreshAiAnalysis() 内部的banner清除
+        // 逻辑（典型场景：刷新请求飞行中用户登出，或新岛屿生成失败后回头打开旧
+        // 报告）。清除动作已经统一收口到下方 finally 块（覆盖这里+catch两个出口，
+        // 详见已知问题日志第21条，2026-08-11修复+同日qa复查后再收口），这里不用
+        // 重复调用。
+        return;
+      }
 
       // 若报告弹窗当前开着，原地渲染显示；未开过则静默不做事（refreshAiAnalysis内部处理）
       if (typeof Analysis !== 'undefined' && typeof Analysis.refreshAiAnalysis === 'function') {
@@ -154,6 +161,14 @@ const SettingsUI = (() => {
       console.warn('[SettingsUI] refreshAiOnly 失败:', e);
       alert(_isZh() ? 'AI深析刷新失败，请稍后重试' : 'Failed to refresh AI insight, please try again later');
     } finally {
+      // 2026-08-11 qa复查发现：catch分支不会清除showAiRefreshing()插入的banner
+      // （只有世代不一致的提前return分支和正常成功路径的refreshAiAnalysis()内部
+      // 会清）。理论可达性极低——BaziAnalysis.getAnalysis()契约上恒不reject（内部
+      // try/catch后resolve(null)）——但finally里幂等调用一次成本为零，一次性
+      // 覆盖包括这个理论分支在内的全部出口，不用逐个补。
+      if (typeof Analysis !== 'undefined' && typeof Analysis.clearAiRefreshing === 'function') {
+        Analysis.clearAiRefreshing();
+      }
       if (btn) { btn.disabled = false; btn.textContent = originalText || _t('settings.refresh_ai_btn'); }
     }
   }

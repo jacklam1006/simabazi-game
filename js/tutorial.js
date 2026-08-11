@@ -524,11 +524,31 @@ const Tutorial = (() => {
     return _labelKey(_steps[_idx]);
   }
 
+  // ── 公开：语言切换后刷新非 data-i18n 动态文案（2026-08-11新增，待办23）──
+  // #tutorial-next-btn 的文字由 _fillModalContent() 每步动态写入（"下一个"
+  // vs "探索完成"取决于当前是否最后一步），不是走静态 data-i18n，Lang.apply()
+  // 管不到。引导 Modal 开着时 #tutorial-overlay 是 pointer-events:none，用户
+  // 点得到顶栏语言切换按钮，此前需要点"下一个"进入下一步才会自愈显示新语言。
+  // Lang.setLang() 已有 langChanged 事件广播（main-new.js 里八字表等模块也是
+  // 靠这个事件刷新动态内容，这里沿用同一约定），监听后仅刷新按钮文字——步骤
+  // 正文（AI预览+静态字典内容）维持既有"不跟随语言切换"约定不动。
+  function refreshLabels() {
+    if (!_active || _idx >= _steps.length) return;
+    const nextBtn = document.getElementById('tutorial-next-btn');
+    if (nextBtn) {
+      const isLast = (_idx === _steps.length - 1);
+      nextBtn.textContent = (typeof Lang !== 'undefined')
+        ? Lang.t(isLast ? 'tutorial.complete' : 'tutorial.next')
+        : (isLast ? '✦ 探索完成 ✦' : '下一个 →');
+    }
+  }
+  window.addEventListener('langChanged', refreshLabels);
+
   function reset() { if (_active) _cleanup(); }
   function isActive() { return _active; }
 
   return {
     start, next, skip, reset, isActive, isDone, updateAiContent,
-    pause, resume, getCurrentZoneKey,
+    pause, resume, getCurrentZoneKey, refreshLabels,
   };
 })();

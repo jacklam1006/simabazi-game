@@ -27,6 +27,11 @@
  *     请求【之前】调用：在已打开的报告顶部插入一条不清空下方内容的"更新中"提示条。
  *     refreshAiAnalysis() 被调用时（无论成功失败）会自动清除这条提示。报告从未
  *     打开过时静默返回
+ *   Analysis.clearAiRefreshing()                 → （2026-08-11新增，修复已知问题
+ *     日志第21条）与 refreshAiAnalysis() 内部清除banner的逻辑相同，单独导出供
+ *     调用方在自己的提前 return 分支里也能兜底清除"更新中"提示条——典型场景是
+ *     settings.js::refreshAiOnly() 命中世代快照不一致而提前 return 时，不会再
+ *     调用到 refreshAiAnalysis()，需要自己先调这个函数清掉banner。
  */
 
 const Analysis = (() => {
@@ -770,6 +775,16 @@ const Analysis = (() => {
     if (bar) bar.remove();
   }
 
+  // ── 公开版 clearAiRefreshing()（2026-08-11 新增，修复已知问题日志第21条）──
+  // 与上面的 _clearAiRefreshingBanner() 功能完全相同，唯一区别是导出给外部
+  // 调用方（目前是 js/settings.js::refreshAiOnly()）使用。背景：refreshAiAnalysis()
+  // 内部虽然无论成功/失败都会清banner，但 refreshAiOnly() 里"世代快照防护"命中
+  // 时会在调用 refreshAiAnalysis() 之前就提前 return，导致这次清除被跳过、banner
+  // 残留在DOM里。调用方应在那个提前 return 之前调用一次本函数兜底清除。
+  function clearAiRefreshing() {
+    _clearAiRefreshingBanner();
+  }
+
   // ── AI 内容填充（六步命理框架，2026-08-03内容深度扩充新增Step2b后实为七步）───
   // ai 结构：step1_foundation（新增strengths/cautions两个数组字段）/
   //          step2_pattern_yongshen（新增pattern_score） / step2b_shishen（新增
@@ -1246,5 +1261,5 @@ const Analysis = (() => {
     return map[name] || `${name}入命，对${dm}日主的${wx}行格局产生深远影响，宜把握其吉意，化解其凶性`;
   }
 
-  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildReport, refreshAiAnalysis, showAiRefreshing };
+  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildReport, refreshAiAnalysis, showAiRefreshing, clearAiRefreshing };
 })();
