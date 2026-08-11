@@ -34,6 +34,10 @@ const App = (() => {
 
   // ── 调试面板（测试版专用）────────────────────────────────
   const DEBUG_MODE = true;  // 发布时设为 false
+  // 在 console.error 可能被劫持之前，先保存原始引用。Debug.log 内部报错时
+  // 必须调用这个原始引用，而不是（可能已被劫持的）全局 console.error，
+  // 否则会形成 Debug.log → console.error(劫持后) → Debug.log → ... 的无限递归。
+  const _origConsoleError = console.error.bind(console);
   const Debug = {
     _log: [],
     log(msg, type) {
@@ -42,7 +46,7 @@ const App = (() => {
       this._log.push(entry);
       if (this._log.length > 80) this._log.shift();
       this._render();
-      if (type === 'error') console.error('[App]', msg);
+      if (type === 'error') _origConsoleError('[App]', msg);
     },
     _render() {
       const el = document.getElementById('debug-log');
@@ -59,9 +63,8 @@ const App = (() => {
 
   // 劫持 console.error 写入调试面板
   if (DEBUG_MODE) {
-    const _origError = console.error.bind(console);
     console.error = (...args) => {
-      _origError(...args);
+      _origConsoleError(...args);
       Debug.log('❌ ' + args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' '), 'error');
     };
   }
