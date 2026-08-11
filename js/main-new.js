@@ -658,7 +658,19 @@ const App = (() => {
   function closeZonePanel() {
     document.getElementById('zone-panel')?.classList.remove('open');
     AudioManager.playSfx('panel_close');
-    IslandLoader.startAutoRotate();
+    const tutorialActive = (typeof Tutorial !== 'undefined' && Tutorial.isActive());
+    if (tutorialActive) {
+      // 面板是引导流程里"查看完整详解"打开的（唯一能在 Tutorial.isActive()
+      // 为 true 时打开 #zone-panel 的路径），关闭后把引导 Modal/提示条/进度点
+      // 恢复出来，让"下一个"/"跳过引导"继续可点。resume() 在非暂停状态下
+      // 调用是安全空操作，这里不需要额外判断是否真的处于暂停。
+      Tutorial.resume();
+    } else {
+      // 引导未激活时才允许恢复自动旋转——若在引导暂停期间也无条件调用，
+      // OrbitControls.autoRotate 在 update() 里不受 controls.enabled=false
+      // 影响依然会转动镜头，会把 Tutorial.flyTo() 摆好的机位带偏。
+      IslandLoader.startAutoRotate();
+    }
   }
 
   function showReport() {
@@ -677,36 +689,85 @@ const App = (() => {
     AudioManager.playSfx('panel_close');
   }
 
+  // "zone-panel 会话"令牌：每次 _openZonePanel() 打开一个新面板时自增。
+  // BaziAnalysis.getAnalysis() 异步到达时携带的是它发起请求那一刻的令牌值，
+  // 与"此刻"的 _zonePanelToken 比对——不一致说明用户已经切走到另一个命柱/
+  // 神煞（或关闭又重新打开了同一个），旧结果必须静默丢弃，不能覆盖新内容。
+  // 与本文件里 _islandGeneration 世代计数器是同一套防御模式。
+  let _zonePanelToken = 0;
+
+  // 根据 zoneKey 渲染面板 HTML（纯函数，无副作用）。analysis 为 null/undefined
+  // 时走静态兜底（不传第三参数），拿到 AI 深析结果后传入 analysis 走完整详解。
+  function _renderZonePanelHtml(zoneKey, baziData, analysis) {
+    if (zoneKey.startsWith('pillar_')) {
+      const col    = zoneKey.replace('pillar_', '');
+      const detail = analysis ? (analysis.step_pillars_detail || {})[col] : undefined;
+      return Analysis.buildZonePanel('pillar_' + col, baziData, detail);
+    }
+    if (zoneKey.startsWith('shensha_')) {
+      const name   = zoneKey.replace('shensha_', '');
+      const items  = analysis ? ((analysis.step_shensha_detail || {}).shensha_items || []) : [];
+      const detail = analysis ? items.find(s => s.name === name) : undefined;
+      return Analysis.buildShenshaPanel(name, baziData, detail);
+    }
+    return Analysis.buildZonePanel(zoneKey, baziData);
+  }
+
   // ── 区域点击回调（供 island-annotate.js 调用）─────────────
-  function _openZonePanel(zoneKey, baziData) {
-    // 引导激活期间，标签点击由 Tutorial 接管，此处直接返回
-    if (typeof Tutorial !== 'undefined' && Tutorial.isActive()) return;
+  // force=true：绕开"引导激活期间禁止打开"的 guard——目前唯一调用方是
+  // Tutorial 的"查看完整详解"按钮（见 viewTutorialDetail()），点击前已经
+  // 调用过 Tutorial.pause() 把引导自身的 Modal/overlay 隐藏掉，两者不会
+  // 同时抢视觉焦点。
+  function _openZonePanel(zoneKey, baziData, force) {
+    // 引导激活期间，标签点击由 Tutorial 接管，此处直接返回（"查看完整详解"
+    // 走 force=true 绕开这道 guard）
+    if (!force && typeof Tutorial !== 'undefined' && Tutorial.isActive()) return;
 
     const panel   = document.getElementById('zone-panel');
     const content = document.getElementById('zone-panel-content');
     if (!panel || !content) return;
 
-    // 解析 zoneKey: 'pillar_day', 'shensha_将星', 等
-    let html = '';
-    if (zoneKey.startsWith('pillar_')) {
-      const col = zoneKey.replace('pillar_', '');
-      html = Analysis.buildZonePanel('pillar_' + col, baziData);
-      // 阅读大运触发任务
-      if (col === 'year' || col === 'month') Tasks.complete('read_dayun', baziData);
-    } else if (zoneKey.startsWith('shensha_')) {
-      const name = zoneKey.replace('shensha_', '');
-      html = Analysis.buildShenshaPanel(name, baziData);
-      Tasks.complete('read_shensha', baziData);
-    } else {
-      html = Analysis.buildZonePanel(zoneKey, baziData);
-    }
+    const myToken = ++_zonePanelToken;
 
-    content.innerHTML = html;
+    // 1) 立即用静态兜底同步渲染打开面板——不等待任何网络请求，点击到看见
+    //    内容零延迟；静态内容本身完整可读，不是占位符，AI内容到达前用户
+    //    看到的就是可用的最终态之一。
+    content.innerHTML = _renderZonePanelHtml(zoneKey, baziData, null);
     panel.classList.add('open');
     AudioManager.playSfx('zone_click');
     IslandLoader.stopAutoRotate();
+
+    // 任务触发（与原逻辑一致）
+    if (zoneKey.startsWith('pillar_')) {
+      const col = zoneKey.replace('pillar_', '');
+      if (col === 'year' || col === 'month') Tasks.complete('read_dayun', baziData);
+    } else if (zoneKey.startsWith('shensha_')) {
+      Tasks.complete('read_shensha', baziData);
+    }
     _refreshTaskUI();
     _refreshSpirit();
+
+    // 2) 异步尝试拿AI深析结果，到达后若面板仍展示同一个zoneKey则原地刷新。
+    //    getAnalysis() 命中缓存/已有 in-flight 请求时几乎瞬时resolve，没缓存
+    //    时可能要几十秒到几分钟——期间用户可能已经切换到别的命柱/神煞面板，
+    //    或者干脆关闭了面板，靠 myToken 与 panel.open 双重校验避免误写。
+    if (typeof BaziAnalysis !== 'undefined' && (zoneKey.startsWith('pillar_') || zoneKey.startsWith('shensha_'))) {
+      BaziAnalysis.getAnalysis(baziData, _gender).then(analysis => {
+        if (myToken !== _zonePanelToken) return;       // 面板已切换到别的zoneKey
+        if (!panel.classList.contains('open')) return; // 面板已被用户关闭
+        if (!analysis) return;                          // AI深析失败/未配置，保留静态兜底
+        content.innerHTML = _renderZonePanelHtml(zoneKey, baziData, analysis);
+      }).catch(() => { /* 静默失败，保留静态兜底 */ });
+    }
+  }
+
+  // ── 引导中"查看完整详解"按钮回调（供 tutorial-modal 调用）───
+  function viewTutorialDetail() {
+    if (typeof Tutorial === 'undefined' || !Tutorial.isActive()) return;
+    const zoneKey = Tutorial.getCurrentZoneKey();
+    if (!zoneKey || !_baziData) return;
+    Tutorial.pause();
+    _openZonePanel(zoneKey, _baziData, /* force */ true);
   }
 
   // 注册全局回调
@@ -779,6 +840,7 @@ const App = (() => {
     closeZonePanel, showReport, closeReport,
     toggleBgm, toggleSfx,
     restartTutorial,   // 测试模式 HUD 用
+    viewTutorialDetail, // 引导Modal"查看完整详解"按钮用
     // AuthUI 内部调用（勿删）
     _getBaziData:  () => _baziData,
     _getBirthInfo: () => _birthInfo,

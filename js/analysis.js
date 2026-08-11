@@ -2,7 +2,9 @@
  * 司马八字 · 分析模块 analysis.js
  *
  * 公开 API：
- *   Analysis.buildZonePanel(zoneKey, baziData) → HTML 字符串（右侧标注面板）
+ *   Analysis.buildZonePanel(zoneKey, baziData, pillarAiDetail) → HTML 字符串（右侧标注面板）
+ *     pillarAiDetail（可选，2026-08-11新增）仅在 zoneKey 是 'pillar_xxx' 时生效，
+ *     原样透传给 buildPillarPanel()；其余 zoneKey 忽略该参数。
  *   Analysis.buildReport(baziData, container)  → 填充完整报告 Modal（含 AI 异步加载）
  *   Analysis.buildPillarPanel(col, baziData, pillarAiDetail)   → HTML 字符串
  *     pillarAiDetail（可选，2026-08-04新增）= 后端AI结果的
@@ -380,9 +382,9 @@ const Analysis = (() => {
     },
   };
 
-  function buildZonePanel(zoneKey, baziData) {
+  function buildZonePanel(zoneKey, baziData, pillarAiDetail) {
     if (zoneKey.startsWith('pillar_')) {
-      return buildPillarPanel(zoneKey.replace('pillar_', ''), baziData);
+      return buildPillarPanel(zoneKey.replace('pillar_', ''), baziData, pillarAiDetail);
     }
     const fn = ZONES[zoneKey];
     if (!fn) return `<div class="zone-title">区域：${zoneKey}</div>`;

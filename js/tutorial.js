@@ -21,6 +21,18 @@
  *   Tutorial.isActive() → boolean
  *   Tutorial.isDone(baziData, gender) → boolean
  *   Tutorial.updateAiContent(analysis)
+ *   Tutorial.pause()   （2026-08-11新增，"查看完整详解"打通用）
+ *     暂停期间 _active 保持 true（引导仍处于进行中的状态，isDone()/isActive()
+ *     语义不受影响），仅隐藏 #tutorial-overlay（含居中Modal、提示条、进度点、
+ *     右上角跳过按钮）；供 main-new.js 打开 #zone-panel 展示完整AI详情前调用，
+ *     让两个互斥的全屏级UI不同时抢占视觉焦点。
+ *   Tutorial.resume()  （2026-08-11新增）
+ *     恢复 pause() 前的展示（重新填充Modal内容——若AI内容在暂停期间才到达，
+ *     顺带一并刷新——并重新显示 overlay）。非 pause 状态下调用是安全的空操作。
+ *   Tutorial.getCurrentZoneKey() → string|null （2026-08-11新增）
+ *     返回当前步骤对应的 zoneKey（'pillar_day'/'shensha_将星'等），格式与
+ *     main-new.js::_openZonePanel() 期望的 zoneKey 完全一致，供"查看完整详解"
+ *     按钮直接转发调用。引导未激活或已经是最后一步之后时返回 null。
  */
 
 const Tutorial = (() => {
@@ -110,6 +122,7 @@ const Tutorial = (() => {
 
   // ── 模块状态 ─────────────────────────────────────────────
   let _active          = false;
+  let _paused          = false; // 2026-08-11新增：查看zone-panel完整详情时暂停
   let _steps           = [];
   let _idx             = 0;
   let _baziData        = null;
@@ -222,6 +235,7 @@ const Tutorial = (() => {
 
   function _cleanup() {
     _active = false;
+    _paused = false;
     _hideHintBar();
     _clearLabelListener();
 
@@ -317,6 +331,11 @@ const Tutorial = (() => {
     _clearLabelListener();
     _hideHintBar();
     _fillModalContent(step, idx, total);
+    _showModalCard();
+  }
+
+  // ── Modal：显示（淡入动画，_onLabelClick 与 resume() 共用）─────
+  function _showModalCard() {
     const modal = document.getElementById('tutorial-modal');
     if (modal) {
       requestAnimationFrame(() => {
@@ -353,9 +372,16 @@ const Tutorial = (() => {
       '<div class="tut-step-sub">' + c.subtitle + '</div>' +
       '<div class="tut-step-body">' + c.body + '</div>';
 
+    // 2026-08-11修复（qa CONFIRMED 2）：跟同排 tutorial-view-more-btn / 跳过
+    // 引导两个按钮统一走 i18n，避免英文模式下三个按钮中英混杂。若 Lang 未加载
+    // （理论上不会发生，index.html 里 i18n.js 先于 tutorial.js 加载）兜底回退
+    // 中文字面量，保证不会崩。
     const nextBtn = document.getElementById('tutorial-next-btn');
     if (nextBtn) {
-      nextBtn.textContent = (idx === total - 1) ? '✦ 探索完成 ✦' : '下一个 →';
+      var isLast = (idx === total - 1);
+      nextBtn.textContent = (typeof Lang !== 'undefined')
+        ? Lang.t(isLast ? 'tutorial.complete' : 'tutorial.next')
+        : (isLast ? '✦ 探索完成 ✦' : '下一个 →');
     }
   }
 
@@ -467,8 +493,42 @@ const Tutorial = (() => {
     catch(e) { return false; }
   }
 
+  // ── 公开：暂停（"查看完整详解"打开 #zone-panel 前调用）──────
+  // _active 保持不变，仅隐藏 overlay（Modal/提示条/进度点/右上角跳过按钮），
+  // 让 #zone-panel 独占视觉焦点，避免半透明 overlay 背景压暗面板内容。
+  function pause() {
+    if (!_active || _paused) return;
+    _paused = true;
+    _hideModal();
+    const overlay = document.getElementById('tutorial-overlay');
+    if (overlay) overlay.classList.add('hidden');
+  }
+
+  // ── 公开：恢复（#zone-panel 关闭后调用）──────────────────
+  // 非 pause 状态下调用是安全的空操作，不会误触发。重新填充Modal内容——若
+  // AI内容在暂停期间才经 updateAiContent() 到达，这里顺带一并体现最新内容。
+  function resume() {
+    if (!_active || !_paused) return;
+    _paused = false;
+    const overlay = document.getElementById('tutorial-overlay');
+    if (overlay) overlay.classList.remove('hidden');
+    if (_idx < _steps.length) {
+      _fillModalContent(_steps[_idx], _idx, _steps.length);
+      _showModalCard();
+    }
+  }
+
+  // ── 公开：当前步骤对应的 zoneKey（供"查看完整详解"按钮转发）──
+  function getCurrentZoneKey() {
+    if (!_active || _idx >= _steps.length) return null;
+    return _labelKey(_steps[_idx]);
+  }
+
   function reset() { if (_active) _cleanup(); }
   function isActive() { return _active; }
 
-  return { start, next, skip, reset, isActive, isDone, updateAiContent };
+  return {
+    start, next, skip, reset, isActive, isDone, updateAiContent,
+    pause, resume, getCurrentZoneKey,
+  };
 })();

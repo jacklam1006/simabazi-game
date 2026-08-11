@@ -195,6 +195,13 @@ const I18N = {
     'email.login_here':    '点此登录',
     'email.available':     '✓ 可以注册',
 
+    // ── 新手引导 ──────────────────────────────
+    'tutorial.view_more':  '查看完整详解 →',
+    'tutorial.next':       '下一个 →',
+    'tutorial.complete':   '✦ 探索完成 ✦',
+    'tutorial.skip_top':   '跳过引导 ×',
+    'tutorial.skip_modal': '跳过引导，自由探索',
+
     // ── Auth 错误 ─────────────────────────────
     'auth_err.invalid':    '邮箱或密码错误',
     'auth_err.unconfirm':  '请先验证邮箱再登录',
@@ -389,6 +396,13 @@ const I18N = {
     'email.exists_pre':    'Email already registered → ',
     'email.login_here':    'Sign in here',
     'email.available':     '✓ Available',
+
+    // ── Tutorial ──────────────────────────────
+    'tutorial.view_more':  'Full Details →',
+    'tutorial.next':       'Next →',
+    'tutorial.complete':   '✦ Explored ✦',
+    'tutorial.skip_top':   'Skip ×',
+    'tutorial.skip_modal': 'Skip Tutorial',
 
     // ── Auth Errors ───────────────────────────
     'auth_err.invalid':    'Incorrect email or password',

@@ -246,9 +246,14 @@
     .kongwang-label{background:rgba(8,8,20,.85);border:1px solid rgba(235,87,87,.3);border-radius:6px;padding:4px 10px;font-size:10px;color:rgba(232,224,208,.5);letter-spacing:1px}
 
     /* 右侧分析面板 */
-    #zone-panel{position:fixed;top:0;right:0;bottom:0;width:min(340px,90vw);background:rgba(6,6,16,.97);border-left:1px solid rgba(201,169,110,.15);z-index:600;padding:24px 20px;transform:translateX(100%);transition:transform .3s ease;overflow-y:auto;display:flex;flex-direction:column;gap:14px}
+    /* 2026-08-11修复（qa CONFIRMED 1）：外壳本身不再滚动（overflow:hidden），
+       只有 #zone-panel-content 内部滚动；#zone-panel-close 是外壳的直接子元素，
+       不在滚动容器内，因此无论内容多长都始终固定可见/可点。桌面端和移动端
+       共用这一套结构，媒体查询只负责调整尺寸/方向，不需要维护两套滚动逻辑。 */
+    #zone-panel{position:fixed;top:0;right:0;bottom:0;width:min(340px,90vw);background:rgba(6,6,16,.97);border-left:1px solid rgba(201,169,110,.15);z-index:600;padding:24px 20px;transform:translateX(100%);transition:transform .3s ease;overflow:hidden;display:flex;flex-direction:column;gap:14px}
     #zone-panel.open{transform:translateX(0)}
-    #zone-panel-close{position:absolute;top:14px;right:14px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:6px;width:28px;height:28px;color:#e8e0d0;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+    #zone-panel-close{position:absolute;top:14px;right:14px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:6px;width:28px;height:28px;color:#e8e0d0;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;z-index:1}
+    #zone-panel-content{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch}
     .zone-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:1px}
     .badge-good{background:rgba(111,207,151,.1);border:1px solid rgba(111,207,151,.35);color:#6FCF97}
     .badge-warn{background:rgba(235,87,87,.1);border:1px solid rgba(235,87,87,.35);color:#EB5757}
@@ -518,6 +523,16 @@
       cursor:pointer;font-family:inherit;transition:opacity .2s;
     }
     #tutorial-next-btn:hover{opacity:.88}
+    /* 查看完整详解按钮（Modal内，2026-08-11新增）*/
+    #tutorial-view-more-btn{
+      width:100%;margin-top:10px;padding:11px;
+      border:1px solid rgba(201,169,110,.35);border-radius:12px;
+      background:rgba(201,169,110,.08);
+      color:#c9a96e;font-size:13px;font-weight:600;letter-spacing:2px;
+      cursor:pointer;font-family:inherit;transition:background .2s;
+      min-height:44px;
+    }
+    #tutorial-view-more-btn:hover{background:rgba(201,169,110,.16)}
     /* 跳过文字按钮（Modal内）*/
     .tut-modal-skip{
       display:block;width:100%;margin-top:10px;padding:8px;
@@ -668,6 +683,75 @@
   .settings-btn-danger{background:rgba(235,87,87,.12);border-color:rgba(235,87,87,.35);color:#eb8f8f}
   .settings-btn-danger:hover{background:rgba(235,87,87,.22)}
   .settings-action-btn{width:100%;margin-bottom:6px;justify-content:center}
+
+  /* ══════════════════════════════════════════════════════════════
+     移动端断点（2026-08-11新增）
+     此前全站唯一的"响应式"手段是 CSS min()/vw/vh 视口相对单位，没有断点
+     级别的布局调整。这里只针对本次改动强相关、内容多/触摸目标偏小的几个
+     UI 加真正的 @media 断点：#zone-panel（命柱/神煞详情抽屉，本次改动后
+     内容显著变长）、#tutorial-modal 及其按钮组（本次新增"查看完整详解"
+     按钮）、#tutorial-hint-bar（底部提示条）、#zone-panel-close /
+     #task-panel-close（触摸目标偏小）。断点选 480px（覆盖常见手机宽度，
+     iPhone SE/12/13 等在 375–430px 之间都命中）。
+  ═══════════════════════════════════════════════════════════════ */
+  @media (max-width: 480px) {
+    /* #zone-panel：桌面端是右侧竖直抽屉（宽 min(340px,90vw)），手机上改为
+       从底部滑出的 bottom sheet——横向占满全宽、纵向限高，避免 340px 宽的
+       竖抽屉在小屏上显得局促、也避免桌面端限宽逻辑套用到手机上不生效。 */
+    #zone-panel{
+      top:auto; left:0; right:0; bottom:0;
+      width:100%; max-width:none;
+      max-height:82vh;
+      border-left:none;
+      border-top:1px solid rgba(201,169,110,.18);
+      border-radius:18px 18px 0 0;
+      padding:20px 18px 28px;
+      transform:translateY(100%);
+      box-shadow:0 -8px 32px rgba(0,0,0,.4);
+    }
+    #zone-panel.open{ transform:translateY(0); }
+    #zone-panel-close{
+      width:40px; height:40px; top:10px; right:10px;
+      font-size:16px;
+    }
+    .zone-title{ font-size:17px; }
+    .zone-section-body{ font-size:13.5px; line-height:1.85; }
+    .insight-item{ font-size:13px; padding:9px 11px; }
+
+    /* #task-panel 同样是竖直抽屉（左侧），触摸目标同 zone-panel-close 一并放大 */
+    #task-panel-close{ width:40px; height:40px; top:10px; right:10px; font-size:16px; }
+
+    /* 引导居中卡片 Modal：略微收窄、限高更保守，避免长内容在小屏被裁切 */
+    #tutorial-modal{
+      width:92vw;
+      max-height:80vh;
+      padding:24px 18px 16px;
+    }
+    .tut-step-title{ font-size:23px; letter-spacing:3px; }
+    .tut-text{ font-size:13px; line-height:1.85; }
+
+    /* 三个操作入口（下一个 / 查看完整详解 / 跳过引导）本来就是纵向堆叠
+       （均 width:100% + block），小屏下无需改横排为竖排；这里只保证触摸
+       目标够大、按钮间距不过挤。 */
+    #tutorial-next-btn, #tutorial-view-more-btn{ min-height:46px; padding:12px; font-size:13px; }
+    .tut-modal-skip{ min-height:40px; padding:10px; }
+
+    /* 底部提示条：允许换行，避免长文案在窄屏被截断/溢出视口。
+       2026-08-11修复（qa PLAUSIBLE P1）：基础规则是 left:50%+translateX(-50%)
+       绝对定位，这种"绝对定位+50%居中"的元素 shrink-to-fit 可用宽度只有包含块
+       的50%，max-width:88vw 根本没机会生效，导致中文词组从中间被断行。改用
+       left/right 对称留白撑开包含块宽度、去掉 translateX，88vw 才能真正生效。 */
+    #tutorial-hint-bar{
+      left:6vw; right:6vw; transform:none;
+      max-width:88vw;
+      padding:11px 18px;
+      font-size:12.5px;
+      white-space:normal;
+      text-align:center;
+      justify-content:center;
+    }
+    #tutorial-skip-btn{ padding:8px 14px; min-height:36px; display:flex; align-items:center; }
+  }
   </style>
 </head>
 <body>
@@ -813,7 +897,7 @@
 <!-- ══ 新手引导覆盖层 ══ -->
 <div id="tutorial-overlay" class="hidden">
   <!-- 跳过按钮（右上角，始终可见）-->
-  <button id="tutorial-skip-btn" onclick="Tutorial.skip()">跳过引导 ×</button>
+  <button id="tutorial-skip-btn" onclick="Tutorial.skip()" data-i18n="tutorial.skip_top">跳过引导 ×</button>
   <!-- 进度点（顶部居中）-->
   <div id="tutorial-dots"></div>
   <!-- 提示条（相机到位后显示，引导用户点击）-->
@@ -825,7 +909,8 @@
   <div id="tutorial-modal">
     <div id="tutorial-modal-content"></div>
     <button id="tutorial-next-btn" onclick="Tutorial.next()">下一个 →</button>
-    <button class="tut-modal-skip" onclick="Tutorial.skip()">跳过引导，自由探索</button>
+    <button id="tutorial-view-more-btn" onclick="App.viewTutorialDetail()" data-i18n="tutorial.view_more">查看完整详解 →</button>
+    <button class="tut-modal-skip" onclick="Tutorial.skip()" data-i18n="tutorial.skip_modal">跳过引导，自由探索</button>
   </div>
 </div>
 
