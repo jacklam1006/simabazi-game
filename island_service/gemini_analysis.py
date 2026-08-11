@@ -5,14 +5,17 @@
 RAG向量检索古籍/断语原文片段再生成"。完整背景与分工设计见项目根目录
 PROMPT_SYSTEM.md 对应"修改记录"、claude-docs/已知问题与修复记录.md 对应日期条目。
 
-六步框架（严格串行 Step1→Step2，Step2b+Step3-6 用 asyncio.gather 并行发起）：
+六步框架（严格串行 Step1→Step2，其余7个步骤用 asyncio.gather 并行发起——2026-08-11
+新增命柱/神煞详解两步后，并行批次从5个变为7个，见下方对应日期说明）：
   Step1 命局「出厂设置」扫描（日主/月令/五行强弱/性格底色）
   Step2 定格局与找用神（依赖Step1）
   Step2b 十神详解        （依赖Step1+2）─┐
   Step3 事业与财富深度剖析（依赖Step1+2）─┤
-  Step4 婚恋与感情世界    （依赖Step1+2）─┤ 并行
-  Step5 健康与潜在风险提示（依赖Step1+2）─┤
-  Step6 大运与流年运势推演（依赖Step1+2）─┘
+  Step4 婚恋与感情世界    （依赖Step1+2）─┤
+  Step5 健康与潜在风险提示（依赖Step1+2）─┤ 并行（7个）
+  Step6 大运与流年运势推演（依赖Step1+2）─┤
+  命柱详解（四柱，依赖Step1+2）           ─┤
+  神煞详解（依赖Step1+2）                 ─┘
 
 2026-08-03 内容深度扩充（非bug修复，见 claude-docs/已知问题与修复记录.md 对应日期条目）：
 六步（现七步，新增Step2b）narrative目标字数大致翻倍，Step1新增strengths/cautions
@@ -49,6 +52,35 @@ _parse_json() 只做JSON语法解析，模型漏返回某个字段不会抛异�
 两处共用 _SCORE_FIELD_PATHS 常量，避免各写一份。这个类型校验口径现在与
 js/analysis.js::_isValidScore()（typeof v !== 'number'）严格对齐，不会再出现
 "后端认为字符串分数是有效缓存、前端却拒绝读取"的两端不一致。
+
+2026-08-04 新增「四柱详解」`step_pillars_detail` + 「神煞详解」`step_shensha_detail`
+两个新步骤（响应"岛屿命柱/神煞点击面板内容太单薄，要改成AI动态生成"的需求，
+前端 js/analysis.js::buildPillarPanel()/buildShenshaPanel() 消费）：跟Step2b同一种
+模式，只依赖ctx+step1+step2，加入既有 asyncio.gather 并行批次，不新增串行阶段。
+四柱详解一次调用覆盖全部四柱（year/month/day/hour各自plain_meaning/hidden_stems/
+role_in_this_chart三个大白话分类小节）；神煞详解一次调用覆盖 ctx['shensha'] 里
+全部现存神煞（name/nature/concept/personal_impact/advice，条数不固定按命盘实际
+神煞数走）。**这两步是本次改动里唯二带独立失败隔离的并行任务**
+（`_step_pillars_detail_safe()`/`_step_shensha_detail_safe()` 内部捕获
+GeminiCallError返回空dict）——因为是"点击标签才会看到"的补充细节而非六/七步核心
+叙事主体，不应该因为一次调用失败拖垮整条 analyze_bazi() 请求；其余5个既有并行
+步骤保持原有"任一失败则整体失败"行为不变。神煞详解因数量不定、极端场景（20+个）
+内容量远超本文件其它步骤量级，单独使用 max_tokens=16384（远高于其它步骤共用的
+8192重试封顶值，具体推导与"这会让本步骤的MAX_TOKENS加倍重试机制实质失效"这个
+副作用见 `_step_shensha_detail_sync()` 上方大段注释）；四柱详解复用Step2已验证的
+7168。落盘前用 `_sanitize_pillars_detail()`/`_sanitize_shensha_detail()` 做结构
+校验——文本内容不适合像六维打分那样兜底默认值，改为"跳过式降级"：字段不全的柱子/
+名称对不上命盘真实神煞列表的条目直接丢弃，不影响其它柱子/条目和整条请求。
+缓存版本从 v4 升级到 v5（LS_PREFIX 'bazi_ai_v5_'），_cache_read() 新增第四道校验
+（两个新字段都单独查存在性+基本容器结构，校验粒度取舍的完整说明见
+`_pillars_detail_valid()`/`_shensha_detail_valid()` docstring）。
+
+2026-08-11 qa-reviewer第三轮复查CONFIRMED修复：`_shensha_detail_valid()`新增
+`no_shensha`显式标记区分"这张命盘规则引擎算出来本来就没有神煞"与"神煞详解
+生成失败"——真实存在零神煞命盘（穷举518,400组合法四柱找到的己巳己巳己巳己巳，
+1989-05-09巳时），此前两种情况落盘后都是`{'shensha_items': []}`，前者会被
+永久误判缓存无效、每次打开报告都重跑整条流水线。完整推导见
+`_sanitize_shensha_detail()`/`_shensha_detail_valid()`附近注释。
 
 **必须保留、不改的机制**（都是踩过生产坑才做对的，见已知问题日志2026-07-29多轮记录）：
 - _redact()：API Key脱敏，防止网络层异常把真实Key泄漏进响应体
@@ -199,8 +231,10 @@ def _validate_score_fields(analysis: dict) -> list:
     bool等），就地替换为中性兜底值50分——50分是"不确定"的中性占位，不是"这个
     人这项就是中等"的判断，不做特殊标记（这本来就是需求方权衡后的选择，另一个
     可选方案是让 analyze_bazi() 整体判定失败重新生成，但六维打分是给已完整
-    narrative追加的量化补充可视化、不是报告主体内容，Step2b+Step3-6又是
-    asyncio.gather并行发起的5次独立调用，其余narrative通常都完整可用，为了
+    narrative追加的量化补充可视化、不是报告主体内容，Step2/Step3/Step4/Step5/
+    Step6这5个产出打分字段的步骤又只是asyncio.gather并行批次（当前共7个步骤，
+    另外2个是2026-08-11新增的命柱/神煞详解，不产出打分字段）里的一部分独立调用，
+    其余narrative通常都完整可用，为了
     一个小数字字段整体重试一轮六步生成，成本收益不划算，也不保证重试后就不
     会再漏）。返回被兜底的字段名列表，供调用方打日志，方便后续观测模型在
     这几个字段上的实际质量、需不需要收紧prompt措辞。"""
@@ -225,6 +259,69 @@ def _score_fields_valid(data: dict) -> bool:
         if not isinstance(step, dict) or not _is_valid_score(step.get(field)):
             return False
     return True
+
+
+# 2026-08-04 新增（四柱详解/神煞详解）：`_cache_read()` 第四道结构校验用。吸取
+# CONFIRMED 2 的教训——两个新增的顶层字段**都**要单独查存在性+基本结构合理性，
+# 不能只选其中一个当canary代表整体（那正是CONFIRMED 2的根因：`fortune_score`
+# 单独canary无法发现"另外5个打分字段之一缺失"这种情况）。
+#
+# 2026-08-04 qa-reviewer复查修复（CONFIRMED 1 + CONFIRMED 2，第一版实现的校验粒度
+# 设计有误，本次为返工版本）：第一版把两个字段的校验粒度都定成"只查容器类型"
+# （pillars要求4个柱子键**全部**是dict；shensha_items只要是list即可，哪怕是空
+# list），结果两个方向各出一个CONFIRMED——
+#   CONFIRMED 2（pillars过严）：`_sanitize_pillars_detail()`设计上允许跳过式丢弃
+#   不完整的柱子（比如只保留3根），但第一版校验要求4个key全部存在，两者粒度没对齐
+#   成最严格组合——只要缺一根柱子就永远无法通过`_cache_read()`，每次任何用户打开
+#   报告都会重新触发整条七步+这两步的流水线（12次Gemini调用），复刻了本文件
+#   `_cache_read()`自己在别处明确警告过要避免的"不能要求完全齐全"反面模式。
+#   CONFIRMED 1（shensha过松）：`_step_shensha_detail_safe()`捕获`GeminiCallError`
+#   后返回`{}`，`_sanitize_shensha_detail({}, ctx)`会把它转成`{'shensha_items': []}`
+#   （因为对非dict/无法识别的输入统一兜底为空list），第一版校验对"是list"就判定
+#   通过——于是"整个步骤彻底失败"和"合法的空结果"在校验层面变得无法区分，前者被
+#   永久当作有效缓存落盘复用，用户从此永远看不到神煞AI内容，没有自愈路径。
+#
+# 返工后的设计：区分"整个步骤彻底失败"（safe wrapper捕获到异常，原始返回值是
+# 空dict `{}`）与"步骤成功但内容不完整"（模型有返回，只是`_sanitize_*`按现有
+# 跳过式逻辑筛掉了部分/全部不合规条目）——只让校验关心前者，不要求内容全齐：
+#   - `_pillars_detail_valid()`：只要求 `step_pillars_detail` 是**非空**dict
+#     （至少1根柱子的完整数据），不再要求4个key全部存在。真正的彻底失败落盘的是
+#     空dict `{}`（`_sanitize_pillars_detail({})` 对空/非dict输入本就返回`{}`），
+#     只有这种情况才判定无效、走cache miss重新生成。
+#   - `_shensha_detail_valid()`：要求 `shensha_items` 是**非空**数组（至少1条
+#     有效内容）**或**`no_shensha`显式标记为`True`，才判定有效，否则（空数组且
+#     无标记）判定无效。
+#
+#   2026-08-11 qa-reviewer第三轮复查CONFIRMED修复：上面这段注释此前主张"真实的
+#   零神煞场景经验概率为0"、"未引入额外失败标记字段"——这个前提被证伪了。
+#   qa没有停留在理论推测，而是用 js/bazi-engine.js 真实的 `_shensha()` 函数
+#   逐条模拟，穷举了全部518,400组合法四柱组合，找到了具体存在的1组零神煞命盘：
+#   四柱己巳己巳己巳己巳（对应真实公历生日1989年5月9日巳时，另有1929年同月日
+#   同时段），逐条手算34颗神煞规则复核过，不是脚本误差。这张命盘会永久卡在
+#   "空数组统一判定无效→cache miss→重新生成→这张命盘本来就没有神煞，生成结果
+#   还是空数组→继续miss"的死循环里，没有自愈路径，`force_refresh`也逃不掉。
+#   现在的修复：`_sanitize_shensha_detail()`以`ctx['shensha']`（规则引擎算出来
+#   的真实数据，不是模型输出）为唯一权威依据，`ctx['shensha']`为空时在落盘结果
+#   里加上`no_shensha=True`；这里的校验相应放宽为"非空数组 或 no_shensha为
+#   True"两者之一满足即有效，两种真实存在的空数组来源（真零神煞 vs 生成失败）
+#   由此被正确区分开，不再需要"发生概率接近0"这个已经被证伪的假设来兜底。
+# 这个设计下，"部分完整"（比如3/4柱子、15/21条神煞）、"真零神煞"（`no_shensha`
+# 标记）仍然都是合法的缓存命中状态，与`_sanitize_pillars_detail()`/
+# `_sanitize_shensha_detail()`允许的跳过式降级完全对齐；只有真正的"生成失败导致
+# 的零内容"才会被当作未命中、触发重新生成，有自愈路径不会永久卡死。
+def _pillars_detail_valid(data: dict) -> bool:
+    pd = data.get('step_pillars_detail')
+    return isinstance(pd, dict) and len(pd) > 0
+
+
+def _shensha_detail_valid(data: dict) -> bool:
+    sd = data.get('step_shensha_detail')
+    if not isinstance(sd, dict):
+        return False
+    if sd.get('no_shensha') is True:
+        # 真零神煞命盘（详见上方2026-08-11修复注释），不要求shensha_items非空。
+        return True
+    return isinstance(sd.get('shensha_items'), list) and len(sd['shensha_items']) > 0
 
 
 def _cache_read(h: str):
@@ -272,8 +369,15 @@ def _cache_read(h: str):
     # 都判定未命中、重新生成覆盖。配合 `analyze_bazi()` 落盘前的
     # `_validate_score_fields()` 兜底，这里是双重保险：即使落盘前的校验有遗漏，
     # 这一层依然不会把残缺/类型错误的数据误判为完整。
+    #
+    # 2026-08-04 v4→v5：新增「四柱详解」`step_pillars_detail`/「神煞详解」
+    # `step_shensha_detail` 两个顶层步骤字段。第四道校验：两个字段都要单独校验
+    # 存在性+"非空"（不是"完全齐全"，返工后的取舍见 `_pillars_detail_valid()`/
+    # `_shensha_detail_valid()` 上方大段注释，含CONFIRMED 1/CONFIRMED 2两个
+    # 方向的教训），任一不满足都判定未命中。
     if (isinstance(data, dict) and 'step1_foundation' in data and 'step2b_shishen' in data
-            and _score_fields_valid(data)):
+            and _score_fields_valid(data)
+            and _pillars_detail_valid(data) and _shensha_detail_valid(data)):
         return data
     return None
 
@@ -536,6 +640,28 @@ def _build_context(bazi_data: dict, gender: str, birth_year: int) -> dict:
         except Exception:
             weakest_wx = ''
 
+    # 2026-08-04 新增（四柱详解步骤用）：nayin/hiddenStems 都是前端 bazi-engine.js::
+    # calculate() 已经算好的确定性数据（HIDDEN 表按主气→余气顺序、含每个藏干自己的
+    # 十神），直接透传整理成 ctx，不在这里重新推导——遵循本文件"只在_build_context
+    # 里做一次字段提取"的既有原则，也避免给四柱详解步骤编造数据（藏干信息拿不到时
+    # 传空字符串，prompt里会要求这种情况如实简短说明而不是编造）。
+    nayin_raw = bazi_data.get('nayin', {}) or {}
+    hidden_stems_raw = bazi_data.get('hiddenStems', {}) or {}
+
+    def hidden_str(col):
+        items = hidden_stems_raw.get(col)
+        if not isinstance(items, list) or not items:
+            return ''
+        parts = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            s = it.get('stem', '')
+            sh = it.get('shishen', '')
+            if s:
+                parts.append(f"{s}（十神：{sh}）" if sh else s)
+        return '、'.join(parts)
+
     return {
         'gender': gender or '男',
         'birth_year': birth_year or 0,
@@ -565,6 +691,8 @@ def _build_context(bazi_data: dict, gender: str, birth_year: int) -> dict:
         'current_dayun_ganzhi': f"{current_dayun.get('gan','')}{current_dayun.get('zhi','')}",
         'current_year': 2026,
         'current_ganzhi': '丙午',
+        'nayin': {col: nayin_raw.get(col, '') for col in ('year', 'month', 'day', 'hour')},
+        'hidden_stems': {col: hidden_str(col) for col in ('year', 'month', 'day', 'hour')},
     }
 
 
@@ -990,6 +1118,263 @@ async def _step6_dayun_liunian(ctx: dict, step1: dict, step2: dict) -> dict:
     return await asyncio.to_thread(_step6_dayun_liunian_sync, ctx, step1, step2)
 
 
+# ── 新增 Step「四柱详解」──────────────────────────────────────
+# 2026-08-04 新增（响应"岛屿命柱/神煞点击面板内容太单薄"需求，前端 js/analysis.js
+# ::buildPillarPanel() 消费）。跟 _step2b_shishen_sync 同一种模式：只依赖
+# ctx+step1+step2，加入既有 asyncio.gather 并行批次，不新增串行阶段。一次调用
+# 覆盖全部四柱（不拆成4次调用，理由：四柱之间需要互相衔接语气+共享同一份命盘
+# 上下文，拆开调用会四倍RAG+网络开销且更难保证四柱之间叙述风格一致）。
+#
+# 字段名 step_pillars_detail（不占用 step1~step6/step2b 已有字段名）。JSON schema
+# 每柱三个分类小节，专为"不懂八字的人也能读懂"设计：
+#   plain_meaning        —— 干支+纳音翻译成大白话是什么意思
+#   hidden_stems         —— 地支藏干是什么、"表面看到的/底层藏着的倾向"
+#   role_in_this_chart   —— 结合这张命盘真实十神/身强弱/五行喜忌的针对性判断
+#                            （不是"年柱代表祖辈根基"这种不结合数据的通用套话）
+# 日柱（day）的 role_in_this_chart 额外允许侧重"配偶宫"角色。
+def _step_pillars_detail_sync(ctx: dict, step1: dict, step2: dict) -> dict:
+    rag_query = f"{ctx['dm']}日主 四柱详解 {ctx['year_p']} {ctx['month_p']} {ctx['day_p']} {ctx['hour_p']} 藏干"
+    rag_snippet = rag_service.query(rag_service.COLLECTION_NAME, rag_query,
+                                     tags=['日主', '十神', 'ten-gods', 'wuxing', 'fundamentals'])
+
+    pillar_labels = (('year', '年柱'), ('month', '月柱'), ('day', '日柱'), ('hour', '时柱'))
+    pillar_lines = []
+    for col, label in pillar_labels:
+        gz = ctx[f'{col}_p']
+        ny = ctx['nayin'].get(col) or '未知'
+        hs = ctx['hidden_stems'].get(col) or '（数据源未提供该地支藏干信息，如实说明即可，不要编造）'
+        tg = '日主本身（不计入十神）' if col == 'day' else (ctx['ten_gods'].get(col) or '未知')
+        pillar_lines.append(f"{label}：{gz} · 纳音「{ny}」 · 藏干（主气→余气顺序）：{hs} · 该柱天干十神：{tg}")
+    pillar_block = '\n'.join(pillar_lines)
+
+    prompt = f"""{_shared_chart_block(ctx)}
+
+【前两步结论（供你衔接判断，不要重复输出）】
+{_step2_context_block(step1, step2)}
+【四柱详细资料（真实数据，逐一对应下面要生成的四个柱子）】
+{pillar_block}
+{_rag_block(rag_snippet)}
+【本步骤任务】四柱详解——面向完全不懂八字的普通人，把年/月/日/时四柱逐一翻译成
+大白话，分类结构专为"读得懂"设计：
+1. 少用生僻命理术语，术语一旦出现要顺带解释是什么意思；
+2. plain_meaning：这根柱子（干支+纳音）翻译成大白话是什么意思；
+3. hidden_stems：地支藏干是什么、大白话解释"表面看到的是什么，底层还藏着什么倾向"
+   （用上面提供的真实藏干数据，如果某地支没有藏干信息，简短如实说明即可，不要编造
+   命盘中不存在的藏干）；
+4. role_in_this_chart：结合这张命盘真实的十神/身强弱/五行喜忌，说明这根柱子对这
+   个人具体意味着什么，不要写"年柱代表祖辈根基"这类不结合真实数据的通用套话；
+5. 日柱（day）是日主本身，role_in_this_chart可以侧重"配偶宫"这个角色（传统命理
+   日支代表夫妻宫），结合上面能拿到的信息给出判断，拿不到具体信息就如实说明不
+   确定，不要编造。
+
+请输出严格JSON（不含markdown代码块，不含JSON之外的任何文字），四个柱子键必须齐全：
+{{
+  "year":  {{"plain_meaning": "60-90字", "hidden_stems": "60-90字", "role_in_this_chart": "90-130字"}},
+  "month": {{"plain_meaning": "60-90字", "hidden_stems": "60-90字", "role_in_this_chart": "90-130字"}},
+  "day":   {{"plain_meaning": "60-90字", "hidden_stems": "60-90字", "role_in_this_chart": "90-130字，可侧重配偶宫角色"}},
+  "hour":  {{"plain_meaning": "60-90字", "hidden_stems": "60-90字", "role_in_this_chart": "90-130字"}}
+}}"""
+    # max_tokens=7168 推导（2026-08-04）：四柱内容上限按字数要求估算约
+    # 4×(90+90+130)=1240个中文内容字符+JSON结构开销（4个柱子×3个字段的key/引号/
+    # 逗号，约250个ASCII字符），用「中文内容×2 tokens/字 + ASCII开销×0.3 tokens/字」
+    # 的保守换算得约2555 raw tokens，乘1.4倍安全余量约3577 tokens——但这个换算
+    # 方法在小样本下（如Step1单独一段narrative）验证会明显低估实际需要的预算
+    # （Step1真实预算5632远高于同方法算出的原始估计），说明Gemini实际输出+JSON
+    # 格式化+安全余量的真实开销比这个粗略换算更高。四柱详解内容量级与Step2
+    # （pattern+narrative+yongshen+keywords，实际预算7168）相近或略高，因此直接
+    # 复用Step2已验证的7168这个值，不额外新造一个未经验证的数字。7168已经明显
+    # 高于按字数比例算出的最低需求，留有余量；同其它步骤一样这个值最终仍需生产
+    # 环境真实调用验证。
+    raw = _call_gemini(prompt, max_tokens=7168, system_instruction=PERSONA_SYSTEM)
+    return _parse_json(raw)
+
+
+async def _step_pillars_detail(ctx: dict, step1: dict, step2: dict) -> dict:
+    return await asyncio.to_thread(_step_pillars_detail_sync, ctx, step1, step2)
+
+
+async def _step_pillars_detail_safe(ctx: dict, step1: dict, step2: dict) -> dict:
+    """四柱详解是"锦上添花"的补充细节（点击命柱标签才会看到），不是六/七步核心
+    叙事主体——独立捕获 GeminiCallError，失败时返回空dict，只让这一小块内容缺失，
+    不拖垮 asyncio.gather 里其它并行步骤和整条 analyze_bazi() 请求（前端
+    buildPillarPanel() 拿不到对应AI切片时会自然回退到既有静态字典内容，不报错
+    不空白，见 js/analysis.js 对应改动）。"""
+    try:
+        return await _step_pillars_detail(ctx, step1, step2)
+    except GeminiCallError as e:
+        print(f"[gemini_analysis WARN] 四柱详解生成失败（不影响其它步骤）: {_redact(str(e))}")
+        return {}
+
+
+_PILLAR_DETAIL_FIELDS = ('plain_meaning', 'hidden_stems', 'role_in_this_chart')
+
+
+def _sanitize_pillars_detail(data) -> dict:
+    """落盘前结构校验：四根柱子逐一检查，字段不全的柱子直接从结果里剔除——不是
+    整体判定失败重新生成（那样成本过高：为了一根柱子的文本瑕疵重新触发一次完整
+    的七步流水线不划算）。前端 buildPillarPanel() 对没有对应AI切片的柱子会自然
+    回退到既有静态内容，只影响这一根柱子缺AI详解，不影响其它三根柱子和整条
+    报告的其余内容。"""
+    out = {}
+    if not isinstance(data, dict):
+        return out
+    for col in ('year', 'month', 'day', 'hour'):
+        pl = data.get(col)
+        if not isinstance(pl, dict):
+            continue
+        if all(isinstance(pl.get(f), str) and pl.get(f).strip() for f in _PILLAR_DETAIL_FIELDS):
+            out[col] = {f: pl[f] for f in _PILLAR_DETAIL_FIELDS}
+    return out
+
+
+# ── 新增 Step「神煞详解」──────────────────────────────────────
+# 2026-08-04 新增，同上一节"四柱详解"同一批需求。字段名 step_shensha_detail，
+# 前端 js/analysis.js::buildShenshaPanel() 消费。一次调用覆盖 ctx['shensha'] 里
+# 全部现存神煞（不拆成多次调用——同理由：需要共享同一份命盘上下文+衔接语气，
+# 拆开会随神煞数量线性增加调用次数和总耗时）。
+#
+# **风险评估（这是本次改动里唯一偏离"跟Step2b同一种模式直接复用参数"的地方，
+# 必须单独说明）**：一张命盘的神煞数量不固定，实测均值11个、10%-90%分位数
+# 7-15个、极端范围1-21个（见需求方提供的实测统计）。每条内容按需求方要求控制在
+# 150-220字（=concept 40-60 + personal_impact 60-90 + advice 40-60），是本文件
+# 其它步骤narrative目标字数（350-650字/步）的量级，但本步骤是"N条150-220字"
+# 而不是"1条350-650字"，N到20+时总内容量会远超本文件任何现有单步预算。用极端值
+# 21条估算：内容字符 21×(220+name~6+nature~2)≈4788个中文字符，JSON结构开销
+# （21条×5个字段的key/引号/逗号，约21×70=1470个ASCII字符）。按「中文2
+# tokens/字+ASCII 0.3 tokens/字」估算原始需求约4788×2+1470×0.3≈10017 tokens，
+# 乘1.4倍安全余量约14024 tokens——这已经明显超过本文件其它步骤共用的
+# `_call_gemini()`内部MAX_TOKENS加倍重试封顶值8192（`budget=min(budget*2,8192)`）。
+# 结论：本步骤单独使用一个远高于其它步骤的max_tokens=16384（约为8192的2倍），
+# 不修改`_call_gemini()`共用的8192重试封顶（那是全部7步共用的基础设施，改它会
+# 影响其它6步的重试行为，超出本次改动范围）。**这带来一个需要如实记录的副作用**：
+# `_call_gemini()`里"MAX_TOKENS时同模型加倍预算重试"的判断是`budget<8192`，本步骤
+# 初始budget（16384）已经大于8192，一旦触发MAX_TOKENS会直接判定条件为False、
+# 不重试同模型，改为立即尝试模型链的下一个候选模型（同样以16384为初始budget）——
+# 相当于本步骤实际的重试策略从"同模型加倍预算重试1次+换模型"变成"2个候选模型各
+# 尝试1次（均为16384预算）"，不是bug，是"初始budget已经比常规封顶值更大"这个
+# 既有共用逻辑在大budget场景下的自然结果，这里明确记录以免被误认为是本应触发却
+# 没触发的重试。
+# **是否需要连带上调90s单次超时/550s前端超时**：评估后判断不需要——极端21条场景
+# 只是"均值11个"统计里的尾部场景（10%-90%分位数只有7-15个，21接近观测到的最大值），
+# 典型场景下所需实际生成量远小于上面按21条估算的worst case，且90s是
+# `requests.post`的硬性物理超时（到点直接abort，不存在"预算越大越容易物理超时"这
+# 种线性关系——真正决定是否超时的是模型的实际生成耗时/吞吐速度，不是预算上限本身，
+# 详见 js/bazi-analysis.js 对应位置"硬上限不变、期望值上升"同款推导）；即使某次
+# 真的在生成极端21条内容时耗时较长触碰到90s上限，`_call_gemini_once`会抛出网络
+# 层超时异常，`_call_gemini()`既有的模型链回退机制会照常尝试下一个候选模型，不需要
+# 新机制。因此本轮不改动90s/550s这两个超时值。同时本步骤已经用
+# `_step_shensha_detail_safe()`做了独立失败隔离（见下），即使真的触发超时/两个
+# 候选模型都失败，也只是这一小块内容缺失，不拖垮整条 analyze_bazi() 请求。
+def _step_shensha_detail_sync(ctx: dict, step1: dict, step2: dict) -> dict:
+    shensha_list = ctx['shensha']
+    if not shensha_list:
+        # 2026-08-11 qa-reviewer第三轮复查CONFIRMED修复：命盘没有神煞不是"理论上
+        # 概率为0"的假设场景——qa用 js/bazi-engine.js 真实的 _shensha() 逐条规则
+        # 穷举全部518,400组合法四柱组合后，找到了具体真实存在的零神煞命盘：
+        # 己巳己巳己巳己巳（对应真实公历生日1989年5月9日巳时，另有1929年同月日
+        # 同时段），逐条手算34颗神煞规则复核过。这个短路分支落盘的`{'shensha_items':
+        # []}`此前与"生成失败导致的空数组"（`_step_shensha_detail_safe()`捕获
+        # `GeminiCallError`后返回`{}`，经`_sanitize_shensha_detail({}, ctx)`同样
+        # 转成`{'shensha_items': []}`）在数据形态上完全无法区分，会让这张命盘永久
+        # 卡在"每次打开都判定缓存无效、重跑整条七步+四柱/神煞详解流水线"的死循环里，
+        # 且这张命盘本来就没有神煞，重新生成后神煞详解仍然是空数组，没有自愈路径。
+        # 这里显式标记`no_shensha=True`区分"真的零神煞"与"生成失败"——注意真正
+        # 权威的判定在`_sanitize_shensha_detail()`（以ctx['shensha']为唯一权威
+        # 依据重新计算，不信任这里的标记本身，因为模型输出/上游data不可信任），这里
+        # 加上只是让这条短路分支自身返回值的语义自洽、便于阅读。
+        return {'shensha_items': [], 'no_shensha': True}
+
+    rag_query = f"{'、'.join(shensha_list)} 神煞详解 吉凶"
+    rag_snippet = rag_service.query(rag_service.COLLECTION_NAME, rag_query, tags=['神煞'])
+
+    n = len(shensha_list)
+    prompt = f"""{_shared_chart_block(ctx)}
+
+【前两步结论（供你衔接判断，不要重复输出）】
+{_step2_context_block(step1, step2)}
+命盘中实际出现的神煞（共{n}个，真实数据）：{'、'.join(shensha_list)}
+{_rag_block(rag_snippet)}
+【本步骤任务】神煞详解——逐一详解上面列出的每一个神煞，必须且只能是这{n}个真实
+存在的神煞，绝对不要虚构命盘里没有出现的神煞，也不要遗漏任何一个。因为神煞数量
+可能较多，**每条内容篇幅必须严格控制**（不要按本命盘其它维度narrative那种长
+篇幅来写），面向完全不懂八字的普通人，少用生僻术语，术语出现要顺带解释。
+
+请输出严格JSON（不含markdown代码块，不含JSON之外的任何文字）：
+{{
+  "shensha_items": [
+    {{
+      "name": "神煞名称（必须是上面列出的{n}个之一，一字不差）",
+      "nature": "吉/凶/中性，三选一",
+      "concept": "这颗神煞是什么概念、传统上代表什么，大白话讲清楚不用生僻术语，40-60字",
+      "personal_impact": "结合这个具体命盘（十神/身强弱/五行），这颗神煞对这个人具体意味着什么，60-90字",
+      "advice": "怎么运用吉的一面/怎么化解凶的一面，具体可执行的建议，不要空泛，40-60字"
+    }}
+  ]
+}}
+shensha_items数组必须恰好{n}条，逐一对应上面列出的每个神煞，不多不少、不重复。"""
+    raw = _call_gemini(prompt, max_tokens=16384, system_instruction=PERSONA_SYSTEM)
+    return _parse_json(raw)
+
+
+async def _step_shensha_detail(ctx: dict, step1: dict, step2: dict) -> dict:
+    return await asyncio.to_thread(_step_shensha_detail_sync, ctx, step1, step2)
+
+
+async def _step_shensha_detail_safe(ctx: dict, step1: dict, step2: dict) -> dict:
+    """神煞详解失败保护，同 `_step_pillars_detail_safe()` 理由：这是补充细节而非
+    报告主体，独立捕获失败，不拖垮其它并行步骤和整条请求。这一步比其它并行步骤
+    更需要这层保护——见上方注释，max_tokens=16384已超出`_call_gemini()`内部
+    MAX_TOKENS加倍重试封顶值8192，同模型加倍重试机制对本步骤实质失效，理论失败率
+    高于其它步骤。"""
+    try:
+        return await _step_shensha_detail(ctx, step1, step2)
+    except GeminiCallError as e:
+        print(f"[gemini_analysis WARN] 神煞详解生成失败（不影响其它步骤）: {_redact(str(e))}")
+        return {}
+
+
+_SHENSHA_ITEM_FIELDS = ('name', 'nature', 'concept', 'personal_impact', 'advice')
+
+
+def _sanitize_shensha_detail(data, ctx: dict) -> dict:
+    """落盘前结构校验：过滤掉字段不全、名称不在命盘真实神煞列表里（防模型幻觉出
+    命盘中不存在的神煞）、或重复的条目——不是整体判定失败重新生成，理由同
+    `_sanitize_pillars_detail()`。前端 buildShenshaPanel() 对没有对应AI切片的
+    神煞会自然回退到既有静态字典内容，只影响这一条内容缺失，不影响其它条目和
+    整条报告。
+
+    2026-08-11 qa-reviewer第三轮复查CONFIRMED修复：这里新增`no_shensha`标记，
+    区分"ctx['shensha']本身就是空的真零神煞命盘"与"生成失败导致的空数组"——
+    权威判据是**这个函数收到的`ctx`**，不是`data`里可能携带的任何标记（`data`
+    可能来自Gemini模型输出，模型输出不可信任；也可能来自
+    `_step_shensha_detail_sync()`短路分支自带的`no_shensha`标记，但即便那个
+    标记因为未来代码改动丢失/写错，这里以ctx重新计算依然是正确的，不依赖上游
+    传值的正确性）。`ctx['shensha']`为空当且仅当这张命盘规则引擎算出来本来就
+    没有神煞——`_step_shensha_detail_sync()`在这种情况下根本不会发起Gemini
+    调用（见该函数开头的短路分支），所以"ctx['shensha']为空"与"这一步曾经尝试
+    生成但失败"两者互斥，用ctx判定不会有歧义。"""
+    valid_names = set(ctx.get('shensha') or [])
+    items = data.get('shensha_items') if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        items = []
+    cleaned = []
+    seen = set()
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        name = it.get('name')
+        if not isinstance(name, str) or name not in valid_names or name in seen:
+            continue
+        if not all(isinstance(it.get(f), str) and it.get(f).strip() for f in _SHENSHA_ITEM_FIELDS):
+            continue
+        cleaned.append({f: it[f] for f in _SHENSHA_ITEM_FIELDS})
+        seen.add(name)
+    result = {'shensha_items': cleaned}
+    if not valid_names:
+        result['no_shensha'] = True
+    return result
+
+
 # ── 主分析函数 ────────────────────────────────────────────
 async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0,
                         force_refresh: bool = False) -> dict:
@@ -1033,12 +1418,24 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
         # 把墙钟时间从"7次严格串行"压缩到约等于"3次串行"（Step1 + Step2 + max(Step2b..6)）。
         # 2026-08-03 新增 Step2b「十神详解」时特意加进这个既有并行批次，而不是单独
         # 起一个新的串行阶段——否则会多出一整段串行耗时，见对应修改记录。
-        step2b, step3, step4, step5, step6 = await asyncio.gather(
+        # 2026-08-04 新增「四柱详解」「神煞详解」两步（`_step_pillars_detail_safe`/
+        # `_step_shensha_detail_safe`）同样加入这个批次：只依赖Step1+2，跟Step2b~6
+        # 同一依赖层级，不新增串行阶段，墙钟时间模型不变（仍是并行批次里最慢的那个
+        # 任务决定耗时，不是任务数量）；这两步用 `_safe` 包装（内部捕获
+        # GeminiCallError 返回空dict），是本批次里*仅有*的两个带独立失败隔离的任务——
+        # 详见 `_step_shensha_detail_sync()` 上方大段注释：这两步是"点击命柱/神煞
+        # 标签才会看到"的补充细节，不是六步核心叙事主体，不应该因为一次调用失败
+        # （尤其神煞详解 max_tokens=16384 已超出常规MAX_TOKENS加倍重试封顶，理论
+        # 失败率更高）拖垮整条请求；其余5个既有任务保持原有"任一失败则整体失败"
+        # 行为不变。
+        step2b, step3, step4, step5, step6, pillars_detail_raw, shensha_detail_raw = await asyncio.gather(
             _step2b_shishen(ctx, step1, step2),
             _step3_career_wealth(ctx, step1, step2),
             _step4_relationship(ctx, step1, step2),
             _step5_health(ctx, step1, step2),
             _step6_dayun_liunian(ctx, step1, step2),
+            _step_pillars_detail_safe(ctx, step1, step2),
+            _step_shensha_detail_safe(ctx, step1, step2),
         )
 
         analysis = {
@@ -1049,6 +1446,15 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
             'step4_relationship': step4,
             'step5_health': step5,
             'step6_dayun_liunian': step6,
+            # 2026-08-04新增：结构校验+跳过式降级（不是数值兜底，内容是文本不适合
+            # 编造默认值），见 `_sanitize_pillars_detail()`/`_sanitize_shensha_detail()`
+            # docstring。落盘的可能是"部分柱子/部分神煞缺失"的不完整结果——这是
+            # 有意允许的（前端逐柱/逐条优雅回退静态内容），且 `_cache_read()` 的
+            # 新校验要求这两个字段结构完整才判定缓存命中，不完整的这份缓存会在
+            # 下一次请求时被当作未命中重新生成，有机会覆盖成完整版本，不会永久
+            # 卡在残缺状态。
+            'step_pillars_detail': _sanitize_pillars_detail(pillars_detail_raw),
+            'step_shensha_detail': _sanitize_shensha_detail(shensha_detail_raw, ctx),
             'keywords': keywords,
         }
         # 2026-08-04 qa-reviewer复查修复（CONFIRMED 2）：落盘前校验六维打分字段类型，

@@ -385,8 +385,15 @@ const Tutorial = (() => {
   }
 
   function _shenshaContent(name) {
+    // 2026-08-04 qa-reviewer复查修复（PLAUSIBLE P3）：与 js/analysis.js 的
+    // SHENSHA_GOOD/SHENSHA_WARN 核对后发现"七杀/官符/丧门"三个神煞只在
+    // analysis.js的SHENSHA_WARN里、这里的isWarn缺失（按中性处理），两处判定
+    // 不一致。三者传统命理均属明确凶煞（七杀主刑克攻身、官符主官司诉讼、丧门
+    // 主丧服哀戚），补入isWarn与analysis.js对齐；"驿马"在analysis.js一侧已
+    // 移出SHENSHA_GOOD归为中性（驿马传统上主变动，吉凶随命局搭配而定，不是
+    // 单纯吉神），这里本来就不在isGood/isWarn里，无需改动。
     var isGood = ['将星','禄神','红鸾','天乙','文昌','天德','月德','天厨'].indexOf(name) >= 0;
-    var isWarn = ['亡神','劫煞','白虎','羊刃','孤辰'].indexOf(name) >= 0;
+    var isWarn = ['亡神','劫煞','白虎','羊刃','孤辰','七杀','官符','丧门'].indexOf(name) >= 0;
     var tag    = isGood ? '✦ 吉神' : isWarn ? '⚠ 凶煞' : '◈ 中性';
     var desc   = SS_DESC[name] || name + '神煞，影响命运走向';
     var tagStyle = isGood

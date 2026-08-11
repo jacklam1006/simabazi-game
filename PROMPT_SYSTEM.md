@@ -249,12 +249,14 @@ ChromaDB 知识库做一次 RAG（检索增强生成）向量检索，把命中�
 Step1 命局「出厂设置」扫描（日主/月令/五行强弱/性格底色）──┐
     ↓ 输出作为Step2输入                                    │ 严格串行
 Step2 定格局与找用神（依赖Step1）────────────────────────────┘
-    ↓ Step1+2输出作为Step2b+Step3-6的共享上下文
+    ↓ Step1+2输出作为Step2b+Step3-6+四柱详解+神煞详解的共享上下文
 Step2b 十神详解（命盘实际出现的十神组合逐一详解）─┐
 Step3 事业与财富深度剖析（财官印组合）─┤
 Step4 婚恋与感情世界（日支夫妻宫+异性星）─┤ asyncio.gather 并行发起
 Step5 健康与潜在风险提示（五行偏弱+地支相冲）─┤（互不依赖，只依赖Step1+2）
-Step6 大运与流年运势推演（当前大运+2026丙午流年）─┘
+Step6 大运与流年运势推演（当前大运+2026丙午流年）─┤
+四柱详解（年/月/日/时逐柱大白话译文+藏干+针对本命盘的意义）─┤
+神煞详解（命盘实际出现的每个神煞逐一详解，条数不固定）─┘
 ```
 
 **2026-08-03 新增 Step2b「十神详解」**：跟Step2「定格局与找用神」角度不同、互补而
@@ -263,6 +265,57 @@ Step6 大运与流年运势推演（当前大运+2026丙午流年）─┘
 Step1+2的结果，因此跟Step3-6同一依赖层级、加入同一个 `asyncio.gather` 并行批次，
 不单独占用一个串行阶段（否则会多出一整段串行耗时）。字段名 `step2b_shishen`——
 故意不占用 `step3`~`step6` 这几个已被前端/缓存依赖的字段名，只新增一个新字段。
+
+**2026-08-04 新增「四柱详解」`step_pillars_detail` + 「神煞详解」`step_shensha_detail`**：
+响应"点击岛屿命柱/神煞标签弹出的详情内容太单薄（几十字静态短句），要改成AI动态生成、
+分类清晰、不懂八字的人也能读懂"的需求，供前端 `js/analysis.js::buildPillarPanel()`/
+`buildShenshaPanel()` 消费（原有静态字典兜底内容完整保留，AI结果未就绪/未传入时
+自动回退，不报错不空白）。同样只依赖Step1+2，加入既有 `asyncio.gather` 并行批次。
+- **四柱详解**一次调用覆盖全部四柱（不拆成4次调用——四柱需要互相衔接语气+共享同一
+  份命盘上下文，拆开会四倍化RAG+网络开销）。每柱三个大白话分类小节：`plain_meaning`
+  （干支+纳音翻译成大白话）、`hidden_stems`（地支藏干是什么、"表面看到的/底层藏着
+  的倾向"，用 `_build_context()` 里透传的前端 `hiddenStems`/`nayin` 真实数据，不
+  编造）、`role_in_this_chart`（结合这张命盘真实十神/身强弱/五行喜忌的针对性判断，
+  不是"年柱代表祖辈根基"这种通用套话）。日柱 `role_in_this_chart` 额外允许侧重
+  "配偶宫"角色。
+- **神煞详解**一次调用覆盖 `ctx['shensha']` 里全部现存神煞（同理不拆分调用），条数
+  按命盘实际神煞数走（实测均值11个、10%-90%分位数7-15个、极端范围1-21个）。每条
+  `name`/`nature`（吉/凶/中性）/`concept`（40-60字）/`personal_impact`（60-90字）/
+  `advice`（40-60字），单条控制在150-220字量级（不是本文件其它步骤narrative
+  350-650字那个量级——多条堆叠会撑爆输出预算，也不适合侧边抽屉面板逐条阅读）。
+  命盘无神煞时直接返回空数组，不打无意义的Gemini请求（**这不是纯理论边界**——
+  2026-08-11穷举全部518,400组合法四柱后找到了真实存在的零神煞命盘：己巳己巳
+  己巳己巳，对应真实公历生日1989-05-09巳时，详见下方JSON结构说明里`no_shensha`
+  标记字段的由来）。
+- **失败隔离**：这两步是本次改动里*唯二*带独立失败隔离的并行任务
+  （`_step_pillars_detail_safe()`/`_step_shensha_detail_safe()` 内部捕获
+  `GeminiCallError` 返回空dict）——因为是"点击标签才会看到"的补充细节而非六/七步
+  核心叙事主体，不应该因为一次调用失败拖垮整条 `analyze_bazi()` 请求；其余5个既有
+  并行步骤保持原有"任一失败则整体失败"行为不变。
+- **`max_tokens`**：四柱详解复用Step2已验证的 `7168`；神煞详解因数量不定、极端场景
+  （20+条）内容量远超本文件其它任何单步预算，单独设为 `16384`（约为其它步骤共用的
+  MAX_TOKENS加倍重试封顶值8192的2倍）——这会让 `_call_gemini()` 内部"同模型加倍
+  预算重试"判断（`budget<8192`）对本步骤失效（初始budget已大于8192），实际重试
+  策略从"同模型加倍重试1次+换模型"变为"2个候选模型各尝试1次"，是已知的既有共用
+  逻辑在大budget场景下的自然结果，不是bug，具体推导见 `gemini_analysis.py::
+  _step_shensha_detail_sync()` 上方大段注释。评估后判断**不需要**连带上调90s单次
+  HTTP超时/550s前端超时——90s是`requests.post`物理超时，预算大小不改变这个硬上限，
+  且并行批次里"最慢任务决定阶段耗时"的模型下，神煞详解的最坏路径（2模型×1次×90s=
+  180s）反而比其它步骤的360s更短；典型场景（7-15条）所需生成量远小于21条的
+  worst-case估算，具体推导过程见 `js/bazi-analysis.js::AI_ANALYSIS_TIMEOUT_MS`
+  定义处对应注释。
+- **落盘前结构校验**：`_sanitize_pillars_detail()`/`_sanitize_shensha_detail()`——
+  内容是文本不是数字，不适合像六维打分字段那样兜底默认值，改为"跳过式降级"：
+  字段不全的柱子/名称对不上命盘真实神煞列表（防模型幻觉）的条目直接从结果中剔除，
+  只影响这一小块内容缺失，不影响其它柱子/条目和整条报告。
+- **前端渲染**：`buildPillarPanel(col, baziData, pillarAiDetail)`/
+  `buildShenshaPanel(name, baziData, shenshaAiDetail)` 新增第三个可选参数（AI内容
+  切片，`undefined`时完全走原有静态路径），函数本身依然是同步的、不在内部发起网络
+  请求——由调用方负责拿到AI结果后传入（下一轮 `user-system` 领域负责接线main-new.js
+  的调用点）。
+- **顺手修复**：`js/analysis.js::ssDesc()` 补上"孤辰"这一条静态兜底描述（此前
+  `js/tutorial.js::SS_DESC` 有这一条、`analysis.js` 没有，命中孤辰神煞时走的是
+  通用兜底文案"孤辰神煞，影响命运走向"，两处内容不一致）。
 
 每一步内部：① 用该步骤专属的数据（如日主、十神组合、财官印星、日支等）拼一句
 检索query → ② 调 `rag_service.query("bazi", query)` 检索知识库，拿到原文片段
@@ -273,7 +326,9 @@ Step1+2的结果，因此跟Step3-6同一依赖层级、加入同一个 `asyncio
 **输出JSON结构**（替换原来的 `day_master_reading`/`four_pillars`/`six_dimensions`/
 `year_advice`；2026-08-03 内容深度扩充后追加 `step2b_shishen` + Step1新增
 `strengths`/`cautions`；2026-08-04 再给 Step2~Step6 各自追加一个0-100数值化打分
-字段，供前端总览Tab渲染"六维雷达图"，其余字段名不变）：
+字段，供前端总览Tab渲染"六维雷达图"；2026-08-04 又追加 `step_pillars_detail`/
+`step_shensha_detail` 两个新步骤，供前端命柱/神煞点击面板渲染AI详解，其余字段名
+不变）：
 ```json
 {
   "step1_foundation":       { "title": "...", "narrative": "...", "wuxing_note": "...", "strengths": [...], "cautions": [...] },
@@ -283,9 +338,33 @@ Step1+2的结果，因此跟Step3-6同一依赖层级、加入同一个 `asyncio
   "step4_relationship":     { "title": "...", "narrative": "...", "partner_traits": "...", "key_periods": [...], "relationship_score": 0-100 },
   "step5_health":           { "title": "...", "narrative": "...", "watch_points": [...], "health_score": 0-100 },
   "step6_dayun_liunian":    { "title": "...", "narrative": "...", "current_year_action": "...", "fortune_score": 0-100 },
+  "step_pillars_detail":    { "year": {"plain_meaning":"...","hidden_stems":"...","role_in_this_chart":"..."}, "month": {...}, "day": {...}, "hour": {...} },
+  "step_shensha_detail":    { "shensha_items": [{"name":"...","nature":"吉/凶/中性","concept":"...","personal_impact":"...","advice":"..."}], "no_shensha": true /* 仅命盘真实无神煞时出现，见下方说明 */ },
   "keywords": ["...", "...", "...", "...", "..."]
 }
 ```
+⚠️ `step_pillars_detail`/`step_shensha_detail` 落盘的内容可能是**部分完整**的（见上方
+"落盘前结构校验"说明，`_sanitize_*` 会跳过式丢弃字段不全/幻觉出的条目而不是让整条
+请求失败）——`step_pillars_detail` 可能不含全部4个柱子键，`step_shensha_detail.
+shensha_items` 的条数可能少于命盘实际神煞数。`_cache_read()` 的校验判定为**非空即
+有效**（`step_pillars_detail` 只要非空dict、`step_shensha_detail.shensha_items`
+只要非空数组即判定命中），不要求完全齐全（跟六个打分字段那种"必须全部合法"的校验
+粒度刻意不同）——**2026-08-04 qa-reviewer复查返工**：初版校验粒度定得比这更严格
+（pillars要求4个柱子键全部存在），导致缺一根柱子就永远无法命中缓存、每次都重新
+触发整条七步流水线（CONFIRMED 2）；同时`shensha_items`初版只要求"是数组"，导致
+步骤彻底失败时的空数组`[]`被永久当作有效缓存（CONFIRMED 1）。返工后统一为
+"非空即有效"。**2026-08-11 qa-reviewer第四轮复查再次返工**：2026-08-04返工时的判断"未引入额外
+失败标记字段"已经不成立——返工后穷举验证发现零神煞命盘真实存在（己巳己巳己巳
+己巳，1989-05-09巳时），"空数组一律判定无效"这个规则会让这张命盘每次打开都
+永久重跑整条流水线。修复为引入`no_shensha`（bool）显式标记字段：`_sanitize_
+shensha_detail()`只以它收到的`ctx['shensha']`（命盘真实神煞列表）是否为空作为
+唯一判据设置这个标记（不信任模型输出/上游data里的任何自称"无神煞"的字段，
+防止模型幻觉伪造），`_shensha_detail_valid()`判定条件改为"`shensha_items`非空
+**或**`no_shensha`为`True`"两者之一即有效；步骤彻底失败时的空数组`[]`不带这个
+标记，仍然判定无效、允许下次重试（不影响此前CONFIRMED 1的修复效果）。`js/
+bazi-analysis.js::_shenshaDetailValid()`前端镜像同一逻辑。详见
+`gemini_analysis.py::_sanitize_shensha_detail()`/`_shensha_detail_valid()`
+docstring。
 六个打分字段（`pattern_score`/`career_score`/`wealth_score`/`relationship_score`/
 `health_score`/`fortune_score`）不是新增的判断维度，是给该步骤已有的narrative定性
 判断追加一致的量化打分——六者共用同一段措辞模板 `_score_field_instruction()`
@@ -367,7 +446,9 @@ Step1+2的结果，因此跟Step3-6同一依赖层级、加入同一个 `asyncio
   模型的机制，全部步骤共用同一套 `_call_gemini()`。**2026-08-04当前值**：Step1=5632（2026-08-03为4096，
   narrative/wuxing_note再加长后按增幅比例上调）、Step2=7168（2026-08-03为5120，narrative加长+新增
   `pattern_score`字段后按增幅比例上调）、Step2b=4096（未改动）、Step3/4/5/6=4096（未改动——本轮只新增
-  各步一两个数值化打分字段，narrative字数不变，内容量增幅可忽略不计）
+  各步一两个数值化打分字段，narrative字数不变，内容量增幅可忽略不计）、**四柱详解=7168**（与Step2同量级，
+  复用已验证值）、**神煞详解=16384**（唯一超出8192重试封顶值的步骤，理由与副作用见上方"新增「四柱详解」
+  「神煞详解」"小节与 `gemini_analysis.py::_step_shensha_detail_sync()` 代码注释）
 - **防御性解析**：`_extract_text()` 显式检查响应结构（candidates是否为空、是否被安全过滤器/版权检测拦截、
   finishReason），拿不到有效文本时返回明确原因，不再让裸取字段的异常一路冒泡成语义不明的 JSONDecodeError；
   `analyze_bazi()` 返回的 `error` 字段现在会直接说明"哪个模型、什么原因"失败，不用再靠猜
@@ -399,6 +480,9 @@ Step1+2的结果，因此跟Step3-6同一依赖层级、加入同一个 `asyncio
 | 2026-08-04（qa-reviewer复查上一行三个SVG图表，3个CONFIRMED+5个PLAUSIBLE逐条修复） | qa-reviewer复查发现：①身强身弱仪表盘的"数字strength画指针"分支是死代码（`bazi-engine.js::_strength()`实际只返回字符串三分类，全项目从未产出数字strength，生产环境仪表盘从未画出过指针）；②`_cache_read()`的六维打分canary只查`fortune_score`一个字段"是否存在"，前提"六字段要么全部生成要么整体不落盘"不成立（`_parse_json()`只做语法解析不校验字段齐全），模型漏一个字段会被当作有效缓存永久返回，前端六维雷达图永久卡"评分数据暂不完整"；且后端用`in`、前端用`typeof`两种口径不一致，字符串分数会导致两端判断相反；③五行强弱雷达图按"占总分百分比"归一化，五项合计恒约100（均值20），多边形恒定挤在外圈20%-45%区间，强弱悬殊的数据画出来也是小扁形。另有5个PLAUSIBLE（区分度要求在并行架构下机制上不生效、超时注释"放大到130s"的错误推导、Step2 max_tokens重试余量表述不准、_isValidScore缺0-100范围校验，1个明确不用改） | **C1**：`bazi-engine.js::_strength()`改为返回`{category, score}`，新增`strengthScore`字段（0-100，`score100=50+(score/total)*50`，`total=assist+print+consume`是`_calcWuxing()`权重方案下恒等于10.75的结构性常量，非经验估值），不改变`strength`字符串字段本身语义/阈值。`js/analysis.js::_strengthGaugeHtml(strength, strengthScore)`改双参数，数值存在时画真实指针，区间分界线（≈47.67/52.33）与引擎内部±0.5阈值同一映射公式换算保持自洽；不存在时保留静态兜底。修复数值文字被viewBox裁切（barY 24→36，H 62→74）。**C2**：新增`_SCORE_FIELD_PATHS`常量驱动`analyze_bazi()`落盘前`_validate_score_fields()`类型校验+兜底50分（选择"给默认值"而非"整体重试"：六维打分非报告主体内容，重试5个并行调用成本不划算）与`_cache_read()`的`_score_fields_valid()`（`isinstance`类型校验替代`in`存在性判断，与前端`typeof`口径对齐）双重保险；前端`_lsGet()`/`seedCache()`不需要改动，后端修复后"六字段要么全合法要么都不合法"这个不变式变成真实保证。**C3**：`_wuxingRadarHtml()`改为按组内最大值归一化画半径，`_radarSvg()`新增可选`labelValue`字段让标签仍显示真实百分比、与画图半径解耦。**P1**：`_score_field_instruction()`删除机制上不可能生效的"跨维度区分度"要求。**P2**：`AI_ANALYSIS_TIMEOUT_MS`推导注释改为"硬上限不变（90s是`requests.post`物理超时不可能被突破）、期望耗时上升"的正确逻辑。**P3**：如实说明Step2 max_tokens从7168→8192的重试余量已从+60%变薄到+14%。**P5**：`_isValidScore()`新增0-100范围校验 | 用真实`lunar-javascript`+`BaziEngine.calculate()`跑6912个随机生日验证`strengthScore`恒在0-100内；`score=0.5`/`-0.5`精确映射到52/48分（落在三分类阈值边界）；`strength`字符串分类与按`strengthScore`反推类别一致率94.48%（不一致部分100%可归因于`delingOk`这个不体现在`score`数值里的已知架构性差异）。C2用真实文件缓存构造"六字段齐全"/"缺一个"/"字符串类型"/"bool类型"四个场景验证`_cache_read()`命中判定符合预期。C3用qa截图给出的悬殊数据（木38.5/火22.1/土15.3/金9.2/水6.4）人工核算最大值归一化后（100/57/40/24/17）能明显撑开。`node --check js/bazi-engine.js js/analysis.js js/bazi-analysis.js`、`python3 -m py_compile gemini_analysis.py`全部通过。**未做真实浏览器截图复核**（无computer-use/chrome MCP权限），三处修复的最终像素级视觉效果需部署后人工/下一轮qa-reviewer确认 |
 | 2026-08-04（qa-reviewer第三轮复查发现2个新CONFIRMED——真实算法bug而非display层bug，用户明确要求算法本身一并修正） | qa-reviewer实测发现`bazi-engine.js::_strength()`内部"我克"表`SHENGW`与"克我"表`KE`逐字相同（复制粘贴遗留bug），导致身强/中和/身弱三分类判断本身被污染（不只是上一轮新增的仪表盘数值层）；`gemini_analysis.py::_is_valid_score()`只校验类型不校验范围/有限值，与前端`js/analysis.js::_isValidScore()`口径不一致，模型返回越界分数/NaN/Infinity会被后端判定缓存命中、永久落盘，前端范围校验拒绝渲染，六维雷达图永久卡死——与上一轮CONFIRMED 2同构故障 | **算法修复**：新增4个共享静态常量`BaziEngine.WX_SHENG_BY`/`WX_SHENG`/`WX_KE`/`WX_KE_BY`（生我/我生/我克/克我）作为`_strength()`与`_favorable()`唯一权威定义，两处不再各自定义一份容易不同步的局部变量；`SHENGW`改为正确的`WX_KE`值`{木:'土',火:'金',土:'水',金:'木',水:'火'}`（原值`{木:'金',火:'水',土:'木',金:'火',水:'土'}`与"克我"表完全相同，是bug本体）。`_strengthGaugeHtml`按用户要求保留现有的每命盘实时计算`total`逻辑，不改回写死10.75常量（更稳健）。**score范围校验**：`_is_valid_score()`补上`math.isfinite(v) and 0 <= v <= 100`（新增`import math`），与前端口径完全对齐。**前端加固**：`js/bazi-analysis.js`新增导出`isValidScore()`+内部`_allScoreFieldsValid()`（六字段类型+范围全合法才算完整），`_lsGet()`/`seedCache()`从单字段`typeof`检查改用它；`js/analysis.js::_isValidScore()`改为委托调用`window.BaziAnalysis.isValidScore()`（`index.html`里`bazi-analysis.js`先于`analysis.js`加载），两文件不再各自维护一份独立实现 | 用真实`lunar-javascript`+`BaziEngine.calculate()`（Node vm加载真实源码，非mock）跑1950-2025跨度32832组真实四柱：`assist+print+consume`总和修复后在全部样本中恒为唯一值`10.75`；三分类结果修复前后**20.27%（6656/32832）发生变化**；`_favorable()`三字段（favorable/unfavorable/favorable2）修复前后不一致数同为6656（100%与分类变化数一致，因`_favorable()`是`strength`分类的纯函数）——`_favorable()`本身局部表定义未受`assist/print/consume`中间变量污染，但通过`strength`入参被间接污染。score校验用105/-20/NaN/Infinity/`"87"`/`True`/50/0/100共9个输入验证符合预期；前端`isValidScore()`用Node vm加载真实源码验证与Python版结果一致，构造含1个越界分数的完整analysis对象调用`seedCache()`确认未被写入localStorage。`node --check js/bazi-engine.js js/analysis.js js/bazi-analysis.js`、`python3 -m py_compile gemini_analysis.py`全部通过。**数据一致性**：这次只改计算逻辑，Supabase历史存档的`strength`判定结果不会被自动重算，用户需主动触发"完全重新生成"或修改出生信息才会用新逻辑，已记录进已知问题日志避免误判。**未做真实浏览器/`GEMINI_API_KEY`端到端验证** |
 | 2026-08-04（qa-reviewer第四轮终审：订正上一行"委托调用`window.BaziAnalysis`"失实描述） | 上一行称`js/analysis.js::_isValidScore()`委托`window.BaziAnalysis.isValidScore()`，但classic script顶层`const BaziAnalysis`不会挂到`window`上（与本文档已记录的`CONFIG`同款教训），委托分支实际从未触发，是死代码 | 改用裸标识符`typeof BaziAnalysis !== 'undefined'`（本文件其它委托逻辑本就是这个写法），不新增`window.BaziAnalysis = BaziAnalysis` | `node --check js/analysis.js`通过。详见`claude-docs/已知问题与修复记录.md`同日期对应行 |
+| 2026-08-04（新功能：点击岛屿命柱/神煞标签的详情内容改为AI动态生成——新增Step「四柱详解」`step_pillars_detail`+「神煞详解」`step_shensha_detail`，缓存版本v4→v5） | 用户反馈点击命柱/神煞标签弹出的详情面板内容太单薄（`getDmDesc`/`ssDesc`/`nayinDesc`静态字典各条仅十几到几十字），要求改为AI动态生成、分类清晰、不懂八字的人也能读懂。完整设计见本章节上方"新增「四柱详解」「神煞详解」"小节 | **后端**：`gemini_analysis.py`新增两个并行步骤（`_step_pillars_detail_safe`/`_step_shensha_detail_safe`，只依赖ctx+step1+step2，加入既有`asyncio.gather`批次，不新增串行阶段）。`_build_context()`新增透传前端已算好的`nayin`/`hiddenStems`（含每个藏干自身的十神）两个确定性数据字段，避免四柱详解步骤编造藏干信息。四柱详解一次调用覆盖4柱（`plain_meaning`/`hidden_stems`/`role_in_this_chart`三个大白话分类小节，日柱额外侧重配偶宫），`max_tokens=7168`；神煞详解一次调用覆盖`ctx['shensha']`全部现存神煞（`name`/`nature`/`concept`/`personal_impact`/`advice`，单条150-220字量级），`max_tokens=16384`（唯一超出8192重试封顶值的步骤，副作用与不连带上调90s/550s超时的推导见代码注释）。这两步是本次改动里*唯二*带独立失败隔离的并行任务（内部捕获`GeminiCallError`返回空dict，不拖垮整条请求）。落盘前用`_sanitize_pillars_detail()`/`_sanitize_shensha_detail()`做"跳过式降级"结构校验（字段不全的柱子/名称对不上命盘真实神煞列表的条目直接剔除，不是整体重新生成）。缓存v4→v5：`_cache_read()`新增第四道校验，两个新字段都单独查"存在性+容器类型正确"（不要求4个柱子/N条神煞内容全部齐全——理由见`_pillars_detail_valid()`/`_shensha_detail_valid()`docstring，与六维打分字段"必须全部合法"的校验粒度刻意不同）。**前端**：`js/bazi-analysis.js::LS_PREFIX`从`bazi_ai_v4_`升级为`bazi_ai_v5_`，`_lsGet()`/`seedCache()`新增`_pillarsDetailValid()`/`_shenshaDetailValid()`两道校验（与后端同一套粒度取舍，均单独校验、不共用canary）。`js/analysis.js::buildPillarPanel(col, baziData, pillarAiDetail)`/`buildShenshaPanel(name, baziData, shenshaAiDetail)`新增第三个可选参数，传入AI切片时渲染新分类小节（复用既有`section()`/`insight()`/`badge()`辅助函数，不引入新样式），不传/undefined时【完全保留】原有静态字典兜底内容，函数本身仍是同步的、不发起网络请求。**顺手修复**：`ssDesc()`补上`js/tutorial.js::SS_DESC`已有但`analysis.js`缺失的"孤辰"描述，两处内容不再不一致（`js/tutorial.js`本身未改动，留给下一轮`user-system`领域接线UI时同步确认）。**字段名说明**：需求文档本身对神煞详解数组字段名有两种表述（JSON schema明确写`shensha_items`，另两处验证/调用示例误写成`shishen_items`）——最终统一采用`shensha_items`（语义对应"神煞"，避免与Step2b既有的`step2b_shishen.shishen_items`——十神条目数组——同名混淆），前后端/文档已全部对齐这一名称，未出现两端不一致 | 后端：mock `_call_gemini`+`rag_service.query`跑通`analyze_bazi()`，验证0/3/18/21个神煞四种场景下`step_pillars_detail`四键齐全、`step_shensha_detail.shensha_items`条数与`ctx['shensha']`长度精确一致，0个神煞时确认未发起对应Gemini调用（短路优化生效）；`_cache_read()`验证老结构（无两个新字段）判定未命中、新结构判定命中；构造四柱详解步骤强制抛`GeminiCallError`的场景，验证整条`analyze_bazi()`仍成功返回（`step_pillars_detail`为空dict，其余六步/神煞详解正常生成），确认失败隔离生效。前端：Node vm加载真实`analysis.js`/`bazi-analysis.js`源码（非mock），验证`buildPillarPanel`/`buildShenshaPanel`传AI切片/不传/传null三种输入均不报错且内容符合预期（含日柱AI内容含"配偶宫"字样、孤辰不再走通用兜底文案）；验证`seedCache()`对老v4结构、`step_pillars_detail`缺一个柱子键、`shensha_items`非数组三种场景均正确拒绝写入，对完整v5结构正确写入`bazi_ai_v5_`前缀key，对`shensha_items`为空数组（命盘无神煞的合法状态）正确接受写入**（订正，2026-08-11：本判定已于同日晚些时候的返工反转为"空数组一律判定无效"，又在2026-08-11 qa-reviewer第三轮复查后改为"空数组+`no_shensha`显式标记才有效"，详见下方2026-08-04返工行与2026-08-11对应行）**。`node --check js/analysis.js js/bazi-analysis.js`、`python3 -m py_compile gemini_analysis.py`全部通过。**未做真实`GEMINI_API_KEY`端到端验证**——扩容后的四柱/神煞详解prompt在真实Gemini调用下的JSON格式稳定性、`max_tokens=16384`是否真的被API接受（未验证`gemini-flash-latest`/`gemini-3.6-flash`实际maxOutputTokens上限）、神煞详解在极端神煞数量场景下的真实生成耗时，均需部署后实测确认；前端UI视觉效果（新分类小节在移动端侧边抽屉面板里的排布）需下一轮`user-system`领域接线main-new.js调用点后一并验证 |
+| 2026-08-04（qa-reviewer复查上一行「四柱详解/神煞详解」，mock实测发现2个CONFIRMED+2个PLAUSIBLE，逐条修复） | qa-reviewer实测发现上一行的缓存校验粒度设计有误，两个方向各出一个CONFIRMED：①神煞详解彻底失败（safe wrapper返回`{}`）经`_sanitize_shensha_detail()`转成`{'shensha_items': []}`后，初版`_shensha_detail_valid()`只查"是list"就判定有效，实测`CACHE HIT after shensha failure?: True`——彻底失败的空结果被永久当作有效缓存，无自愈路径；②四柱详解反过来，`_sanitize_pillars_detail()`允许跳过式丢弃不完整柱子，但初版`_pillars_detail_valid()`要求4个柱子键全部存在，实测`CACHE HIT with 3/4 pillars?: False`——缺一根柱子就永远无法命中，每次都重新触发整条七步+两个新步骤的流水线（12次Gemini调用），复刻了`_cache_read()`自己警告过要避免的"不能要求完全齐全"反面模式。另有2个PLAUSIBLE：P2——`js/analysis.js`的AI内容分支守卫只判断"容器是否为真值对象"不判断"是否有实际内容"，传入`{}`会渲染出比静态兜底更空的空壳；P3——"孤辰"上一行只对齐了描述文案，吉凶分类仍分叉（`SHENSHA_WARN`当时未包含"孤辰"），"驿马"/"七杀"/"官符"/"丧门"同样存在`analysis.js`与`tutorial.js`两处分类不一致 | **统一设计**：区分"整个步骤彻底失败"（safe wrapper捕获异常返回`{}`）与"步骤成功但内容不完整"（sanitizer跳过式筛掉部分/全部不合规条目），校验只关心前者。`_pillars_detail_valid()`改为只要求`step_pillars_detail`是**非空**dict（不要求4个柱子键全部存在）；`_shensha_detail_valid()`改为要求`shensha_items`是**非空**数组（空数组一律判定无效）——刻意保守：空数组既可能是"命盘真的零神煞"也可能是"步骤失败"，两者数据形态上无法区分，权衡后**未引入**跨safe wrapper/sanitize/cache_read三层的失败标记元数据（理由：实测极端范围神煞数量最少也有1个，"真零神煞"场景经验概率为0，为消除一个概率接近0的false negative新增跨层结构不划算）——**订正（2026-08-11同日晚些时候qa-reviewer第三轮复查证伪，见下一行）**：这个"经验概率为0"的判断是错的，见下一行修复。`js/bazi-analysis.js::_pillarsDetailValid()`/`_shenshaDetailValid()`同步改成一致判定逻辑。**P2**：`buildPillarPanel()`/`buildShenshaPanel()`守卫加固为检查至少一个内容字段非空（前者`plain_meaning`/`hidden_stems`/`role_in_this_chart`三选一，后者`concept`/`personal_impact`/`advice`三选一）才走AI渲染分支，否则走静态兜底。**P3**：`js/analysis.js::SHENSHA_WARN`补入"孤辰"、`SHENSHA_GOOD`移出"驿马"（传统孤辰偏中性偏凶主孤独判定凶更贴近传统定性，驿马传统主变动吉凶随命局搭配非单纯吉神判定中性）；`js/tutorial.js::isWarn`补入"七杀/官符/丧门"（`analysis.js`一侧原判定正确，是`tutorial.js`缺了这三条）——两处最终分类完全对齐。缓存版本号未变（仍是v5，本轮只改判定逻辑不改数据结构） | Python：真实文件缓存端到端验证——3/4柱子完整v5结构写入后`_cache_read()`返回非`None`（此前是`None`）；`shensha_items`为空数组的v5结构写入后`_cache_read()`返回`None`（此前是命中）；15/21条合规神煞场景`_shensha_detail_valid()`判定有效。`python3 -m py_compile island_service/gemini_analysis.py`通过。前端：Node vm加载真实`bazi-analysis.js`源码，`seedCache()`+`getAnalysis()`验证3/4柱子场景本地缓存命中（不发起网络请求）、`shensha_items`为空数组场景`seedCache()`正确拒绝写入。Node vm加载真实`analysis.js`源码验证：`buildPillarPanel(col, baziData, {})`/`buildShenshaPanel(name, baziData, {})`零内容对象正确落到静态兜底路径，完整AI内容对象仍正常走AI渲染分支，`undefined`/缺失柱子场景不报错仍走静态兜底；"孤辰"传入完整AI切片后徽章渲染"⚠ 凶煞"，"驿马"不传AI切片时徽章渲染"◈ 中性"，与`js/tutorial.js`新分类一致。`node --check js/analysis.js js/bazi-analysis.js js/tutorial.js`全部通过。**未做真实浏览器/`GEMINI_API_KEY`端到端验证**——止于Node vm+构造数据验证，详见 `claude-docs/已知问题与修复记录.md` 同日期对应条目 |
+| 2026-08-11（qa-reviewer第三轮复查「四柱详解/神煞详解」缓存策略，发现1个CONFIRMED——"零神煞"命盘会永久卡在每次打开都重跑整条AI流水线，逐条修复） | qa-reviewer没有停留在理论推测，而是用`js/bazi-engine.js`真实的`_shensha()`函数逐条模拟，穷举了全部518,400组合法四柱组合，找到了具体存在的1组零神煞命盘：四柱己巳己巳己巳己巳（对应真实公历生日1989年5月9日巳时，另有1929年同月日同时段），逐条手算34颗神煞规则复核过，证伪了上一行"真零神煞场景经验概率为0"的判断。触发链路：`ctx['shensha']==[]`→神煞详解短路返回`{'shensha_items': []}`（不发起Gemini调用，这张命盘本来就没有神煞是合法结果）→落盘→下次`_cache_read()`被上一轮`_shensha_detail_valid()`（要求数组非空）判定无效→cache MISS→重跑Step1+Step2+5个并行步骤+四柱详解共8-9次Gemini调用→生成结果神煞详解仍是空数组（这张命盘本就没有神煞，符合预期）→继续MISS，永久循环无自愈路径，`force_refresh`同样逃不掉；前端`_lsGet()`/`seedCache()`同理永远拒绝命中 | 给"真的零神煞"加一个显式标记位，跟"生成失败导致的空数组"区分开：`gemini_analysis.py::_sanitize_shensha_detail()`新增`no_shensha`标记——权威判据是**这个函数收到的`ctx`**（不信任`data`里可能携带的任何标记，因为可能来自不可信的模型输出），`ctx['shensha']`（规则引擎真实数据）为空时结果加`no_shensha=True`；`ctx['shensha']`为空时`_step_shensha_detail_sync()`根本不会发起Gemini调用（短路分支本身就不可能失败），所以"真零神煞"与"生成失败"两种空数组来源在ctx层面互斥、无歧义，同时该短路分支自身也顺手返回`{'shensha_items': [], 'no_shensha': True}`保持语义自洽。`_shensha_detail_valid()`判定条件放宽为"`shensha_items`非空数组 或 `no_shensha`显式为`True`"两者之一满足即有效。`js/bazi-analysis.js::_shenshaDetailValid()`同一次改动里同步做一模一样的改动（历史教训：`_computeHash`两处独立实现同一算法不同步的坑，这次不重蹈）。**UI侧核对**：`js/analysis.js::buildShenshaPanel(name, baziData, shenshaAiDetail)`按现有架构只对命盘里真实存在的神煞名渲染面板（岛屿标签本身只在`ctx['shensha']`非空的具体神煞上生成），零神煞命盘没有任何神煞标签可点，理论上到不了这个渲染路径，确认新增的`no_shensha`标记不会引发异常渲染，未改动`analysis.js` | Python：mock`ctx['shensha']==[]`场景验证`_step_shensha_detail_sync()`短路返回值含`no_shensha: True`，`_sanitize_shensha_detail()`保留该标记，`_shensha_detail_valid()`判定`True`（不再MISS）；mock"生成失败导致的空数组"场景（`_sanitize_shensha_detail({}, ctx)`，ctx非空）验证仍判定`False`（确认未把这个场景意外放行）；正常非空`shensha_items`场景判定`True`。真实文件缓存端到端验证：含`no_shensha: True`的完整v5结构写入后`_cache_read()`返回非`None`（此前是`None`）；不含该标记的空数组结构写入后`_cache_read()`仍返回`None`（确认失败场景未被误放行）。`python3 -m py_compile island_service/gemini_analysis.py`通过。前端：Node vm加载真实`bazi-analysis.js`源码（非mock），同样三个场景（`no_shensha: true`→有效、无标记空数组→无效、正常非空→有效）验证`_shenshaDetailValid()`与后端判定完全一致；`seedCache()`+`_lsGet()`端到端验证`no_shensha`场景正确写入并命中本地缓存、无标记空数组场景正确拒绝写入。`node --check js/bazi-analysis.js`通过。**未做真实`GEMINI_API_KEY`端到端验证**——止于mock+构造数据验证，真实Gemini对这张具体命盘（1989-05-09巳时）的调用行为需部署后实测确认；前端仍未接线传入AI切片（`main-new.js`调用`buildShenshaPanel`时未传第三参数，是既有P2，见已知问题记录），本次改动对线上用户暂无可见变化 |
 
 ---
 

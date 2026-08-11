@@ -4,8 +4,17 @@
  * 公开 API：
  *   Analysis.buildZonePanel(zoneKey, baziData) → HTML 字符串（右侧标注面板）
  *   Analysis.buildReport(baziData, container)  → 填充完整报告 Modal（含 AI 异步加载）
- *   Analysis.buildPillarPanel(col, baziData)   → HTML 字符串
- *   Analysis.buildShenshaPanel(name, baziData) → HTML 字符串
+ *   Analysis.buildPillarPanel(col, baziData, pillarAiDetail)   → HTML 字符串
+ *     pillarAiDetail（可选，2026-08-04新增）= 后端AI结果的
+ *     analysis.step_pillars_detail?.[col] 切片（{plain_meaning, hidden_stems,
+ *     role_in_this_chart}），由调用方传入。传了就渲染分类清晰的AI详解，不传/
+ *     undefined（老缓存、AI深析还没生成完等场景）则【完全保留】原有静态字典内容，
+ *     不报错不空白——本函数自身依然是纯同步函数，不在内部发起任何网络请求。
+ *   Analysis.buildShenshaPanel(name, baziData, shenshaAiDetail) → HTML 字符串
+ *     shenshaAiDetail（可选，2026-08-04新增）= 后端AI结果的
+ *     analysis.step_shensha_detail?.shensha_items?.find(s=>s.name===name) 切片
+ *     （{nature, concept, personal_impact, advice}），同上，不传/undefined时
+ *     完全保留原有静态字典内容。
  *   Analysis.refreshAiAnalysis(analysis)       → 用调用方已拿到的AI深析结果原地渲染已打开的报告
  *     （供设置面板"轻量刷新"调用；不在内部发起任何网络请求——请求由调用方
  *     BaziAnalysis.getAnalysis()负责，避免同一次刷新触发两次后端调用。
@@ -38,8 +47,20 @@ const Analysis = (() => {
     '午':'火','未':'土','申':'金','酉':'金','戌':'土','亥':'水'
   };
 
-  const SHENSHA_GOOD = new Set(['将星','禄神','红鸾','天乙','文昌','天德','月德','天厨','驿马']);
-  const SHENSHA_WARN = new Set(['亡神','劫煞','白虎','羊刃','七杀','官符','丧门']);
+  // 2026-08-04 qa-reviewer复查修复（PLAUSIBLE P3）：与 js/tutorial.js 的
+  // isGood/isWarn 两个数组核对后发现两处吉凶分类分叉——①"孤辰"此前只在这里的
+  // SHENSHA_WARN里缺失（tutorial.js的isWarn一直有），本次改动导致AI正文（nature
+  // 字段为'凶'时渲染红色警示块）与徽章（此前判定"中性"）观感矛盾，现补入
+  // SHENSHA_WARN，与tutorial.js对齐——传统命理孤辰主孤独，偏中性偏凶，判定为凶
+  // 更贴近传统定性；②"驿马"此前只在这里的SHENSHA_GOOD里出现（tutorial.js的
+  // isGood/isWarn都没有它，按中性处理），驿马传统上主变动，吉凶要看命局搭配，
+  // 不是单纯的吉神，本次改动移出SHENSHA_GOOD、归为中性，与tutorial.js对齐；
+  // ③核对全量神煞名单时顺带发现"七杀/官符/丧门"三个只在这里的SHENSHA_WARN，
+  // tutorial.js的isWarn/isGood都没有它们（按中性处理）——这三者传统上均属明确的
+  // 凶煞（七杀主刑克攻身、官符主官司诉讼、丧门主丧服哀戚），这里的判定本身没错，
+  // 反而是tutorial.js缺了这三条，已同步补入tutorial.js的isWarn数组（不改这里）。
+  const SHENSHA_GOOD = new Set(['将星','禄神','红鸾','天乙','文昌','天德','月德','天厨']);
+  const SHENSHA_WARN = new Set(['亡神','劫煞','白虎','羊刃','七杀','官符','丧门','孤辰']);
 
   // ── 工具函数 ────────────────────────────────────────
   function badge(text, type) {
@@ -1060,6 +1081,11 @@ const Analysis = (() => {
       '劫煞':'主破财、竞争与冲突',
       '白虎':'主伤病、破财与血光之灾',
       '羊刃':'主刑克、意外，但也主意志力强',
+      // 2026-08-04补：js/tutorial.js::SS_DESC 里一直有"孤辰"这一条专属解读，但
+      // 这份字典缺失，命中时会走通用兜底文案——文案与tutorial.js保持一致，避免
+      // 教程判断的命盘解读与报告/zone面板判断的命盘解读不一致（同一份内容不同
+      // 模块各写一份、其中一份漏了条目，是本项目历史上反复出现的坑）。
+      '孤辰':'主孤独内省，独处思考力强，宜培养人脉',
     };
     return map[ss] || ss + '神煞，影响命运走向';
   }
@@ -1108,7 +1134,14 @@ const Analysis = (() => {
     hour :'子女晚年·内心志向',
   };
 
-  function buildPillarPanel(col, baziData) {
+  // 2026-08-04新增第三参数 pillarAiDetail（可选）：analysis.step_pillars_detail?.[col]
+  // 切片（{plain_meaning, hidden_stems, role_in_this_chart}），由调用方（下一轮
+  // user-system领域负责接线，本次只保证这里能正确处理"有/没有"两种输入）传入。
+  // 传入时渲染分类更清晰的AI详解，替代下方静态兜底内容；不传/undefined（老缓存、
+  // AI深析尚未生成完等场景）时【完全保留】原有静态路径，不报错不空白——这是本次
+  // 改动最重要的健壮性要求。纳音小节两条路径都保留（事实性短信息，跟AI三个分类
+  // 小节不冲突）。
+  function buildPillarPanel(col, baziData, pillarAiDetail) {
     const p      = baziData.pillars || {};
     const pillar = p[col] || {};
     const stem   = pillar.stem   || '—';
@@ -1124,6 +1157,27 @@ const Analysis = (() => {
       <div class="zone-subtitle">${PILLAR_ROLE[col]}</div>
     `;
     if (nayin) body += section('纳音', insight(nayin + '：' + nayinDesc(nayin), 'neutral'));
+
+    // 2026-08-04 qa-reviewer复查修复（PLAUSIBLE P2）：原守卫 `pillarAiDetail &&
+    // typeof pillarAiDetail === 'object'` 只判断"容器是否为真值的对象"，不判断
+    // "容器里是否真的有内容"——传入 `{}` 这种真值但零内容的对象会导致整个分支
+    // 被判定为"AI详解可用"、直接 `return body`，反而比静态兜底内容更空（只剩
+    // 徽章+标题）。这个输入按当前后端 `_sanitize_pillars_detail()` 的设计不会
+    // 产生（要么整柱丢弃、要么三字段齐全），但守卫本身不应该依赖调用方的内部
+    // 实现细节才成立——改为显式检查至少一个内容字段非空，不合规输入会自然落到
+    // 下方静态兜底路径，而不是渲染空壳。
+    const hasAiPillarContent = pillarAiDetail && typeof pillarAiDetail === 'object' &&
+      (pillarAiDetail.plain_meaning || pillarAiDetail.hidden_stems || pillarAiDetail.role_in_this_chart);
+    if (hasAiPillarContent) {
+      const { plain_meaning, hidden_stems, role_in_this_chart } = pillarAiDetail;
+      if (plain_meaning) body += section('这根柱子说的是什么', insight(plain_meaning, 'neutral'));
+      if (hidden_stems)  body += section('藏干与深层倾向', insight(hidden_stems, 'neutral'));
+      if (role_in_this_chart) {
+        body += section(isDay ? '对你的意义（含配偶宫）' : '对你的意义', insight(role_in_this_chart, 'neutral'));
+      }
+      return body;
+    }
+
     if (isDay) body += section('日主含义', insight(getDmDesc(stem), 'neutral'));
 
     const branchInfo = (typeof CONFIG !== 'undefined') ? CONFIG?.BRANCHES_INFO?.[branch] : null;
@@ -1134,18 +1188,43 @@ const Analysis = (() => {
     return body;
   }
 
-  function buildShenshaPanel(name, baziData) {
+  // 2026-08-04新增第三参数 shenshaAiDetail（可选）：
+  // analysis.step_shensha_detail?.shensha_items?.find(s=>s.name===name) 切片
+  // （{nature, concept, personal_impact, advice}）。传入时渲染分类更清晰的AI详解，
+  // 替代下方静态兜底内容；不传/undefined时完全保留原有静态路径。头部吉/凶/中性
+  // badge 仍按既有 SHENSHA_GOOD/SHENSHA_WARN 静态分类计算（不随AI的nature字段
+  // 变化）——避免同一神煞名下"头部badge判定"与"AI正文nature判断"两套分类来源
+  // 不一致时互相矛盾；AI正文小节自己的insight()配色改用AI给出的nature，二者是
+  // 两个独立的展示决策，不强行统一。
+  function buildShenshaPanel(name, baziData, shenshaAiDetail) {
     const isGood = SHENSHA_GOOD.has(name);
     const isWarn = SHENSHA_WARN.has(name);
     const type   = isGood ? 'good' : isWarn ? 'warn' : 'neutral';
     const icon   = isGood ? '✦ 吉神' : isWarn ? '⚠ 凶煞' : '◈ 中性';
-    return `
+
+    let body = `
       <div>${badge(icon, type)}</div>
       <div class="zone-title">${name}</div>
       <div class="zone-subtitle">神煞 · 命盘标记</div>
-      ${section('含义', insight(ssDesc(name), type))}
-      ${section('对你的影响', insight(_ssPersonalImpact(name, baziData), type))}
     `;
+
+    // 2026-08-04 qa-reviewer复查修复（PLAUSIBLE P2）：同 buildPillarPanel() 上方
+    // 同一批修复，理由一致——守卫加固为"至少一个内容字段非空"，避免 `{}` 这种
+    // 零内容输入渲染出比静态兜底更空的空壳面板。
+    const hasAiShenshaContent = shenshaAiDetail && typeof shenshaAiDetail === 'object' &&
+      (shenshaAiDetail.concept || shenshaAiDetail.personal_impact || shenshaAiDetail.advice);
+    if (hasAiShenshaContent) {
+      const { nature, concept, personal_impact, advice } = shenshaAiDetail;
+      const natureType = nature === '吉' ? 'good' : nature === '凶' ? 'warn' : 'neutral';
+      if (concept)         body += section('这颗神煞是什么', insight(concept, natureType));
+      if (personal_impact) body += section('对你的具体影响', insight(personal_impact, natureType));
+      if (advice)           body += section('化解与运用建议', insight(advice, 'neutral'));
+      return body;
+    }
+
+    body += section('含义', insight(ssDesc(name), type));
+    body += section('对你的影响', insight(_ssPersonalImpact(name, baziData), type));
+    return body;
   }
 
   function _ssPersonalImpact(name, baziData) {

@@ -27,7 +27,20 @@ const BaziAnalysis = (() => {
   // 发现6个打分字段全部缺失，走入"评分数据暂不完整"的兜底态而不是正常显示——
   // 沿用同一套"新增结构标志字段校验+换key前缀"模式，同样双重保证（后端
   // gemini_analysis.py::_cache_read() 同步新增了fortune_score字段校验）。
-  const LS_PREFIX   = 'bazi_ai_v4_';
+  // v4→v5：2026-08-04新增「四柱详解」step_pillars_detail（{year,month,day,hour}
+  // 各自{plain_meaning,hidden_stems,role_in_this_chart}）+「神煞详解」
+  // step_shensha_detail（{shensha_items:[{name,nature,concept,personal_impact,
+  // advice}]}）两个新步骤，供 js/analysis.js::buildPillarPanel()/
+  // buildShenshaPanel() 渲染点击命柱/神煞标签弹出的详情面板（此前是几十字的静态
+  // 短句，改为AI动态生成）。同一道理：老v4缓存这两个字段整体缺失，点开命柱/神煞
+  // 面板只能看到静态兜底内容（这本身不会报错——buildPillarPanel/buildShenshaPanel
+  // 设计上第三参数undefined时就是走静态路径——但换key前缀能让老用户尽快用上新内容，
+  // 不用一直等到手动"轻量刷新"）。沿用同一套模式（后端gemini_analysis.py::
+  // _cache_read()同步新增了这两个字段的存在性校验，见_lsGet()/seedCache()新增的
+  // _pillarsDetailValid()/_shenshaDetailValid()）——**2026-08-04同日qa-reviewer
+  // 复查后返工**：两个校验函数的判定粒度改为"非空即有效"（不要求四柱/全部神煞
+  // 齐全），完整推导见两个函数定义处注释，与后端同一次返工保持一致，不再赘述。
+  const LS_PREFIX   = 'bazi_ai_v5_';
 
   // 后端七步RAG流水线（gemini_analysis.py::analyze_bazi()，Step1→Step2严格串行，
   // Step2b+Step3-6并行）真实耗时预算：
@@ -79,6 +92,28 @@ const BaziAnalysis = (() => {
   // 见gemini_analysis.py对应位置注释的字数增幅推导），但重试本身的物理耗时代价
   // （见上方"235秒余量"那段推导）并未随本轮改动而改变。因此本轮不上调90s单次
   // 调用超时，也不上调这里的550000ms前端超时。
+  //
+  // 2026-08-04（新增「四柱详解」「神煞详解」两步后再次评估，仍未改动）：
+  // gemini_analysis.py::analyze_bazi() 的并行批次从"Step2b+Step3-6"共5个并发任务
+  // 扩到"Step2b+Step3-6+四柱详解+神煞详解"共7个。上面的耗时模型只看"3个串行
+  // 阶段各自最坏耗时375s"——用的是 asyncio.gather 里最慢那一个任务的耗时，不是
+  // 任务数量，所以批次从5个任务扩到7个本身不会拖长第三阶段的墙钟时间，前提是
+  // 新增的两个任务各自的最坏耗时不超过既有375s假设。逐一核对：①四柱详解
+  // max_tokens=7168，与Step2同量级，重试机制与其它步骤完全一致（2模型×2次×
+  // 90s=360s，仍在375s假设内）；②神煞详解max_tokens=16384——这个值本身超过了
+  // `_call_gemini()`内部MAX_TOKENS加倍重试的封顶值8192（`budget=min(budget*2,
+  // 8192)`），意味着首次budget(16384)已经大于8192，触发MAX_TOKENS后
+  // `budget<8192`判断为False，不会走"同模型加倍预算重试"分支，直接换下一个候选
+  // 模型——即神煞详解的最坏重试路径实际是"2模型×1次×90s=180s"，比其它步骤的
+  // 360s更短，同样落在375s假设内（具体推导见 gemini_analysis.py::
+  // _step_shensha_detail_sync() 上方大段注释）。因此两个新任务都不需要延伸单步
+  // 最坏耗时假设，"3个串行阶段375s/阶段"这个耗时模型本身不变，550s前端超时值
+  // 无需因为本轮新增两步而调整。另外这两步各自内部已用 `_step_pillars_detail_
+  // safe()`/`_step_shensha_detail_safe()` 做了独立失败隔离（GeminiCallError被
+  // 捕获返回空dict，不会向上抛出中断 asyncio.gather），所以即便真的触发上述最坏
+  // 路径全部失败，也不会让整条 analyze_bazi() 请求进入"7步集体等失败"的更长
+  // 等待路径——最终耗时上限仍由其余5个既有步骤的既有"任一失败即整体失败"路径
+  // 决定，与本轮改动前完全一致。
   const AI_ANALYSIS_TIMEOUT_MS = 550000;
 
   // ── 进行中请求去重（in-flight dedup）─────────────────
@@ -147,6 +182,45 @@ const BaziAnalysis = (() => {
     });
   }
 
+  // ── 四柱详解/神煞详解 结构校验（2026-08-04新增，同日qa-reviewer复查后返工）──
+  // 与后端 gemini_analysis.py::_pillars_detail_valid()/_shensha_detail_valid()
+  // 必须是同一套判定逻辑（历史教训：`_computeHash` 两处独立实现同一算法就因为
+  // 没同步改过一次），这里的返工与后端同一次改动、同一批理由，完整推导见后端
+  // 两个同名函数上方大段注释，摘要：
+  //   - 第一版（校验"容器类型是否正确"）在两个方向各出一个CONFIRMED：pillars
+  //     要求4个柱子键全部存在，与后端`_sanitize_pillars_detail()`允许跳过式
+  //     丢弃不完整柱子的设计粒度没对齐，缺一根柱子就永远无法命中，每次都要
+  //     重新触发后端整条流水线；shensha_items只要求"是数组"，无法区分"合法的
+  //     空结果"与"整个步骤彻底失败"，后者被永久当作有效缓存卡住。
+  //   - 返工后：`_pillarsDetailValid()`只要求非空对象（至少1根柱子），不要求
+  //     四键全部存在；`_shenshaDetailValid()`要求`shensha_items`是**非空**
+  //     数组，空数组一律判定无效（允许下次自然请求重新触发生成）。
+  //
+  // 2026-08-11 qa-reviewer第三轮复查CONFIRMED修复：上面这版"空数组一律判定
+  // 无效"的设计基于"真实的零神煞场景经验概率为0"这个假设，被qa证伪——qa用
+  // js/bazi-engine.js 真实的 _shensha() 函数逐条模拟，穷举了全部518,400组
+  // 合法四柱组合，找到了具体存在的1组零神煞命盘：四柱己巳己巳己巳己巳
+  // （对应真实公历生日1989年5月9日巳时，另有1929年同月日同时段）。这张命盘
+  // 会永久卡在"每次打开报告都判定本地缓存无效→重新请求后端→后端同样判定
+  // 无效重新生成→这张命盘本来就没有神煞，生成结果仍是空数组→继续miss"的
+  // 死循环里，没有自愈路径。修复：后端 `_sanitize_shensha_detail()` 以
+  // `ctx['shensha']`（规则引擎真实数据）为权威依据，`ctx['shensha']`为空时
+  // 在落盘/返回结果里加`no_shensha: true`标记；这里同步放宽为"非空数组 或
+  // `no_shensha`显式为true"两者之一满足即有效——与后端 gemini_analysis.py::
+  // `_shensha_detail_valid()`必须是同一套判定逻辑（历史教训：`_computeHash`
+  // 两处独立实现同一算法就因为没同步改过一次，这次两边在同一次改动里一起改）。
+  function _pillarsDetailValid(analysis) {
+    const pd = analysis && analysis.step_pillars_detail;
+    return !!(pd && typeof pd === 'object' && Object.keys(pd).length > 0);
+  }
+
+  function _shenshaDetailValid(analysis) {
+    const sd = analysis && analysis.step_shensha_detail;
+    if (!sd || typeof sd !== 'object') return false;
+    if (sd.no_shensha === true) return true; // 真零神煞命盘，见上方2026-08-11修复注释
+    return Array.isArray(sd.shensha_items) && sd.shensha_items.length > 0;
+  }
+
   // ── localStorage ──────────────────────────────────────
   // v2→v3结构校验：即便某条记录意外地被写进了 LS_PREFIX（v3）前缀的 key 下，
   // 读取时仍二次确认它具备 v3 结构标志字段 step2b_shishen——没有就当作未命中，
@@ -155,6 +229,10 @@ const BaziAnalysis = (() => {
   // v3→v4：新增第三道校验——不再只查单个 fortune_score 字段的 typeof，改为
   // _allScoreFieldsValid() 六个打分字段全部类型+范围合法才算完整（理由见上方
   // SCORE_FIELD_PATHS 定义处注释，详见已知问题记录2026-08-04条目）。
+  // v4→v5：新增第四、第五道校验——_pillarsDetailValid()/_shenshaDetailValid()，
+  // 两个新字段都单独查（不是只查其中一个当canary代表整体，同六维打分字段那次
+  // CONFIRMED 2 教训），理由见上方两个函数定义处注释（含2026-08-04同日qa-reviewer
+  // 复查后返工的判定粒度调整）。
   function _lsGet(hash) {
     try {
       const raw = localStorage.getItem(LS_PREFIX + hash);
@@ -163,6 +241,8 @@ const BaziAnalysis = (() => {
       if (!analysis) return null;
       if (!analysis.step2b_shishen) return null;
       if (!_allScoreFieldsValid(analysis)) return null;
+      if (!_pillarsDetailValid(analysis)) return null;
+      if (!_shenshaDetailValid(analysis)) return null;
       return analysis;
     } catch { return null; }
   }
@@ -329,10 +409,17 @@ const BaziAnalysis = (() => {
   // _allScoreFieldsValid()（与 _lsGet() 共用同一份判断逻辑，两处不会再各自维护
   // 一份容易漏改的独立实现）：六个打分字段任何一个类型/范围不合法（含越界值/
   // NaN/Infinity），整份 analysis 一律拒绝写入本地缓存。
+  //
+  // 2026-08-04 v4→v5：结构又扩充了（新增step_pillars_detail/step_shensha_detail
+  // 四柱详解/神煞详解），同上一轮教训，这次在同一次改动里一并补上（不留给下一轮
+  // qa发现）：_pillarsDetailValid()/_shenshaDetailValid() 与 _lsGet() 共用同一份
+  // 判断逻辑。
   function seedCache(baziData, gender, analysis) {
     if (!baziData || !analysis) return;
     if (!analysis.step2b_shishen) return; // 老结构（v2及更早）存档：不种缓存
     if (!_allScoreFieldsValid(analysis)) return; // 老结构（v3及更早）/坏数据存档：不种缓存
+    if (!_pillarsDetailValid(analysis)) return; // 老结构（v4及更早）存档：不种缓存
+    if (!_shenshaDetailValid(analysis)) return; // 老结构（v4及更早）存档：不种缓存
     const hash = _hash(baziData, gender);
     _lsSet(hash, analysis);
   }
