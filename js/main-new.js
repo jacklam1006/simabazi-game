@@ -344,6 +344,25 @@ const App = (() => {
     _startGenerate({ forceRegen: true });
   }
 
+  // ── 免费本地重算八字数据（不触发任何生成流程/API费用）─────
+  // 用途：旧存档 bazi_data 里缺失后续新增字段（如 strengthScore，2026-08-04加入）时，
+  // 供设置面板"轻量刷新AI深析"顺带调用，用当前 BaziEngine 重新计算一份完整数据。
+  // 只做本地计算+四柱表格DOM同步，不发起网络请求、不落库（落库由调用方决定）。
+  function recalcBaziData() {
+    if (!_baziData || !_birthInfo) return null;
+    try {
+      _baziData = BaziEngine.calculate(
+        _birthInfo.year, _birthInfo.month, _birthInfo.day,
+        _birthInfo.hour, 0, _gender
+      );
+    } catch (e) {
+      console.warn('[App] recalcBaziData 失败:', e);
+      return null;
+    }
+    _renderBaziTable(_baziData); // 顺带保持四柱表格显示同步
+    return _baziData;
+  }
+
   // ── 加载已存档的岛屿（登录后直接进入命盘）────────────────
   async function loadSavedIsland(isl) {
     if (!isl || !isl.model_url) return;
@@ -838,6 +857,7 @@ const App = (() => {
   // ── 公开接口 ──────────────────────────────────────────────
   return {
     setGender, submit, retryGenerate, loadSavedIsland, regenerateCurrentIsland,
+    recalcBaziData,
     cancelEditBirthInfo,
     toggleBaziTable, toggleTaskPanel,
     closeZonePanel, showReport, closeReport,

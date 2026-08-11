@@ -396,6 +396,80 @@ const Analysis = (() => {
     return fn(baziData);
   }
 
+  // ── 命局摘要块（"总览"Tab最上方，含身强身弱仪表盘）共享渲染逻辑 ───────
+  // buildReport() 首次渲染报告、refreshStrengthGauge()（供设置面板"轻量刷新
+  // AI深析"顺带同步重算后的八字数据）复用同一份"核心内容"计算逻辑，避免像历史上
+  // _computeHash 双实现耦合那样，改一处忘改另一处（详见已知问题日志）。
+  //
+  // 2026-08-11修复（qa-reviewer实测CONFIRMED回归）：这个模块以前是把整个
+  // .report-summary 节点 outerHTML 原地替换来实现"刷新"，但 #r-keywords（AI深析
+  // 结果里的关键词标签，由 _populateAiContent() 在AI请求成功后异步插入，不在这
+  // 里计算）也嵌套在 .report-summary 内部——outerHTML整体替换会把已经AI填充过的
+  // #r-keywords 一并清空成初始空白态，即使后续AI刷新请求失败、走"保留刷新前内容"
+  // 分支（refreshAiAnalysis() 失败分支/alert文案），关键词其实已经在刷新一开始
+  // 就丢了，alert说"已为你保留"是假话。
+  // 修复方式：把"日主/五行/身强身弱仪表盘"这块【纯本地计算、无需AI】的内容单独
+  // 包进带固定id的 #r-summary-core 容器，AI相关的 #r-keywords 作为该容器的
+  // 兄弟节点、完全在计算范围之外。刷新时只替换 #r-summary-core 的 innerHTML，
+  // 物理上不可能碰到 #r-keywords。
+  //
+  // 只算"日主/五行/身强身弱仪表盘"这块的内容，不含 #r-keywords（AI异步填充，
+  // 不属于本地免费重算的范围）。
+  function _summaryCoreHtml(d) {
+    const dm    = getDayMaster(d);
+    const dmWx  = d.dayMasterWx || STEM_WX[dm] || '土';
+    const dmCol = WX_COLOR[dmWx] || '#c9a96e';
+
+    // ── 命格强弱 ──────────────────────────────────────
+    // strength 现在始终是字符串类别（'身强'/'中和'/'身弱'，bazi-engine.js 唯一
+    // 产出形态）；strengthScore 是并行的 0-100 数值字段（新数据才有，老存档/老
+    // Supabase 记录可能没有，_strengthGaugeHtml() 内部对此做兜底）
+    const strength = d.strength || '';
+    const strengthScore = typeof d.strengthScore === 'number' && isFinite(d.strengthScore) ? d.strengthScore : undefined;
+    const strengthText = strength || '中和';
+    const strengthGaugeHtml = _strengthGaugeHtml(strength, strengthScore);
+
+    return `
+        <div class="report-summary-dm">
+          <div class="report-summary-char" style="color:${dmCol}">${dm}</div>
+          <div class="report-summary-meta">
+            <div class="report-summary-label">${dmWx}行 · ${strengthText}</div>
+            <div class="report-summary-sub">${d.dayMasterNature || getDmDesc(dm).slice(0, 28) + '…'}</div>
+          </div>
+        </div>
+        <div class="report-summary-desc">${getDmDesc(dm)}</div>
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,.05)">
+          <div style="font-size:10px;color:rgba(201,169,110,.5);letter-spacing:2px;margin-bottom:8px">身强身弱</div>
+          ${strengthGaugeHtml}
+        </div>`;
+  }
+
+  // 首次渲染报告用：返回完整 .report-summary 块的HTML字符串（含空的
+  // #r-keywords占位，供AI结果异步填充），由 buildReport() 拼进整体模板。
+  function _renderSummaryHtml(d) {
+    return `
+      <div class="report-summary">
+        <div id="r-summary-core">${_summaryCoreHtml(d)}</div>
+        <div id="r-keywords" class="r-keywords" style="display:none"></div>
+      </div>`;
+  }
+
+  // ── 供设置面板"轻量刷新AI深析"调用：用免费本地重算出的最新八字数据（见
+  // main-new.js::recalcBaziData）原地刷新已打开报告里的命局摘要+身强身弱仪表盘。
+  // 只做DOM渲染，刻意不触发任何网络请求/AI流水线——跟 refreshAiAnalysis()同一约束
+  // （2026-08-03 修复"点一次轻量刷新触发两次AI流水线"的教训，这里同理不能引入
+  // 新的重复请求）。若报告从未打开过（_lastReportCtx 为空），静默返回。
+  // 只替换 #r-summary-core 的 innerHTML，绝不触碰兄弟节点 #r-keywords（见上方
+  // 2026-08-11修复说明）——即便调用时机早于AI刷新请求发起/成功，也不会清空已经
+  // AI填充过的关键词标签。
+  function refreshStrengthGauge(baziData) {
+    if (!_lastReportCtx || !baziData) return;
+    _lastReportCtx.d = baziData; // 让后续依赖 _lastReportCtx.d 的逻辑（如AI补写）也用上新数据
+    const container = _lastReportCtx.container;
+    const core = container && container.querySelector ? container.querySelector('#r-summary-core') : null;
+    if (core) core.innerHTML = _summaryCoreHtml(baziData);
+  }
+
   // ══════════════════════════════════════════════════════
   //  完整报告（Tab 布局 + AI 异步加载）
   // ══════════════════════════════════════════════════════
@@ -413,9 +487,6 @@ const Analysis = (() => {
     opts = opts || {};
 
     const d     = baziData;
-    const dm    = getDayMaster(d);
-    const dmWx  = d.dayMasterWx || STEM_WX[dm] || '土';
-    const dmCol = WX_COLOR[dmWx] || '#c9a96e';
     const p     = d.pillars  || {};
     const wx    = d.wuxing   || {};
     // favorable 从引擎返回是字符串（如"木"），从 Supabase 可能是字符串或数组
@@ -426,34 +497,12 @@ const Analysis = (() => {
       return f;
     })();
 
-    // ── 命格强弱 ──────────────────────────────────────
-    // strength 现在始终是字符串类别（'身强'/'中和'/'身弱'，bazi-engine.js 唯一
-    // 产出形态）；strengthScore 是并行的 0-100 数值字段（新数据才有，老存档/老
-    // Supabase 记录可能没有，_strengthGaugeHtml() 内部对此做兜底）
-    const strength = d.strength || '';
-    const strengthScore = typeof d.strengthScore === 'number' && isFinite(d.strengthScore) ? d.strengthScore : undefined;
-    const strengthText = strength || '中和';
-
     // ── Tab 1：总览（静态，立即显示）────────────────────
     // 2026-08-04新增：身强身弱仪表盘，放在命局摘要块内部（"最上方"位置，命局摘要
-    // 是总览Tab第一个展示的模块）
-    const strengthGaugeHtml = _strengthGaugeHtml(strength, strengthScore);
-    const summaryHtml = `
-      <div class="report-summary">
-        <div class="report-summary-dm">
-          <div class="report-summary-char" style="color:${dmCol}">${dm}</div>
-          <div class="report-summary-meta">
-            <div class="report-summary-label">${dmWx}行 · ${strengthText}</div>
-            <div class="report-summary-sub">${d.dayMasterNature || getDmDesc(dm).slice(0, 28) + '…'}</div>
-          </div>
-        </div>
-        <div class="report-summary-desc">${getDmDesc(dm)}</div>
-        <div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,.05)">
-          <div style="font-size:10px;color:rgba(201,169,110,.5);letter-spacing:2px;margin-bottom:8px">身强身弱</div>
-          ${strengthGaugeHtml}
-        </div>
-        <div id="r-keywords" class="r-keywords" style="display:none"></div>
-      </div>`;
+    // 是总览Tab第一个展示的模块）。命局摘要块核心内容（含dm/dmWx/strength等计算）
+    // 抽到了共享函数 _summaryCoreHtml 里，refreshStrengthGauge() 复用同一份实现，
+    // 详见 _renderSummaryHtml() 上方 2026-08-11 修复说明。
+    const summaryHtml = _renderSummaryHtml(d);
 
     // 四柱网格
     const cols   = ['year','month','day','hour'];
@@ -1261,5 +1310,5 @@ const Analysis = (() => {
     return map[name] || `${name}入命，对${dm}日主的${wx}行格局产生深远影响，宜把握其吉意，化解其凶性`;
   }
 
-  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildReport, refreshAiAnalysis, showAiRefreshing, clearAiRefreshing };
+  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildReport, refreshAiAnalysis, showAiRefreshing, clearAiRefreshing, refreshStrengthGauge };
 })();

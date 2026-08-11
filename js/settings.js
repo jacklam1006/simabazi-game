@@ -107,6 +107,29 @@ const SettingsUI = (() => {
     const gender = (typeof App !== 'undefined' && typeof App._getBirthInfo === 'function')
       ? (App._getBirthInfo()?.gender || '男') : '男';
 
+    // ── 免费本地重算八字数据（同步、纯本地计算，不花任何API费用）───────
+    // 修复：旧存档 bazi_data 里缺失后续新增字段（如 strengthScore，2026-08-04加入
+    // bazi-engine.js::_strength()）时，"总览"页身强身弱仪表盘只能显示兜底文案。
+    // 借"轻量刷新AI深析"这个入口顺带用当前 BaziEngine 重新计算一份完整数据、原地
+    // 刷新仪表盘、并同步回数据库——不新增按钮，也不走"完全重新生成"/"编辑出生
+    // 信息"那两条真实花费API费用的路径。重算失败（理论上不该发生，防御性兜底）
+    // 时退回旧数据，不阻断后面的AI刷新流程。
+    const recalculated = (typeof App !== 'undefined' && typeof App.recalcBaziData === 'function')
+      ? App.recalcBaziData() : null;
+    const effectiveBaziData = recalculated || baziData; // 重算失败时退回旧数据，不阻断AI刷新流程
+
+    if (typeof Analysis !== 'undefined' && typeof Analysis.refreshStrengthGauge === 'function') {
+      Analysis.refreshStrengthGauge(effectiveBaziData);
+    }
+
+    if (recalculated && typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn()
+        && typeof App !== 'undefined' && typeof App.getCurrentIslandId === 'function') {
+      const islandId = App.getCurrentIslandId();
+      if (islandId) {
+        AuthManager.updateIslandBaziData(islandId, recalculated).catch(() => {});
+      }
+    }
+
     const btn = document.getElementById('settings-refresh-ai-btn');
     const originalText = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = _isZh() ? '刷新中...' : 'Refreshing...'; }
@@ -128,7 +151,7 @@ const SettingsUI = (() => {
       // 这里是本次刷新唯一一次向后端发起请求的地方——Analysis.refreshAiAnalysis()
       // 只负责用这里拿到的结果原地渲染，内部不会再自己发起请求（2026-08-03
       // 修复"点一次轻量刷新触发两次AI流水线"的接口契约问题，详见已知问题日志）。
-      const analysis = await BaziAnalysis.getAnalysis(baziData, gender, { forceRefresh: true });
+      const analysis = await BaziAnalysis.getAnalysis(effectiveBaziData, gender, { forceRefresh: true });
 
       // 世代已变化 → 用户已经切换到另一个岛屿，这次结果不再对应当前画面，
       // 静默丢弃（不渲染、不补写），避免把A岛屿的AI深析错误地展示/落库到B岛屿。

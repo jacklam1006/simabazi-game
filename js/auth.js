@@ -183,6 +183,17 @@ const AuthManager = (() => {
     return true;
   }
 
+  // ── 重算八字数据后同步回数据库（免费本地重算，见 settings.js refreshAiOnly）──
+  async function updateIslandBaziData(islandId, baziData) {
+    if (!_sb || !_user || !islandId) return false;
+    const { error } = await _sb.from('islands')
+      .update({ bazi_data: baziData })
+      .eq('id', islandId)
+      .eq('user_id', _user.id); // 双重确认只能改自己的记录，RLS本身也会拦，这里是防御性写法
+    if (error) { console.warn('[Auth] 同步重算八字数据失败:', error.message); return false; }
+    return true;
+  }
+
   // ── 读取我的岛屿 ────────────────────────────────────────
   async function getMyIslands() {
     if (!_sb || !_user) return [];
@@ -211,7 +222,7 @@ const AuthManager = (() => {
   return {
     init, login, register, registerWithProfile,
     logout, sendPasswordReset, getProfile, updateProfile,
-    saveIsland, updateIslandAnalysis, getMyIslands, checkEmailExists,
+    saveIsland, updateIslandAnalysis, updateIslandBaziData, getMyIslands, checkEmailExists,
     isLoggedIn: () => !!_user,
     currentUser: () => _user,
   };
