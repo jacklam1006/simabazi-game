@@ -491,8 +491,8 @@ const App = (() => {
     // 标注系统（含诊断徽标）
     IslandAnnotate.attach(scene, _baziData);
 
-    // 异步获取AI深析数据，套用到3D标注+详解缓存（见 _applyAiAnalysis()
-    // 定义处注释）。静默失败——岛屿本身已经渲染完成，这里只是锦上添花的
+    // 异步获取AI深析数据，挂载3D特点标注（见 _applyAiAnalysis()定义处
+    // 注释）。静默失败——岛屿本身已经渲染完成，这里只是锦上添花的
     // 标注层，不影响主流程。
     // 世代守卫：请求发起那一刻快照当前"岛屿会话世代"（见上方 _islandGeneration
     // 声明处注释，与 analysis.js::_loadAndRenderAi 同一模式），传给
@@ -944,10 +944,11 @@ const App = (() => {
     // 世代值比对，用于识破"请求发起后用户已切换到另一个岛屿会话"的竞态（见上方
     // _islandGeneration 声明处注释）。
     getIslandGeneration: () => _islandGeneration,
-    // settings.js::refreshAiOnly() 轻量刷新AI深析成功后调用，把新结果套用到
-    // 3D标注（trait✅/⚠️标签）+ 命柱/神煞详解缓存，与首次生成/加载岛屿时
-    // _onIslandReady() 内部调用的是同一份实现（见 _applyAiAnalysis() 定义处
-    // 注释）。expectedGeneration 建议传入调用方发起请求时快照的世代值。
+    // settings.js::refreshAiOnly() 轻量刷新AI深析成功后调用，把新结果挂载到
+    // 3D标注（trait✅/⚠️标签），与首次生成/加载岛屿时 _onIslandReady() 内部
+    // 调用的是同一份实现（见 _applyAiAnalysis() 定义处注释）。四柱/神煞详情
+    // 面板不依赖本函数，见 _openZonePanel() 注释。expectedGeneration 建议
+    // 传入调用方发起请求时快照的世代值。
     _applyAiAnalysis: (analysis, expectedGeneration) => _applyAiAnalysis(analysis, expectedGeneration),
     // settings.js::editBirthInfo() 用于关闭设置面板后切回表单屏幕，让用户修改
     // 出生信息后自己点提交（走完全原生的 submit()→_startGenerate() 流程）。

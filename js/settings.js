@@ -172,12 +172,15 @@ const SettingsUI = (() => {
         Analysis.refreshAiAnalysis(analysis);
       }
 
-      // 把新结果同步套用到3D岛屿标注（✅/⚠️ trait标签）+ 命柱/神煞详解缓存——
-      // 与首次生成/加载岛屿时 main-new.js::_onIslandReady() 调用的是同一份
-      // 实现（App._applyAiAnalysis()），不在这里另写一份重复逻辑。此前这里
-      // 完全没有调用任何东西，导致轻量刷新成功后3D标注/四柱详情面板依然停留
-      // 在旧内容（甚至首次生成AI深析超时失败时是零标注），必须手动刷新整个
-      // 页面才会更新，见 claude-docs/已知问题与修复记录.md 对应日期条目。
+      // 把新结果同步挂载到3D岛屿标注（✅/⚠️ trait标签）——与首次生成/加载
+      // 岛屿时 main-new.js::_onIslandReady() 调用的是同一份实现
+      // （App._applyAiAnalysis()），不在这里另写一份重复逻辑。此前这里完全
+      // 没有调用任何东西，导致轻量刷新成功后3D标注依然停留在旧内容（甚至
+      // 首次生成AI深析超时失败时是零标注），必须手动刷新整个页面才会更新，
+      // 见 claude-docs/已知问题与修复记录.md 对应日期条目。四柱/神煞详情
+      // 面板不受这个问题影响——main-new.js::_openZonePanel() 每次打开都会
+      // 直接调 BaziAnalysis.getAnalysis() 按需取最新内容，天然与本次刷新
+      // 后的结果保持同步，不需要在这里额外处理。
       // expectedGeneration 传 genAtRequest：本函数在上面已经用同一个
       // App.getIslandGeneration() 自行比对过一次（genNow !== genAtRequest 时
       // 已提前 return），这里传入同一个快照值只是"双保险"，语义一致不冲突
