@@ -31,8 +31,10 @@ const UserState = (() => {
   function hasSavedProfile() { return !!get('profile'); }
 
   // ── 岛屿 GLB 缓存 ─────────────────────────────────────────
-  function _baziKey(baziData) {
-    // 简单哈希：日主+年月日时干支
+  // baziKey：命盘唯一标识（日主+年月日时干支），供本模块内部（岛屿URL缓存）
+  // 与外部模块（js/products.js 标记"哪条命盘的哪条注意事项已经兑换过"）复用，
+  // 只有这一处实现，不要另外新写一份重复的哈希逻辑。
+  function baziKey(baziData) {
     const p = baziData.pillars || {};
     return [
       p.year?.stem, p.year?.branch,
@@ -44,13 +46,13 @@ const UserState = (() => {
 
   function saveIslandUrl(baziData, url) {
     const cache = get('island_cache') || {};
-    cache[_baziKey(baziData)] = { url, savedAt: Date.now() };
+    cache[baziKey(baziData)] = { url, savedAt: Date.now() };
     set('island_cache', cache);
   }
 
   function getIslandUrl(baziData) {
     const cache = get('island_cache') || {};
-    const entry = cache[_baziKey(baziData)];
+    const entry = cache[baziKey(baziData)];
     if (!entry) return null;
     // URL 已永久存储到 Supabase Storage，无需过期检查
     return entry.url || null;
@@ -63,6 +65,7 @@ const UserState = (() => {
     const cur = getSpirit();
     set('spirit', cur + amount);
     _emit('spiritChanged', cur + amount);
+    _syncSpiritToCloud(cur + amount);
     return cur + amount;
   }
 
@@ -71,7 +74,17 @@ const UserState = (() => {
     if (cur < amount) return false;
     set('spirit', cur - amount);
     _emit('spiritChanged', cur - amount);
+    _syncSpiritToCloud(cur - amount);
     return true;
+  }
+
+  // 登录用户：灵气值变化后 fire-and-forget 同步回 Supabase profiles 表，方便
+  // 换设备/重新登录时能取回余额（合并逻辑见 auth.js::_onAuthChange，取较大值，
+  // 灵气不是真实货币，多设备并发误差可接受，不追求强一致性）。
+  function _syncSpiritToCloud(balance) {
+    if (typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn && AuthManager.isLoggedIn()) {
+      try { AuthManager.syncSpiritBalance(balance); } catch (e) { /* fire-and-forget，不阻断本地操作 */ }
+    }
   }
 
   // ── 签到 ──────────────────────────────────────────────────
@@ -136,6 +149,25 @@ const UserState = (() => {
     return getDecorations().some(d => d.id === decorId);
   }
 
+  // ── 灵气兑换：注意事项/命盘特点已改善标记 ──────────────────
+  // 记录"哪条命盘（baziKey）的哪条注意事项（kind+idx）已经通过灵气兑换水晶商品
+  // 标记为已改善"，供 js/products.js 兑换成功后调用、js/island-annotate.js /
+  // 详情面板读取渲染"已改善"状态。
+  function getResolvedTraits() { return get('trait_resolved') || []; }
+
+  function resolveTrait(baziKey, kind, idx, productId) {
+    const list = getResolvedTraits();
+    if (list.find(t => t.baziKey === baziKey && t.kind === kind && t.idx === idx)) return false;
+    list.push({ baziKey, kind, idx, productId, resolvedAt: Date.now() });
+    set('trait_resolved', list);
+    _emit('traitResolved', { kind, idx });
+    return true;
+  }
+
+  function isTraitResolved(baziKey, kind, idx) {
+    return getResolvedTraits().some(t => t.baziKey === baziKey && t.kind === kind && t.idx === idx);
+  }
+
   // ── 成就 ──────────────────────────────────────────────────
   function getAchievements() { return get('achievements') || []; }
 
@@ -176,11 +208,13 @@ const UserState = (() => {
 
   return {
     saveProfile, getProfile, hasSavedProfile,
+    baziKey,
     saveIslandUrl, getIslandUrl,
     getSpirit, addSpirit, useSpirit,
     getCheckinInfo, doCheckin,
     getCompletedTasks, completeTask, isTaskDone,
     getDecorations, unlockDecoration, hasDecoration,
+    getResolvedTraits, resolveTrait, isTraitResolved,
     getAchievements,
     clearAll, on,
   };

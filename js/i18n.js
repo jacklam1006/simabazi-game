@@ -215,6 +215,17 @@ const I18N = {
     'auth_err.nickname':   '请填写昵称',
     'auth_err.valid_email':'请填写有效邮箱',
     'auth_err.short_pass': '密码至少6位',
+
+    // ── 灵气兑换水晶商品 ────────────────────────
+    'products.redeem_btn':      '灵气兑换',
+    'products.redeemed':        '已改善',
+    'products.need_login':      '兑换需要先登录，方便我们联系你',
+    'products.need_island':     '请先保存或加载一个命盘岛屿后再兑换',
+    'products.insufficient':    '灵气不足，还需要 {n} 灵气',
+    'products.confirm':         '确定用 {cost} 灵气兑换「{name}」吗？',
+    'products.success':         '兑换成功！我们会尽快通过 WhatsApp 联系你安排发货',
+    'products.fail':            '兑换失败，请稍后重试',
+    'products.spirit_label':    '灵气',
   },
 
   /* ════════════════════════════════════════════
@@ -418,6 +429,17 @@ const I18N = {
     'auth_err.nickname':   'Please enter a nickname',
     'auth_err.valid_email':'Please enter a valid email',
     'auth_err.short_pass': 'Password must be at least 6 characters',
+
+    // ── Crystal Product Redemption ────────────
+    'products.redeem_btn':      'Redeem with Spirit',
+    'products.redeemed':        'Improved',
+    'products.need_login':      'Please sign in to redeem, so we can contact you',
+    'products.need_island':     'Please save or load an island first before redeeming',
+    'products.insufficient':    'Not enough spirit — {n} more needed',
+    'products.confirm':         'Redeem "{name}" for {cost} spirit?',
+    'products.success':         'Redeemed! We\'ll contact you via WhatsApp soon to arrange shipping',
+    'products.fail':            'Redemption failed, please try again later',
+    'products.spirit_label':    'Spirit',
   },
 };
 

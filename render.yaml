@@ -22,6 +22,13 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_KEY
         sync: false
+      # 2026-08-12：/notify-redemption端点（水晶兑换通知邮件）用，两者均选填——
+      # 任一缺失时该端点静默跳过发信、不影响主流程（redemption_requests表
+      # 才是权威数据，见main.py端点注释），需在Render面板手动填值。
+      - key: RESEND_API_KEY
+        sync: false
+      - key: OWNER_NOTIFY_EMAIL
+        sync: false
     disk:
       name: island-cache
       mountPath: /opt/render/project/src/island_service/persistent_data

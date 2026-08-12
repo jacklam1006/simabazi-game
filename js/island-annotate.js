@@ -325,9 +325,28 @@ const IslandAnnotate = (() => {
   // opacity:0;pointer-events:none（见 index.html），点击圆点后加 .expanded
   // class 才展开引导线+完整卡片——把"6个新增常驻热点"的视觉负担降到最低。
   function _makeTraitLabel(kind, idx, trait, baziData) {
-    const isGood = kind === 'strength';
+    // 2026-08-12 第二阶段qa打回修复：重新挂载（轻量刷新AI深析/切换岛屿/
+    // 刷新页面都会走 detachTraits()+attachTraits() 重新创建全部标签）时，
+    // 不能无脑按 kind==='strength' 判断图标——caution类型如果之前已经通过
+    // markTraitResolved() 兑换翻牌过，UserState.isTraitResolved() 里的
+    // localStorage持久化状态是"已改善"，但这里若只看kind会又渲染回⚠️，
+    // 跟点开详情面板（js/analysis.js::buildTraitPanel() 读同一个
+    // isTraitResolved()）看到的"已改善✅"自相矛盾（见对应CONFIRMED）。
+    // strength类型本来就恒定✅、没有"已改善"这个概念，不查、不多调用一次。
+    const alreadyResolved = kind === 'caution'
+      && typeof UserState !== 'undefined' && UserState.isTraitResolved
+      && UserState.isTraitResolved(UserState.baziKey(baziData), kind, idx);
+    const isGood = kind === 'strength' || alreadyResolved;
     const div = document.createElement('div');
     div.className = 'trait-marker ' + (isGood ? 'trait-good' : 'trait-warn');
+    if (alreadyResolved) {
+      // 直接落地成最终态（不走 markTraitResolved() 那条"从warn翻牌到good"
+      // 的动画路径——.trait-resolving 临时class只该在"这一刻正在发生兑换"
+      // 时出现，重新挂载时这个状态已经是既定事实，不是新发生的变化）。
+      // 顺带打上跟 markTraitResolved() 相同的 dataset 标记，防止后续这条
+      // 标签万一被重复调用 markTraitResolved()（如网络重试）时又播一次动画。
+      div.dataset.traitResolved = '1';
+    }
     div.innerHTML = `
       <span class="trait-dot">${isGood ? '✅' : '⚠️'}</span>
       <div class="trait-leader"></div>
@@ -474,7 +493,10 @@ const IslandAnnotate = (() => {
       const { css2d, div } = _makeTraitLabel(item.kind, item.idx, item.trait, baziData);
       css2d.position.copy(pos);
       scene.add(css2d);
-      _traitLabels.push({ css2d, div });
+      // 记录 kind/idx 方便 markTraitResolved() 按兑换回调传入的 (kind, idx)
+      // 直接查找对应DOM——不依赖 TRAIT_LAYOUT 数组下标 i（strength/caution
+      // 交替排列，数组下标与"某类型内部第几个"不是同一个数）。
+      _traitLabels.push({ css2d, div, kind: item.kind, idx: item.idx });
     });
   }
 
@@ -492,6 +514,56 @@ const IslandAnnotate = (() => {
     if (typeof IslandLoader !== 'undefined' && IslandLoader.startAutoRotate) {
       IslandLoader.startAutoRotate('traitCard');
     }
+  }
+
+  /**
+   * 兑换实体商品"改善"某条注意事项成功后，把对应trait标注从 ⚠️（trait-warn）
+   * 翻转为 ✅（trait-good）。由 js/products.js::Products.redeem() 兑换成功
+   * 回调调用（见2026-08-12 第二阶段计划）。独立于 attachTraits()/
+   * detachTraits() 的生命周期——只在已挂载的标签上做原地状态切换，不新增/
+   * 移除任何 _traitLabels 条目。
+   *
+   * 契约：kind 目前恒为 'caution'，idx 是该类型内部下标(0~2)，与
+   * attachTraits() 交替拼接 items 时存入 _traitLabels 的 kind/idx 完全对应
+   * （见 attachTraits() 内 items.push 处注释）——按 kind+idx 查找，不依赖
+   * TRAIT_LAYOUT 数组下标，避免 strength/caution 交替排列导致的下标语义错位。
+   *
+   * @param {string} kind - 目前恒为 'caution'
+   * @param {number} idx  - 0~2
+   */
+  function markTraitResolved(kind, idx) {
+    const entry = _traitLabels.find(e => e.kind === kind && e.idx === idx);
+    if (!entry) {
+      // 防御性：trait标注可能尚未挂载（attachTraits还没跑完/AI异步分析未
+      // 完成）、或已被 detachTraits() 清理（换岛屿/刷新AI深析）——不是
+      // 代码异常，静默warn即可，不抛错，不影响兑换流程本身（灵气已经扣除、
+      // 后端记录已经写入，3D视觉状态只是"暂时没能同步"，不应该让调用方崩溃）。
+      console.warn(`[IslandAnnotate] markTraitResolved 未找到对应标签 kind=${kind} idx=${idx}（标注可能尚未挂载或已被清理）`);
+      return;
+    }
+
+    const { div } = entry;
+    // 防止同一条被重复触发两次动画（如兑换成功回调因网络重试被意外调用两次）
+    if (div.dataset.traitResolved === '1') return;
+    div.dataset.traitResolved = '1';
+
+    const dotEl = div.querySelector('.trait-dot');
+
+    div.classList.remove('trait-warn');
+    div.classList.add('trait-good', 'trait-resolving');
+    if (dotEl) dotEl.textContent = '✅';
+    // .trait-card 的边框配色由 .trait-good/.trait-warn 这两个祖先class通过
+    // CSS选择器（见 index.html `.trait-good .trait-card`/`.trait-warn .trait-card`）
+    // 联动控制，上面切换 div 自身class即可让"当前正展开的卡片"外观自动跟着变
+    // good配色，不需要额外操作 .trait-card DOM；summary/detail文字内容本就
+    // 不变，符合任务要求"只是外观配色跟着变，文字内容不用变"。
+
+    // 动画结束后移除临时class，避免残留影响后续（如再次hover/展开）的
+    // transform/filter。与 index.html @keyframes trait-flip 的 .5s 时长对齐，
+    // 留20ms余量避免 setTimeout 精度导致的边缘截断。
+    setTimeout(() => {
+      div.classList.remove('trait-resolving');
+    }, 520);
   }
 
   // ── Tutorial：高亮 / 清除高亮 ───────────────────────────
@@ -611,6 +683,6 @@ const IslandAnnotate = (() => {
   return {
     attach, detach, highlightLabel, clearHighlight, getLabelPositions, getLabelElement,
     getIslandBox, layoutToWorld,
-    attachTraits, detachTraits,
+    attachTraits, detachTraits, markTraitResolved,
   };
 })();

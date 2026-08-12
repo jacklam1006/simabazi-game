@@ -203,6 +203,64 @@ const AuthManager = (() => {
     return data || [];
   }
 
+  // ── 灵气值同步（灵气兑换水晶商品功能，见 js/products.js）────
+  // fire-and-forget：调用方（js/user-state.js 的 addSpirit/useSpirit）不等待
+  // 这个 Promise，失败只打警告不影响本地灵气值的即时可用性——灵气不是真实
+  // 货币，Supabase 一侧只是"云端备份"用于换设备/重新登录时取回余额。
+  // 用 upsert 而不是 update：与 updateProfile() 同样的坑（见上方注释）——如果
+  // profiles 表里这一行因邮箱验证时序问题不存在，update 会静默匹配0行"成功"，
+  // 灵气值实际从未写入云端，换设备/清缓存登录后会读到0，导致本地灵气被
+  // max(0, 0) 覆盖为0，攒的灵气无声消失。upsert 只对 payload 里出现的列做
+  // ON CONFLICT DO UPDATE，不会清空 display_name/phone 等既有字段。
+  function syncSpiritBalance(balance) {
+    if (!_sb || !_user) return;
+    _sb.from('profiles').upsert({ id: _user.id, spirit_balance: balance })
+      .then(({ error }) => { if (error) console.warn('[Auth] 灵气值同步失败:', error.message); })
+      .catch(e => console.warn('[Auth] 灵气值同步失败:', e));
+  }
+
+  async function getSpiritBalance() {
+    if (!_sb || !_user) return 0;
+    try {
+      const { data, error } = await _sb.from('profiles')
+        .select('spirit_balance').eq('id', _user.id).maybeSingle();
+      if (error) { console.warn('[Auth] 读取灵气值失败:', error.message); return 0; }
+      return data?.spirit_balance || 0;
+    } catch (e) {
+      console.warn('[Auth] 读取灵气值失败:', e);
+      return 0;
+    }
+  }
+
+  // ── 创建灵气兑换水晶商品请求 ─────────────────────────────
+  // 涉及"欠用户一个真实商品发货"的业务承诺，失败不能静默——console.error 打印
+  // 详情，返回 null 让调用方（js/products.js）决定要不要提示用户重试/退灵气。
+  async function createRedemptionRequest({ productId, productName, spiritCost, islandId, kind, idx, summary }) {
+    if (!_sb || !_user) { console.error('[Auth] 创建兑换请求失败: 未登录'); return null; }
+    try {
+      const profile = await getProfile();
+      const contactPhone = ((profile?.phone_code || '') + (profile?.phone || '')).trim() || null;
+
+      const { data, error } = await _sb.from('redemption_requests').insert({
+        user_id:        _user.id,
+        product_id:      productId,
+        product_name:    productName,
+        spirit_cost:     spiritCost,
+        island_id:       islandId || null,
+        trait_kind:      kind,
+        trait_index:     idx,
+        trait_summary:   summary,
+        contact_phone:   contactPhone,
+      }).select().single();
+
+      if (error) { console.error('[Auth] 创建兑换请求失败:', error.message); return null; }
+      return data;
+    } catch (e) {
+      console.error('[Auth] 创建兑换请求失败:', e);
+      return null;
+    }
+  }
+
   // ── 检查邮箱是否已注册 ──────────────────────────────────
   async function checkEmailExists(email) {
     try {
@@ -223,6 +281,7 @@ const AuthManager = (() => {
     init, login, register, registerWithProfile,
     logout, sendPasswordReset, getProfile, updateProfile,
     saveIsland, updateIslandAnalysis, updateIslandBaziData, getMyIslands, checkEmailExists,
+    syncSpiritBalance, getSpiritBalance, createRedemptionRequest,
     isLoggedIn: () => !!_user,
     currentUser: () => _user,
   };
@@ -423,12 +482,35 @@ const AuthUI = (() => {
       myIslandsBtn?.classList.remove('hidden');
       settingsBtn?.classList.remove('hidden');
       _refreshUserInfoDisplay();
+      _mergeSpiritBalance();
     } else {
       loginBtn?.classList.remove('hidden');
       logoutBtn?.classList.add('hidden');
       myIslandsBtn?.classList.add('hidden');
       settingsBtn?.classList.add('hidden');
       if (userInfo) { userInfo.textContent = ''; userInfo.classList.add('hidden'); }
+    }
+  }
+
+  // ── 登录时灵气值合并：本地(localStorage) vs 云端(profiles.spirit_balance)
+  //    取较大值，避免换设备/重新登录时余额突然变少。不是强一致性同步——灵气
+  //    不是真实货币，多设备并发误差可接受。用现有 UserState.addSpirit(diff)
+  //    补到目标值即可，不新增"直接赋值"接口。────────────────────────────
+  async function _mergeSpiritBalance() {
+    if (typeof UserState === 'undefined') return;
+    try {
+      const remote = await AuthManager.getSpiritBalance();
+      const local  = UserState.getSpirit();
+      if (remote > local) {
+        UserState.addSpirit(remote - local); // 补到远端更大的值（会顺带把合并后的值再同步回云端，幂等无害）
+      } else if (local > remote) {
+        // 本地是较大值（例如登录前匿名试用已攒了灵气）——立即推送云端，不用
+        // 等到下一次 addSpirit/useSpirit 触发才同步，避免合并后云端数值仍
+        // 落后本地的窗口期。
+        AuthManager.syncSpiritBalance(local);
+      }
+    } catch (e) {
+      console.warn('[AuthUI] 灵气值合并失败:', e);
     }
   }
 

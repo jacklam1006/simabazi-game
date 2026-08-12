@@ -32,6 +32,20 @@
  *     调用方在自己的提前 return 分支里也能兜底清除"更新中"提示条——典型场景是
  *     settings.js::refreshAiOnly() 命中世代快照不一致而提前 return 时，不会再
  *     调用到 refreshAiAnalysis()，需要自己先调这个函数清掉banner。
+ *   Analysis.redeemTraitProduct(productId, btnEl) → 2026-08-12第二阶段新增，供
+ *     buildTraitPanel() 渲染出的兑换按钮 onclick 调用（HTML字符串跨越到
+ *     main-new.js的zone-panel容器后无法用addEventListener闭包绑定，沿用本项目
+ *     既有的 onclick="Module.method(...)" 惯例，见auth.js/user-journey.js/
+ *     index.html多处同款写法）。内部读取 buildTraitPanel() 最近一次渲染时记下的
+ *     模块级上下文（同 _lastReportCtx/refreshStrengthGauge() 同一惯例），调用
+ *     Products.redeem() 完成兑换编排，成功后原地重渲染当前已打开的trait面板
+ *     （不依赖main-new.js重新调用_openZonePanel）。Products模块不存在/未加载时
+ *     优雅跳过，不报错。
+ *     竞态守卫（2026-08-12qa-reviewer打回后修复）：Products.redeem()的网络
+ *     请求resolve可能要几秒，这段等待期间面板可能已经被切到别的zoneKey或已
+ *     关闭——点击那一刻会快照当时的面板"内容世代号"（见模块内 _zonePanelGen
+ *     声明处说明），resolve后只有世代号仍然匹配、且zone-panel仍处于open状态，
+ *     才会真的原地刷新；否则静默跳过，不会把兑换结果写进不相关的面板里。
  */
 
 const Analysis = (() => {
@@ -40,6 +54,28 @@ const Analysis = (() => {
   // 外部触发的刷新复用（不需要调用方重新持有 container/d/gender）。报告从未打开过
   // 时为 null。
   let _lastReportCtx = null; // { container, d, gender } | null
+
+  // ── 模块级：记住最近一次 buildTraitPanel() 渲染时的上下文（2026-08-12第二阶段
+  // 新增），供兑换按钮点击后 redeemTraitProduct() 原地刷新已打开的trait面板复用
+  // ——与上面 _lastReportCtx 同一惯例（模块级ctx + "原地重渲染"函数），不新发明
+  // 刷新机制。trait面板从未打开过/最近一次打开的zone面板不是trait类型时为 null。
+  let _lastTraitCtx = null; // { zoneKey, baziData, trait, gen } | null
+
+  // ── 模块级：zone-panel"内容世代"计数器（2026-08-12第二阶段兑换功能追加，
+  // 修复qa-reviewer发现的竞态问题）。buildZonePanel/buildPillarPanel/
+  // buildShenshaPanel/buildTraitPanel 这四个"渲染zone-panel-content"的入口
+  // 函数，每次被调用（不论渲染出的是不是trait面板）都会让它自增一次——代表
+  // "zone-panel里显示的内容又换了一次"，与切没切zoneKey、切没切trait、甚至
+  // 重新打开同一个trait面板都无关，只要重新渲染过一次内容就算新世代。
+  // redeemTraitProduct() 发起兑换请求前，把 _lastTraitCtx（连同它当时记下的
+  // gen值）整个快照下来；请求resolve后 _refreshTraitPanel() 比对当前
+  // _zonePanelGen 是否还等于快照里的gen——不等，说明这段异步等待期间面板已经
+  // 被重新渲染过（用户切到了别的标签/别的trait/甚至同一个trait被重新打开），
+  // 静默跳过，不把兑换结果错误地写进当前正显示的、不相关的面板内容里。这是本
+  // 项目里"发起异步操作前快照状态、操作完成后比对状态是否还一致"惯例（对齐
+  // main-new.js::_islandGeneration 同一设计原则）在zone-panel场景的落地，不是
+  // 全新发明的机制。
+  let _zonePanelGen = 0;
 
   // ── 五行色彩 ────────────────────────────────────────
   const WX_COLOR = {
@@ -388,6 +424,7 @@ const Analysis = (() => {
   };
 
   function buildZonePanel(zoneKey, baziData, pillarAiDetail) {
+    _zonePanelGen++; // 见 _zonePanelGen 声明处说明：每次渲染zone-panel内容都自增一次
     if (zoneKey.startsWith('pillar_')) {
       return buildPillarPanel(zoneKey.replace('pillar_', ''), baziData, pillarAiDetail);
     }
@@ -1208,6 +1245,7 @@ const Analysis = (() => {
   // 改动最重要的健壮性要求。纳音小节两条路径都保留（事实性短信息，跟AI三个分类
   // 小节不冲突）。
   function buildPillarPanel(col, baziData, pillarAiDetail) {
+    _zonePanelGen++; // 见 _zonePanelGen 声明处说明：每次渲染zone-panel内容都自增一次
     const p      = baziData.pillars || {};
     const pillar = p[col] || {};
     const stem   = pillar.stem   || '—';
@@ -1263,6 +1301,7 @@ const Analysis = (() => {
   // 不一致时互相矛盾；AI正文小节自己的insight()配色改用AI给出的nature，二者是
   // 两个独立的展示决策，不强行统一。
   function buildShenshaPanel(name, baziData, shenshaAiDetail) {
+    _zonePanelGen++; // 见 _zonePanelGen 声明处说明：每次渲染zone-panel内容都自增一次
     const isGood = SHENSHA_GOOD.has(name);
     const isWarn = SHENSHA_WARN.has(name);
     const type   = isGood ? 'good' : isWarn ? 'warn' : 'neutral';
@@ -1309,7 +1348,15 @@ const Analysis = (() => {
   // 数据（不依赖某个模块级变量在点击那一刻"恰好还缓存着"），保留在函数签名里
   // 只是跟其它 buildXxxPanel(key, baziData, ...) 保持一致的调用约定。
   function buildTraitPanel(zoneKey, baziData, trait) {
+    _zonePanelGen++; // 见 _zonePanelGen 声明处说明：每次渲染zone-panel内容都自增一次
     trait = trait || {};
+    // 供 redeemTraitProduct() 兑换成功后原地重渲染当前面板复用（见上方
+    // _lastTraitCtx 声明处的说明）。每次面板打开/刷新都会重新调用本函数，
+    // 因此这里无条件覆盖即可，不需要额外的"是否变化"判断。gen记下本次渲染时
+    // 的世代号，供 redeemTraitProduct()/_refreshTraitPanel() 的竞态守卫比对
+    // （见 _zonePanelGen 声明处的说明）。
+    _lastTraitCtx = { zoneKey, baziData, trait, gen: _zonePanelGen };
+
     const isGood = trait.kind === 'strength';
     const type   = isGood ? 'good' : 'warn';
     const icon   = isGood ? '✦ 命盘优势' : '⚠ 注意事项';
@@ -1329,10 +1376,162 @@ const Analysis = (() => {
       body += section(isGood ? '为什么会有这个优势' : '为什么需要留意', insight(detailText, type));
     }
 
-    // 本阶段不包含"兑换/推荐商品"内容——那是后续独立阶段的范围（见项目根目录
-    // PROMPT_SYSTEM.md 修改记录、claude-docs/已知问题与修复记录.md 对应日期
-    // 条目），这次只做"展示详情"。
+    // 2026-08-12第二阶段新增：仅"注意事项"（kind==='caution'）追加兑换实体
+    // 水晶商品区块——"优势"（kind==='strength'）不挂任何商品推荐逻辑，商品
+    // 只对应"需要改善的问题"，这是产品设计上的明确边界，不是遗漏。
+    // try/catch防御：Products/UserState任一模块加载顺序异常导致的运行时错误，
+    // 都不应该影响本函数上方已经构建好的核心summary+detail内容展示。
+    if (trait.kind === 'caution') {
+      try {
+        body += _traitRedeemBlock(baziData, trait);
+      } catch (e) {
+        // 静默降级：兑换区块是锦上添花的附加功能，不是核心功能，出错不上抛。
+      }
+    }
+
     return body;
+  }
+
+  // ── 兑换实体水晶商品区块（2026-08-12第二阶段新增，仅 kind==='caution' 调用）──
+  // 依赖另两个子agent（user-system）并行实现的 Products（js/products.js）与
+  // UserState（js/user-state.js）模块。任一模块未加载/缺少期望的方法时，本函数
+  // 直接返回空字符串——不渲染任何占位内容，也不报错，保证详情面板的核心功能
+  // （展示summary+detail）不依赖这两个模块是否已就绪。
+  function _traitRedeemBlock(baziData, trait) {
+    if (typeof Products === 'undefined' || typeof Products.getProducts !== 'function') return '';
+    if (typeof UserState === 'undefined') return '';
+
+    const baziKey = (typeof UserState.baziKey === 'function') ? UserState.baziKey(baziData) : null;
+    const resolved = (baziKey && typeof UserState.isTraitResolved === 'function')
+      ? UserState.isTraitResolved(baziKey, trait.kind, trait.idx)
+      : false;
+
+    // 已兑换：静态徽标，不再展示商品列表/按钮——复用现有 badge() 辅助函数，
+    // 保持与面板顶部badge同一视觉语言，不引入新的徽标样式。
+    if (resolved) {
+      return section('改善进度', badge('已改善 ✅', 'good'));
+    }
+
+    let products = [];
+    try {
+      products = Products.getProducts() || [];
+    } catch (e) {
+      products = [];
+    }
+    if (!products.length) return '';
+
+    const lang   = (typeof Lang !== 'undefined' && typeof Lang.getLang === 'function') ? Lang.getLang() : 'zh';
+    const spirit = (typeof UserState.getSpirit === 'function') ? (UserState.getSpirit() || 0) : 0;
+
+    const cardsHtml = products.map(p => {
+      const name = (p && p.name && (p.name[lang] || p.name.zh)) || (p && p.id) || '';
+      const cost = (p && Number(p.spiritCost)) || 0;
+      const enough = spirit >= cost;
+      const icon = _traitProductIcon(p);
+      // 灵气不足：按钮禁用态+差额文案；足够：可点击的"兑换"按钮，
+      // onclick 走本项目既有的 onclick="Module.method(...)" 惯例（见
+      // auth.js/user-journey.js/index.html 多处同款写法），因为这段HTML会
+      // 被main-new.js整段塞进 zone-panel-content.innerHTML，无法在这里用
+      // addEventListener 闭包绑定。
+      const btnHtml = enough
+        ? `<button class="trait-redeem-btn" onclick="Analysis.redeemTraitProduct('${String(p.id).replace(/'/g, "\\'")}', this)">兑换</button>`
+        : `<button class="trait-redeem-btn disabled" disabled>还需要${cost - spirit}灵气</button>`;
+      return `
+        <div class="trait-product-card">
+          <div class="trait-product-icon">${icon}</div>
+          <div class="trait-product-info">
+            <div class="trait-product-name">${name}</div>
+            <div class="trait-product-price">${cost} 灵气</div>
+          </div>
+          ${btnHtml}
+        </div>`;
+    }).join('');
+
+    return section('兑换实体改善', `<div class="trait-product-list">${cardsHtml}</div>`);
+  }
+
+  // 商品图标：本阶段"纯展示+外链"边界不引入真实商品图片资源，用简单emoji代替
+  // （见项目方案文档第二阶段第5节）。按 decorId/id 关键词粗略匹配，找不到时
+  // 回退通用水晶图标，不因为匹配不上而报错或留空。
+  function _traitProductIcon(product) {
+    const key = ((product && (product.decorId || product.id)) || '').toLowerCase();
+    if (key.includes('amethyst')) return '🔮';
+    if (key.includes('rose'))     return '💗';
+    if (key.includes('obsidian')) return '⚫';
+    if (key.includes('water') || key.includes('basin') || key.includes('clear')) return '💧';
+    return '💎';
+  }
+
+  // ── 供兑换按钮 onclick 调用：编排一次商品兑换，成功后原地刷新当前已打开的
+  // trait面板（复用 _lastTraitCtx，不依赖main-new.js重新调用_openZonePanel，
+  // 与 refreshAiAnalysis()/refreshStrengthGauge() 同一"模块级ctx+原地重渲染"
+  // 惯例）。Products模块未加载/_lastTraitCtx为空（理论上不会发生，因为按钮
+  // 只会出现在buildTraitPanel()渲染的面板里）时静默返回。
+  //
+  // 竞态守卫（qa-reviewer发现，2026-08-12修复）：Products.redeem() 内部有
+  // insert数据库+fire-and-forget网络请求，弱网下可能要几秒才resolve。这段
+  // await期间用户完全可能已经切换到别的zoneKey面板（同类型trait/pillar_/
+  // shensha_/普通zone）、切换了岛屿场景、或者直接关闭了面板——这里必须在
+  // resolve后重新确认"当前打开的还是不是点击那一刻的那个面板"，不能无条件
+  // 原地刷新。做法：点击这一刻把 _lastTraitCtx（连同它当时记下的 gen）整个
+  // 快照下来，resolve后交给 _refreshTraitPanel() 比对，见该函数及
+  // _zonePanelGen 声明处的说明。
+  async function redeemTraitProduct(productId, btnEl) {
+    if (typeof Products === 'undefined' || typeof Products.redeem !== 'function') return;
+    if (!_lastTraitCtx) return;
+
+    const ctxAtClick = _lastTraitCtx;
+    const { trait, baziData } = ctxAtClick;
+    const originalText = btnEl ? btnEl.textContent : '';
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = '兑换中…';
+    }
+
+    let ok = false;
+    try {
+      ok = await Products.redeem(productId, {
+        kind: trait.kind,
+        idx: trait.idx,
+        summary: trait.summary,
+        baziData,
+      });
+    } catch (e) {
+      ok = false;
+    }
+
+    if (ok) {
+      _refreshTraitPanel(ctxAtClick);
+    } else if (btnEl) {
+      // 兑换失败（灵气不足/未登录被引导中止/网络错误等，具体原因与提示由
+      // Products.redeem() 内部负责）：还原按钮，不清空/替换面板其余内容——
+      // 与 refreshAiAnalysis() 失败分支"旧内容原样保留"同一原则。btnEl此时
+      // 即便面板已经被切走导致该按钮已从DOM里被替换掉，对一个已脱离文档树的
+      // 节点写属性也只是无副作用的空操作，不会报错，不需要额外判空。
+      btnEl.disabled = false;
+      btnEl.textContent = originalText || '兑换';
+    }
+  }
+
+  // 内部：用点击那一刻快照下来的 ctxAtClick 重新调用 buildTraitPanel() 并原地
+  // 替换 zone-panel-content 的内容——兑换成功后 UserState.isTraitResolved()
+  // 会变为true，重渲染即可自然切换到"已改善"徽标态，不需要额外的状态机。
+  //
+  // 世代守卫：ctxAtClick.gen 是点击那一刻 _zonePanelGen 的快照值。只要这之间
+  // zone-panel-content 被重新渲染过一次（不论渲染出的是别的zoneKey、别的
+  // trait、还是重新打开了同一个trait——buildZonePanel/buildPillarPanel/
+  // buildShenshaPanel/buildTraitPanel 四个入口都会让 _zonePanelGen 自增），
+  // 世代号就对不上，说明用户已经不再停留于点击兑换那一刻的那个面板实例，
+  // 静默跳过，不覆盖当前正显示的、不相关的内容。面板被直接关闭（没有触发
+  // 任何重新渲染，_zonePanelGen不变）则靠 zone-panel 的 open class 兜底判断。
+  function _refreshTraitPanel(ctxAtClick) {
+    if (!ctxAtClick || ctxAtClick.gen !== _zonePanelGen) return;
+    const panel = document.getElementById('zone-panel');
+    if (!panel || !panel.classList.contains('open')) return;
+    const content = document.getElementById('zone-panel-content');
+    if (!content) return;
+    const { zoneKey, baziData, trait } = ctxAtClick;
+    content.innerHTML = buildTraitPanel(zoneKey, baziData, trait);
   }
 
   function _ssPersonalImpact(name, baziData) {
@@ -1352,5 +1551,5 @@ const Analysis = (() => {
     return map[name] || `${name}入命，对${dm}日主的${wx}行格局产生深远影响，宜把握其吉意，化解其凶性`;
   }
 
-  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildTraitPanel, buildReport, refreshAiAnalysis, showAiRefreshing, clearAiRefreshing, refreshStrengthGauge };
+  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildTraitPanel, buildReport, refreshAiAnalysis, showAiRefreshing, clearAiRefreshing, refreshStrengthGauge, redeemTraitProduct };
 })();

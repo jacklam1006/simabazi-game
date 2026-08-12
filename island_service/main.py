@@ -11,6 +11,7 @@ FastAPI 后端，部署到 Render
   GET  /status/{job_id}       前端轮询进度
   GET  /health                健康检查（含API key状态）
   GET  /ping                  保活端点（前端每14分钟调用）
+  POST /notify-redemption     水晶兑换请求通知邮件（纯转发，不写数据库）
 """
 
 import os
@@ -116,6 +117,16 @@ class AnalyzeRequest(BaseModel):
     birth_year: int = 0
     force_refresh: bool = False  # true 时跳过后端文件缓存，强制重新走六步AI深析流水线
                                   # （设置面板"轻量刷新AI深析"用，见 gemini_analysis.py::analyze_bazi()）
+
+class NotifyRedemptionRequest(BaseModel):
+    # 2026-08-12 第二阶段"灵气兑换水晶"：`redemption_requests`表才是权威数据
+    # （前端已用supabase-js直接insert过），这个请求体只用于拼一封提醒邮件，
+    # 字段全部给默认值——即使前端传漏某个字段，也不应该让这个锦上添花的
+    # 端点因为pydantic校验失败而报错。
+    product_name: str = ''
+    trait_summary: str = ''
+    contact_phone: str = ''
+    user_email: str = ''
 
 
 # ── TripoAI 轮询（含超时）────────────────────────────────────
@@ -377,6 +388,70 @@ async def analyze_bazi_endpoint(req: AnalyzeRequest):
     if result.get('error') == 'no_api_key':
         raise HTTPException(status_code=503, detail="AI analysis service not configured")
     return result
+
+
+def _redact_resend_key(msg: str) -> str:
+    """
+    去除异常信息里可能内嵌的真实 RESEND_API_KEY，防止通过日志/响应泄漏。
+    Resend鉴权走Authorization header（不像Gemini那样把key拼进URL query），
+    理论上更不容易泄漏，但仍保留这层防护，与 gemini_analysis.py/tripo_client.py
+    的 _redact() 同款约定一致（见已知问题日志"Key泄漏"系列条目）。
+    """
+    if not msg:
+        return msg
+    key = os.environ.get("RESEND_API_KEY", "")
+    if key:
+        msg = msg.replace(key, "***REDACTED***")
+    return msg
+
+
+# ── 端点7：水晶兑换请求通知邮件 ───────────────────────────────
+# 2026-08-12 第二阶段"灵气兑换水晶"：纯转发用途的轻量端点，不写数据库——
+# `redemption_requests`表才是权威数据（前端已用supabase-js直接insert过），
+# 这里只负责给业务方发一封即时提醒邮件，方便尽快通过WhatsApp联系用户发货。
+# 前端是fire-and-forget调用，即使这封邮件没发出去，兑换记录依然完整落库，
+# 业务方仍可直接查表兜底——因此本端点任何失败都不应该抛错阻塞前端、更不
+# 应该让用户看到"兑换失败"这种误导性报错，一律 print 警告后照常返回200。
+@app.post("/notify-redemption")
+def notify_redemption(req: NotifyRedemptionRequest):
+    resend_key = os.environ.get("RESEND_API_KEY", "")
+    owner_email = os.environ.get("OWNER_NOTIFY_EMAIL", "")
+    if not resend_key or not owner_email:
+        print("[notify-redemption] RESEND_API_KEY 或 OWNER_NOTIFY_EMAIL 未配置，跳过发信")
+        return {"sent": False}
+
+    try:
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {resend_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": "司马八字 <onboarding@resend.dev>",
+                "to": [owner_email],
+                "subject": f"新的水晶兑换请求：{req.product_name}",
+                "text": (
+                    f"商品：{req.product_name}\n"
+                    f"命盘特点：{req.trait_summary}\n"
+                    f"联系电话：{req.contact_phone}\n"
+                    f"用户邮箱：{req.user_email}\n\n"
+                    "完整记录请前往 Supabase Studio 查看 redemption_requests 表，"
+                    "并通过 WhatsApp 联系用户安排发货。"
+                ),
+            },
+            timeout=10,
+        )
+        if not resp.ok:
+            print(f"[notify-redemption WARNING] Resend返回非200: "
+                  f"{resp.status_code} {_redact_resend_key(resp.text)[:200]}")
+            return {"sent": False}
+        return {"sent": True}
+    except Exception as e:
+        # 网络异常/超时/DNS失败等——不抛错，只警告日志，见函数顶部注释
+        print(f"[notify-redemption WARNING] 发信异常（不阻塞前端）: "
+              f"{_redact_resend_key(str(e))[:200]}")
+        return {"sent": False}
 
 
 # ── 本地运行 ─────────────────────────────────────────────────

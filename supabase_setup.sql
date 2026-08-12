@@ -96,3 +96,55 @@ DROP POLICY IF EXISTS "用户只能删除自己的资料" ON profiles;
 CREATE POLICY "用户只能删除自己的资料"
     ON profiles FOR DELETE
     USING (auth.uid() = id);
+
+-- ── 已上线生产表补列（幂等，可安全重复执行）──────────────────
+-- 2026-08-12 第二阶段"灵气兑换水晶"：用户用游戏内积分（灵气）兑换实体水晶商品，
+-- 纯展示+外链，业务方线下通过WhatsApp联系买家发货，本次不做app内真实收款。
+-- spirit_balance 是用户当前灵气余额（前端 js/user-state.js 读写同步）。
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS spirit_balance INTEGER DEFAULT 0;
+
+-- ── 兑换请求记录表 ──────────────────────────────────────────
+-- 2026-08-12 第二阶段"灵气兑换水晶"：用户提交一次兑换请求时由前端直接
+-- insert 一行（不经过后端写库，后端 /notify-redemption 端点只负责发一封
+-- 提醒邮件，这张表才是权威数据）。不给用户 UPDATE/DELETE 策略，状态流转
+-- （pending → contacted → shipped → done/cancelled）由业务方在 Supabase
+-- Studio 手动改，本阶段不建管理界面。
+CREATE TABLE IF NOT EXISTS redemption_requests (
+    id            UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id       UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    product_id    TEXT NOT NULL,
+    product_name  TEXT,
+    spirit_cost   INTEGER,
+    island_id     UUID REFERENCES islands(id) ON DELETE SET NULL,
+    trait_kind    TEXT,
+    trait_index   INTEGER,
+    trait_summary TEXT,
+    contact_phone TEXT,
+    contact_note  TEXT,
+    status        TEXT DEFAULT 'pending' CHECK (status IN ('pending','contacted','shipped','done','cancelled')),
+    fulfilled_at  TIMESTAMPTZ
+);
+
+-- ── 行级安全策略（RLS）──────────────────────────────────────
+-- 用户只能创建/读取自己的兑换请求，不给 UPDATE/DELETE（见上方表注释）
+
+ALTER TABLE redemption_requests ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "用户只能创建自己的兑换请求" ON redemption_requests;
+CREATE POLICY "用户只能创建自己的兑换请求"
+    ON redemption_requests FOR INSERT
+    WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "用户只能读取自己的兑换请求" ON redemption_requests;
+CREATE POLICY "用户只能读取自己的兑换请求"
+    ON redemption_requests FOR SELECT
+    USING (auth.uid() = user_id);
+
+-- 防止同一条命盘特点（caution）被重复兑换：同一用户+同一岛屿+同一
+-- trait_kind/trait_index 只允许存在一条非 cancelled 的记录，否则会产生
+-- 多笔灵气重复扣减、业务方重复收到通知的脏数据（cancelled 状态不受限，
+-- 允许用户在被业务方取消后重新发起兑换）。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_redemption_unique_trait
+    ON redemption_requests(user_id, island_id, trait_kind, trait_index)
+    WHERE status != 'cancelled';
