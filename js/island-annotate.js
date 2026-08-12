@@ -54,6 +54,30 @@ const IslandAnnotate = (() => {
 
   const KONGWANG_LAYOUT = { x:-0.71, z:-0.71, y:0.65, hover:0.5 };
 
+  // ── Trait（命盘优势✅ / 注意事项⚠️）环形布局 ─────────────────
+  // 2026-08-11：新功能"命盘特点3D标注"第一阶段（见
+  // claude-docs 计划 structured-nibbling-duckling），独立于 PILLAR_LAYOUT/
+  // SHENSHA_LAYOUT，不复用/不改动它们的数组或生命周期。
+  // 6个点，半径取 x/z ≈ 0.26~0.52（换算后再乘 LAYOUT_INSET），刻意比四柱
+  // (半径约0.8，y 0.55~0.85) 更靠内、比神煞(半径1.0，y=0.25定高) 更靠内，
+  // 高度上也分两层（0.18/0.32）跟神煞的固定0.25错开，降低三类标注互相
+  // 重叠/贴脸的概率。
+  // 顺序按0°→300°六等分排布，attachTraits() 会用 strengths[i]/cautions[i]
+  // 交替（s0,c0,s1,c1,s2,c2）的顺序跟这个数组按下标一一对应，因此这里的
+  // 偶数下标（0/2/4）实际固定对应"优势"点位、奇数下标（1/3/5）对应
+  // "注意事项"点位——保证环上好/坏类型不相邻（用户明确要求的密度缓解手段之一）。
+  // 这组数值是未经真实3D模型验证的起点，已用真实生成岛屿人工核实过并调整
+  // （见 island-annotate.js 改动附带的验证记录），不同模型形状仍可能有个别
+  // 点位贴合度差异，属于已知可接受范围。
+  const TRAIT_LAYOUT = [
+    { x: 0.52, z: 0.00, y:0.18, hover:0.22 },  //   0°　优势
+    { x: 0.26, z: 0.45, y:0.32, hover:0.30 },  //  60°　注意事项
+    { x:-0.26, z: 0.45, y:0.18, hover:0.22 },  // 120°　优势
+    { x:-0.52, z: 0.00, y:0.32, hover:0.30 },  // 180°　注意事项
+    { x:-0.26, z:-0.45, y:0.18, hover:0.22 },  // 240°　优势
+    { x: 0.26, z:-0.45, y:0.32, hover:0.30 },  // 300°　注意事项
+  ];
+
   // 模型尚未加载/获取失败时的兜底包围盒（近似此前写死坐标背后假设的比例），
   // 保证 attach() 在任何异常情况下都不会算出 NaN 或抛错
   const FALLBACK_BOX_MIN = new THREE.Vector3(-5, -1, -5);
@@ -142,6 +166,12 @@ const IslandAnnotate = (() => {
   let _labels   = [];    // 所有CSS2DObject引用
   let _labelMap = {};    // key → DOM div，供 highlight 使用
 
+  // Trait标注独立生命周期（不放进 _labels/_labelMap）——attachTraits() 是在
+  // AI异步返回后才被调用的，明显晚于 attach()（可能晚几秒到几分钟），如果
+  // 混用 _clearLabels() 的数组/时机，换岛屿时容易出现"旧trait标签残留"这类
+  // island-decorations.js 曾经踩过的同款故障（见该文件 2026-08-01 注释）。
+  let _traitLabels = [];   // [{ css2d: CSS2DObject, div: HTMLElement }]
+
   // CSS2DRenderer.js 是独立CDN脚本，理论上在 <script> 标签同步加载顺序下
   // 会先于本文件执行完毕；但网络环境不可控时CDN可能加载缓慢/失败，
   // 不能"检查一次没有就永久放弃"，改为限时轮询，正常情况下总能等到它就绪。
@@ -168,6 +198,9 @@ const IslandAnnotate = (() => {
 
   function _attachLabels(scene, baziData) {
     _clearLabels(scene);
+    // 防御性清理：即使目前调用时序下 attachTraits() 总是晚于 attach()，
+    // 也要在这里清一次上一个岛屿可能残留的trait标签（换岛屿场景）
+    detachTraits(scene);
 
     const p  = baziData.pillars  || {};
     const ss = Array.isArray(baziData.shenshe) ? baziData.shenshe : [];
@@ -287,6 +320,180 @@ const IslandAnnotate = (() => {
     return new THREE.CSS2DObject(_wrapAnchor(div));
   }
 
+  // ── Trait标记 DOM（命盘优势✅ / 注意事项⚠️）─────────────────
+  // 默认只显示 .trait-dot 小圆点（可点），.trait-leader/.trait-card 默认
+  // opacity:0;pointer-events:none（见 index.html），点击圆点后加 .expanded
+  // class 才展开引导线+完整卡片——把"6个新增常驻热点"的视觉负担降到最低。
+  function _makeTraitLabel(kind, idx, trait, baziData) {
+    const isGood = kind === 'strength';
+    const div = document.createElement('div');
+    div.className = 'trait-marker ' + (isGood ? 'trait-good' : 'trait-warn');
+    div.innerHTML = `
+      <span class="trait-dot">${isGood ? '✅' : '⚠️'}</span>
+      <div class="trait-leader"></div>
+      <div class="trait-card">${(trait && trait.summary) || ''}</div>
+    `;
+
+    div.querySelector('.trait-dot').addEventListener('click', (e) => {
+      e.stopPropagation();
+      _toggleTraitExpand(div);
+    });
+
+    div.querySelector('.trait-card').addEventListener('click', (e) => {
+      e.stopPropagation();
+      UIEffects.labelPulse(div);
+      if (window.onIslandZoneClick) {
+        // extra数据在创建标签时就通过闭包直接携带summary/detail，不依赖任何
+        // 模块级变量在点击那一刻去查——四柱/神煞面板早年就是靠"点击时查全局
+        // 缓存"这个模式踩过坑（AI数据从未被真正缓存住，面板一直显示静态兜底
+        // 文案），这里的写法从一开始就避开同一类问题。
+        // 第三参数 force 留空（trait标签点击不需要绕开教程guard），extra 放在
+        // 第四位——main-new.js::_openZonePanel(zoneKey, baziData, force, extra)
+        // 用位置区分二者语义（force是Tutorial专用的布尔值，extra是对象），
+        // 不能把 extra 传到第三位，否则会被误判成一个 truthy 的 force。
+        window.onIslandZoneClick(`trait_${kind}_${idx}`, baziData, false, {
+          kind, idx,
+          summary: trait && trait.summary,
+          detail : trait && trait.detail,
+        });
+      }
+    });
+
+    return { css2d: new THREE.CSS2DObject(_wrapAnchor(div)), div };
+  }
+
+  /** 同一时刻只允许一个trait卡片展开：点开新的自动收起其余已展开的；
+   *  再次点击已展开的圆点会收起它自己（toggle）。
+   *
+   *  2026-08-11：qa-reviewer 复查发现"只在展开瞬间算一次位置"这个设计有个
+   *  延迟复发漏洞——卡片展开后若用户停留阅读不操作，场景仍在自动旋转
+   *  （island-loader.js autoRotateSpeed≈0.5，约3°/秒），锚点会持续横移，
+   *  几秒到几十秒后卡片重新漂出视口被裁切。修复：展开时暂停自动旋转
+   *  （IslandLoader.stopAutoRotate('traitCard')），收起时恢复
+   *  （startAutoRotate('traitCard')）——与 main-new.js::_openZonePanel()
+   *  打开完整侧边面板时的既有停转模式保持一致。用独立 reason 而非直接
+   *  覆盖布尔值，是为了避免和 zone-panel/Tutorial 各自的停转状态互相
+   *  打架（例如trait卡片展开着的同时又点开了四柱面板，关闭四柱面板不应该
+   *  让trait卡片的自转暂停被意外解除——见 island-loader.js::stopAutoRotate
+   *  实现处注释）。由于本组件"同一时刻最多一张卡片展开"，无需计数器，
+   *  只需在"从0张到1张"/"从1张到0张"两个转折点各调用一次即可
+   *  （0张→切换到另一张的情况沿途保持锁定，重复 stopAutoRotate 是
+   *  幂等的，不会有副作用）。 */
+  function _toggleTraitExpand(targetDiv) {
+    const wasExpanded = targetDiv.classList.contains('expanded');
+    _traitLabels.forEach(({ div }) => {
+      div.classList.remove('expanded', 'trait-expand-left');
+      const card = div.querySelector('.trait-card');
+      if (card) card.style.maxWidth = '';
+    });
+    if (!wasExpanded) {
+      _positionTraitCard(targetDiv);
+      targetDiv.classList.add('expanded');
+      if (typeof IslandLoader !== 'undefined') IslandLoader.stopAutoRotate('traitCard');
+    } else if (typeof IslandLoader !== 'undefined') {
+      IslandLoader.startAutoRotate('traitCard');
+    }
+  }
+
+  /**
+   * 展开前判断卡片该往视口哪一侧展开、以及实际能用多宽。
+   * 纯CSS无法知道锚点当前投影到屏幕的哪个位置（CSS2DRenderer每帧用内联
+   * transform: translate(-50%,-50%) translate(x,y) 更新锚点，具体像素坐标只有
+   * 运行时才知道），所以这里在用户点击展开的这一刻用一次 getBoundingClientRect
+   * 判断——只在展开动作发生时算一次，不是每帧计算，符合这个组件目前"零JS每帧
+   * 开销"的整体设计（对比 index.html 里 .trait-card 的静态CSS规则）。
+   * @param {HTMLElement} markerDiv - .trait-marker 容器（含 .trait-dot/.trait-card）
+   */
+  function _positionTraitCard(markerDiv) {
+    const dot  = markerDiv.querySelector('.trait-dot');
+    const card = markerDiv.querySelector('.trait-card');
+    if (!dot || !card) return;
+    const rect   = dot.getBoundingClientRect();
+    const vw     = window.innerWidth || document.documentElement.clientWidth;
+    const margin = 8;  // 视口边缘留白，避免卡片贴边
+    const gap    = 44; // 与 index.html .trait-card 的 left/right:44px 保持一致
+
+    const spaceRight = vw - margin - (rect.left + gap);
+    const spaceLeft  = (rect.left + rect.width) - gap - margin;
+    const expandLeft = spaceLeft > spaceRight;
+    const available  = expandLeft ? spaceLeft : spaceRight;
+
+    markerDiv.classList.toggle('trait-expand-left', expandLeft);
+    // CSS里 min-width:130px/max-width:200px 是设计上限；这里按实际可用空间
+    // 动态收紧上限（永远在130~200之间），即便锚点落在窄视口正中央、两侧空间
+    // 都不足200px时也不会超出更多——真正极端情况（可用空间<130）仍可能有
+    // 几像素溢出，这是 min-width 设计意图与屏幕物理宽度冲突的unavoidable边界，
+    // 而不是本次要修的裁切bug（该bug是固定 left:44px 完全不感知视口边界）。
+    card.style.maxWidth = Math.max(130, Math.min(200, available)) + 'px';
+  }
+
+  // 2026-08-11：qa-reviewer 顺带指出展开状态下横竖屏切换/resize不会重算
+  // maxWidth。展开期间已暂停自动旋转（见 _toggleTraitExpand），场景不会
+  // 再自行漂移，用户主动转屏这种场景也通常不在专注阅读中，风险已大幅降低；
+  // 但resize本身容易顺手处理，这里加一个防抖的 resize 监听，仅在存在
+  // 已展开卡片时才重算，不引入常态每帧开销。
+  let _resizeReflowTimer = null;
+  window.addEventListener('resize', () => {
+    if (_resizeReflowTimer) clearTimeout(_resizeReflowTimer);
+    _resizeReflowTimer = setTimeout(() => {
+      const expanded = _traitLabels.find(({ div }) => div.classList.contains('expanded'));
+      if (expanded) _positionTraitCard(expanded.div);
+    }, 150);
+  });
+
+  /**
+   * 挂载命盘特点标注（优势✅ / 注意事项⚠️）。
+   * 独立于 attach()/_attachLabels() 的生命周期——由AI异步分析完成后单独调用，
+   * 可能比 attach() 晚几秒到几分钟。
+   * @param {THREE.Scene} scene
+   * @param {object} baziData
+   * @param {{strengths:Array<{summary,detail}>, cautions:Array<{summary,detail}>}} traits
+   */
+  function attachTraits(scene, baziData, traits) {
+    detachTraits(scene);
+    if (!scene || !traits) return;
+
+    const strengths = Array.isArray(traits.strengths) ? traits.strengths.slice(0, 3) : [];
+    const cautions  = Array.isArray(traits.cautions)  ? traits.cautions.slice(0, 3)  : [];
+    if (!strengths.length && !cautions.length) return;
+
+    // 交替拼接：s0,c0,s1,c1,s2,c2 —— 顺序与 TRAIT_LAYOUT 数组下标一一对应，
+    // 环上好/坏类型天然交替不相邻（见 TRAIT_LAYOUT 定义处注释）。
+    const items = [];
+    for (let i = 0; i < 3; i++) {
+      if (strengths[i]) items.push({ kind: 'strength', idx: i, trait: strengths[i] });
+      if (cautions[i])  items.push({ kind: 'caution',  idx: i, trait: cautions[i]  });
+    }
+
+    const { box, group } = _getIslandBox();
+
+    items.forEach((item, i) => {
+      const frac = TRAIT_LAYOUT[i];
+      if (!frac) return;
+      const pos = _layoutToWorld(frac, box, group);
+      const { css2d, div } = _makeTraitLabel(item.kind, item.idx, item.trait, baziData);
+      css2d.position.copy(pos);
+      scene.add(css2d);
+      _traitLabels.push({ css2d, div });
+    });
+  }
+
+  /** 清理命盘特点标注（独立于 detach()/_clearLabels()，见 _traitLabels 声明处注释）*/
+  function detachTraits(scene) {
+    _traitLabels.forEach(({ css2d }) => { if (scene) scene.remove(css2d); });
+    _traitLabels = [];
+    // 2026-08-12 qa-reviewer实测发现：若销毁时恰有一张卡片处于展开状态
+    // （'traitCard'停转锁已被占用），_toggleTraitExpand()的"收起"分支
+    // 永远不会被走到（DOM直接被这里销毁，不经过用户点击收起），锁会
+    // 永久卡住，导致自动旋转整场会话再也无法恢复（轻量刷新AI深析、
+    // 切换/重新生成岛屿都会经过这里）。无论展开与否都无条件交还一次锁，
+    // startAutoRotate 对一个未被占用的 reason 做 Set.delete 是安全的
+    // no-op（见 island-loader.js::startAutoRotate 实现）。
+    if (typeof IslandLoader !== 'undefined' && IslandLoader.startAutoRotate) {
+      IslandLoader.startAutoRotate('traitCard');
+    }
+  }
+
   // ── Tutorial：高亮 / 清除高亮 ───────────────────────────
   /**
    * 高亮指定标签（其余变暗）
@@ -404,5 +611,6 @@ const IslandAnnotate = (() => {
   return {
     attach, detach, highlightLabel, clearHighlight, getLabelPositions, getLabelElement,
     getIslandBox, layoutToWorld,
+    attachTraits, detachTraits,
   };
 })();

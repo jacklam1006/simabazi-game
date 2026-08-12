@@ -323,8 +323,30 @@ const IslandLoader = (() => {
   function getIslandGroup() { return _islandGroup; }
   function getCamera()      { return _camera; }
   function getRenderer()    { return _renderer; }
-  function stopAutoRotate() { if (_controls) _controls.autoRotate = false; }
-  function startAutoRotate(){ if (_controls) _controls.autoRotate = true; }
+
+  // 自动旋转停转锁：2026-08-11 qa-reviewer复查发现，此前 stopAutoRotate/
+  // startAutoRotate 是纯布尔覆盖——当前有三处独立调用方会互相打架
+  // （main-new.js::_openZonePanel/closeZonePanel、tutorial.js 引导流程、
+  // island-annotate.js::_toggleTraitExpand 命盘特点卡片）：
+  // 例如用户展开trait卡片（要求停转）后又点开四柱面板（也要求停转，
+  // 用布尔覆盖问题不大），但关闭四柱面板时若直接把 autoRotate 设回 true，
+  // 会在trait卡片还展开着的情况下让场景意外转起来，卡片又被自转带出视口——
+  // 这正是"trait卡片展开后停留阅读会被自转带出视口再次裁切"这个bug的根因。
+  // 改为按 reason 记账的 Set：多个来源各自 stop 各自的 reason，只有当
+  // 所有 reason 都 start 之后（Set清空）才真正恢复旋转。不传 reason 的
+  // 旧调用点（main-new.js/tutorial.js 现状如此）共用同一个默认 key，
+  // 互相之间的 idempotent 覆盖行为与改动前完全一致，不会引入新问题；
+  // island-annotate.js 改为显式传入独立的 'traitCard' reason，
+  // 与它们互不覆盖。
+  const _rotateLocks = new Set();
+  function stopAutoRotate(reason) {
+    _rotateLocks.add(reason || '_default');
+    if (_controls) _controls.autoRotate = false;
+  }
+  function startAutoRotate(reason) {
+    _rotateLocks.delete(reason || '_default');
+    if (_controls && _rotateLocks.size === 0) _controls.autoRotate = true;
+  }
 
   return {
     initScene, generateIsland, loadFromUrl,

@@ -245,6 +245,51 @@
     .ss-neutral{border:1px solid rgba(201,169,110,.3);color:#c9a96e}
     .kongwang-label{background:rgba(8,8,20,.85);border:1px solid rgba(235,87,87,.3);border-radius:6px;padding:4px 10px;font-size:10px;color:rgba(232,224,208,.5);letter-spacing:1px}
 
+    /* ══ 命盘特点3D标注（优势✅ / 注意事项⚠️）══
+       密度控制：默认只有 .trait-dot 小圆点可见可点，.trait-leader/.trait-card
+       默认 opacity:0;pointer-events:none；点击圆点加 .expanded 才展开。
+       配色复用下方 .diag-good/.diag-warn 同一套绿/红色值，不新造配色系统。 */
+    .trait-marker{position:relative;pointer-events:none;display:flex;align-items:center}
+    .trait-dot{
+      display:flex;align-items:center;justify-content:center;
+      width:20px;height:20px;border-radius:50%;font-size:11px;line-height:1;
+      background:rgba(8,8,20,.9);cursor:pointer;pointer-events:auto;user-select:none;
+      transition:transform .2s;
+    }
+    .trait-good .trait-dot{border:1px solid rgba(111,207,151,.6);box-shadow:0 0 6px rgba(111,207,151,.25)}
+    .trait-warn .trait-dot{border:1px solid rgba(235,87,87,.6);box-shadow:0 0 6px rgba(235,87,87,.25)}
+    .trait-dot:hover{transform:scale(1.15)}
+    .trait-leader{
+      position:absolute;left:20px;top:50%;width:22px;height:1px;
+      background:rgba(201,169,110,.35);
+      opacity:0;pointer-events:none;transition:opacity .25s ease;
+    }
+    /* 卡片默认向右展开。锚点越靠右越可能被视口边界裁切——island-annotate.js
+       在每次展开时用一次性 getBoundingClientRect 判断哪一侧空间更充裕，够就加
+       .trait-expand-left（向左展开，见下方镜像规则）并动态收紧 max-width 到
+       实际可用宽度，避免锚点落在窄视口正中央时两侧都放不下200px卡片而溢出。
+       只在点击展开这一刻算一次，不是每帧计算。 */
+    .trait-card{
+      position:absolute;left:44px;top:50%;
+      transform:translateY(-50%) translateX(-8px);
+      /* width:max-content 是关键：这个卡片是 .trait-marker（自身仅~20px宽，
+         因为 leader/card 是 position:absolute 脱离文档流不计入父级宽度）内的
+         绝对定位元素，仅设 left 未设 right 时，浏览器按"包含块可用宽度"做
+         shrink-to-fit，而这里可用宽度恒为负——不加 width:max-content 会导致
+         无论文本多长都被强制夹到 min-width，max-width:200px 永远跑不到。 */
+      width:max-content;min-width:130px;max-width:200px;
+      background:rgba(8,8,20,.94);border-radius:8px;padding:8px 12px;
+      font-size:11px;line-height:1.6;color:rgba(232,224,208,.85);
+      opacity:0;pointer-events:none;cursor:pointer;
+      transition:opacity .25s ease,transform .25s ease;
+    }
+    .trait-marker.trait-expand-left .trait-leader{left:auto;right:20px}
+    .trait-marker.trait-expand-left .trait-card{left:auto;right:44px;transform:translateY(-50%) translateX(8px)}
+    .trait-good .trait-card{border:1px solid rgba(111,207,151,.4)}
+    .trait-warn .trait-card{border:1px solid rgba(235,87,87,.4)}
+    .trait-marker.expanded .trait-leader{opacity:1}
+    .trait-marker.expanded .trait-card{opacity:1;pointer-events:auto;transform:translateY(-50%) translateX(0)}
+
     /* 右侧分析面板 */
     /* 2026-08-11修复（qa CONFIRMED 1）：外壳本身不再滚动（overflow:hidden），
        只有 #zone-panel-content 内部滚动；#zone-panel-close 是外壳的直接子元素，

@@ -443,12 +443,66 @@ const App = (() => {
     }
   }
 
+  // ── AI深析结果套用到3D特点标注(✅/⚠️) ──────────────────────
+  // 抽出为独立函数：_onIslandReady()（首次生成/加载完成）与
+  // settings.js::refreshAiOnly()（轻量刷新AI深析成功后）都需要把同一份
+  // AI深析结果挂载到3D岛屿上——此前只有 _onIslandReady() 一处会做这件事，
+  // 导致轻量刷新成功后3D岛屿上的✅/⚠️标注依然停留在刷新前的旧内容（首次
+  // 生成时若AI深析超时失败，甚至是零个标注），必须手动刷新整个页面才会
+  // 更新，见 claude-docs/已知问题与修复记录.md 对应日期条目。两处调用点
+  // 各自写一份重复逻辑是这个代码库反复出问题的模式（哈希算法双实现同理），
+  // 因此收敛成这一处唯一实现。
+  // 注：四柱/神煞详情面板不依赖本函数——`_openZonePanel()`每次打开都会
+  // 直接调用`BaziAnalysis.getAnalysis()`按需取最新AI详解（该函数自身有
+  // localStorage/in-flight缓存，不会重复触发网络请求），天然与轻量刷新
+  // 后的最新内容保持同步，不需要这里额外缓存/传递。
+  //
+  // expectedGeneration：可选。调用方若已经在发起AI深析请求的那一刻快照过
+  // _islandGeneration（见上方声明处注释），传进来后本函数会再校验一次——
+  // 若此时 _islandGeneration 已变化（说明请求进行期间用户切换/加载了另一个
+  // 岛屿），静默丢弃，不挂载标注，避免把A岛屿的AI详解/标注污染到当前画面。
+  // 不传（undefined）则跳过这层校验，由调用方自行保证结果时效性。
+  // 注：settings.js::refreshAiOnly() 在调用本函数前，已经用同一个
+  // App.getIslandGeneration() 自行比对过一次世代值——这里再传入同一个快照值
+  // 只是"双保险"，两处比对的是同一个 _islandGeneration 计数器、同一套语义
+  // （都是"请求发起时的世代 !== 当前世代则丢弃"），不会互相冲突或重复判断出错，
+  // 中间也没有额外的 await 会让世代值在两次比对之间发生变化。
+  function _applyAiAnalysis(analysis, expectedGeneration) {
+    if (!analysis) return;
+    if (typeof expectedGeneration === 'number' && expectedGeneration !== _islandGeneration) return; // 会话已切换，静默丢弃
+
+    if (typeof IslandAnnotate !== 'undefined' && IslandAnnotate.attachTraits) {
+      const td = analysis.step_traits_detail || {};
+      const s1 = analysis.step1_foundation || {};
+      const strengths = (s1.strengths || []).map((summary, i) => ({
+        summary, detail: (td.strengths_detail || [])[i]
+      }));
+      const cautions = (s1.cautions || []).map((summary, i) => ({
+        summary, detail: (td.cautions_detail || [])[i]
+      }));
+      IslandAnnotate.attachTraits(IslandLoader.getScene(), _baziData, { strengths, cautions });
+    }
+  }
+
   // ── 岛屿就绪后 ───────────────────────────────────────────
   function _onIslandReady() {
     const scene = IslandLoader.getScene();
 
     // 标注系统（含诊断徽标）
     IslandAnnotate.attach(scene, _baziData);
+
+    // 异步获取AI深析数据，套用到3D标注+详解缓存（见 _applyAiAnalysis()
+    // 定义处注释）。静默失败——岛屿本身已经渲染完成，这里只是锦上添花的
+    // 标注层，不影响主流程。
+    // 世代守卫：请求发起那一刻快照当前"岛屿会话世代"（见上方 _islandGeneration
+    // 声明处注释，与 analysis.js::_loadAndRenderAi 同一模式），传给
+    // _applyAiAnalysis() 在结果到达时校验。
+    if (typeof BaziAnalysis !== 'undefined') {
+      const _genAtRequest = _islandGeneration;
+      BaziAnalysis.getAnalysis(_baziData, _gender).then(analysis => {
+        _applyAiAnalysis(analysis, _genAtRequest);
+      }).catch(() => {});
+    }
 
     // 恢复已解锁装饰
     IslandDecorations.restoreAll(_baziData);
@@ -719,8 +773,12 @@ const App = (() => {
   let _zonePanelToken = 0;
 
   // 根据 zoneKey 渲染面板 HTML（纯函数，无副作用）。analysis 为 null/undefined
-  // 时走静态兜底（不传第三参数），拿到 AI 深析结果后传入 analysis 走完整详解。
-  function _renderZonePanelHtml(zoneKey, baziData, analysis) {
+  // 时走静态兜底，拿到 AI 深析结果后传入 analysis 走完整详解。extra 是
+  // island-annotate.js::attachTraits() 的trait标签点击时闭包携带的
+  // {kind, idx, summary, detail} 数据，只有 'trait_' 开头的 zoneKey 会用到——
+  // trait 数据本身在标签创建时就已经完整拿到手（见该文件内的说明），不像
+  // pillar_/shensha_ 那样需要在这里异步等 AI 深析结果到达才能渲染完整版。
+  function _renderZonePanelHtml(zoneKey, baziData, analysis, extra) {
     if (zoneKey.startsWith('pillar_')) {
       const col    = zoneKey.replace('pillar_', '');
       const detail = analysis ? (analysis.step_pillars_detail || {})[col] : undefined;
@@ -732,6 +790,9 @@ const App = (() => {
       const detail = analysis ? items.find(s => s.name === name) : undefined;
       return Analysis.buildShenshaPanel(name, baziData, detail);
     }
+    if (zoneKey.startsWith('trait_')) {
+      return Analysis.buildTraitPanel(zoneKey, baziData, extra);
+    }
     return Analysis.buildZonePanel(zoneKey, baziData);
   }
 
@@ -740,7 +801,14 @@ const App = (() => {
   // Tutorial 的"查看完整详解"按钮（见 viewTutorialDetail()），点击前已经
   // 调用过 Tutorial.pause() 把引导自身的 Modal/overlay 隐藏掉，两者不会
   // 同时抢视觉焦点。
-  function _openZonePanel(zoneKey, baziData, force) {
+  // extra：可选第四参数，island-annotate.js::attachTraits() 的trait标签点击时
+  // 传入 {kind, idx, summary, detail} 形状，供 zoneKey 以 'trait_' 开头的分支
+  // 透传给 Analysis.buildTraitPanel()（见上方 _renderZonePanelHtml）。放在第四
+  // 位而不是复用第三位的 force，是因为两者语义完全独立、调用方不同（Tutorial
+  // 传布尔 force，island-annotate.js 传对象 extra），合并进同一个位置容易在
+  // 未来被误传/误判类型。pillar_/shensha_/其余分支忽略该参数，不传时（现有
+  // 调用点）行为与改动前完全一致。
+  function _openZonePanel(zoneKey, baziData, force, extra) {
     // 引导激活期间，标签点击由 Tutorial 接管，此处直接返回（"查看完整详解"
     // 走 force=true 绕开这道 guard）
     if (!force && typeof Tutorial !== 'undefined' && Tutorial.isActive()) return;
@@ -751,10 +819,10 @@ const App = (() => {
 
     const myToken = ++_zonePanelToken;
 
-    // 1) 立即用静态兜底同步渲染打开面板——不等待任何网络请求，点击到看见
-    //    内容零延迟；静态内容本身完整可读，不是占位符，AI内容到达前用户
-    //    看到的就是可用的最终态之一。
-    content.innerHTML = _renderZonePanelHtml(zoneKey, baziData, null);
+    // 1) 立即同步渲染打开面板——不等待任何网络请求，点击到看见内容零延迟；
+    //    pillar_/shensha_ 用静态兜底（AI内容到达前用户看到的就是可用的最终
+    //    态之一），trait_ 用闭包已携带的完整数据直接渲染完整版，不需要等待。
+    content.innerHTML = _renderZonePanelHtml(zoneKey, baziData, null, extra);
     panel.classList.add('open');
     AudioManager.playSfx('zone_click');
     IslandLoader.stopAutoRotate();
@@ -876,6 +944,11 @@ const App = (() => {
     // 世代值比对，用于识破"请求发起后用户已切换到另一个岛屿会话"的竞态（见上方
     // _islandGeneration 声明处注释）。
     getIslandGeneration: () => _islandGeneration,
+    // settings.js::refreshAiOnly() 轻量刷新AI深析成功后调用，把新结果套用到
+    // 3D标注（trait✅/⚠️标签）+ 命柱/神煞详解缓存，与首次生成/加载岛屿时
+    // _onIslandReady() 内部调用的是同一份实现（见 _applyAiAnalysis() 定义处
+    // 注释）。expectedGeneration 建议传入调用方发起请求时快照的世代值。
+    _applyAiAnalysis: (analysis, expectedGeneration) => _applyAiAnalysis(analysis, expectedGeneration),
     // settings.js::editBirthInfo() 用于关闭设置面板后切回表单屏幕，让用户修改
     // 出生信息后自己点提交（走完全原生的 submit()→_startGenerate() 流程）。
     // 直接导出既有的内部屏幕切换函数，不新增逻辑。

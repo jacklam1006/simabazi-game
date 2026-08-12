@@ -1293,6 +1293,48 @@ const Analysis = (() => {
     return body;
   }
 
+  // ── 命盘特点面板（优势/注意事项）────────────────────────
+  // 2026-08-11新增，供3D岛屿新增的✅/⚠️锚点（js/island-annotate.js::attachTraits()）
+  // 点击后展示详情，复用既有 zone-panel 机制（跟 buildPillarPanel/buildShenshaPanel
+  // 同一套面板容器，由调用方 _openZonePanel 负责挂载）。
+  // trait 参数形状：{ kind: 'strength'|'caution', idx: 0|1|2, summary: string, detail?: string }
+  //   - summary：Step1 已生成的≤30字短句（strengths/cautions 数组里第 idx 条原句）
+  //   - detail ：step_traits_detail.strengths_detail/cautions_detail 里第 idx 条
+  //     展开说明（80-120字），可能因AI生成失败、或老版本本地缓存（v5及更早，
+  //     未生成过这个字段）而缺失——见 gemini_analysis.py::_sanitize_traits_detail()
+  //     与 bazi-analysis.js::_traitsDetailValid() 共同遵循的"3+3全齐或整体判定
+  //     为空"取舍，没有"部分条目有detail、部分没有"这种中间态，但即便如此这里
+  //     仍然按"detail可能整体缺失"防御性处理，不依赖上游一定给对。
+  // zoneKey 本身不参与渲染——trait 对象里已经通过调用方闭包携带了全部渲染所需
+  // 数据（不依赖某个模块级变量在点击那一刻"恰好还缓存着"），保留在函数签名里
+  // 只是跟其它 buildXxxPanel(key, baziData, ...) 保持一致的调用约定。
+  function buildTraitPanel(zoneKey, baziData, trait) {
+    trait = trait || {};
+    const isGood = trait.kind === 'strength';
+    const type   = isGood ? 'good' : 'warn';
+    const icon   = isGood ? '✦ 命盘优势' : '⚠ 注意事项';
+    const summary = trait.summary || '';
+
+    let body = `
+      <div>${badge(icon, type)}</div>
+      <div class="zone-title">${summary}</div>
+      <div class="zone-subtitle">命盘特点 · AI解读</div>
+    `;
+
+    // detail缺失时（AI详解生成失败/老缓存/step_traits_detail整体未通过"3+3
+    // 全齐"校验）优雅降级回退展示summary本身——不留空白、不报错，跟
+    // buildPillarPanel/buildShenshaPanel的既有惯例一致。
+    const detailText = (trait.detail && String(trait.detail).trim()) || summary;
+    if (detailText) {
+      body += section(isGood ? '为什么会有这个优势' : '为什么需要留意', insight(detailText, type));
+    }
+
+    // 本阶段不包含"兑换/推荐商品"内容——那是后续独立阶段的范围（见项目根目录
+    // PROMPT_SYSTEM.md 修改记录、claude-docs/已知问题与修复记录.md 对应日期
+    // 条目），这次只做"展示详情"。
+    return body;
+  }
+
   function _ssPersonalImpact(name, baziData) {
     const dm  = getDayMaster(baziData);
     const wx  = STEM_WX[dm] || '土';
@@ -1310,5 +1352,5 @@ const Analysis = (() => {
     return map[name] || `${name}入命，对${dm}日主的${wx}行格局产生深远影响，宜把握其吉意，化解其凶性`;
   }
 
-  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildReport, refreshAiAnalysis, showAiRefreshing, clearAiRefreshing, refreshStrengthGauge };
+  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildTraitPanel, buildReport, refreshAiAnalysis, showAiRefreshing, clearAiRefreshing, refreshStrengthGauge };
 })();

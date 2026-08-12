@@ -5,17 +5,19 @@
 RAG向量检索古籍/断语原文片段再生成"。完整背景与分工设计见项目根目录
 PROMPT_SYSTEM.md 对应"修改记录"、claude-docs/已知问题与修复记录.md 对应日期条目。
 
-六步框架（严格串行 Step1→Step2，其余7个步骤用 asyncio.gather 并行发起——2026-08-11
-新增命柱/神煞详解两步后，并行批次从5个变为7个，见下方对应日期说明）：
+六步框架（严格串行 Step1→Step2，其余8个步骤用 asyncio.gather 并行发起——2026-08-11
+新增命柱/神煞详解两步后并行批次从5个变为7个，同日又新增命盘特点详解后变为8个，
+见下方对应日期说明）：
   Step1 命局「出厂设置」扫描（日主/月令/五行强弱/性格底色）
   Step2 定格局与找用神（依赖Step1）
   Step2b 十神详解        （依赖Step1+2）─┐
   Step3 事业与财富深度剖析（依赖Step1+2）─┤
   Step4 婚恋与感情世界    （依赖Step1+2）─┤
-  Step5 健康与潜在风险提示（依赖Step1+2）─┤ 并行（7个）
+  Step5 健康与潜在风险提示（依赖Step1+2）─┤ 并行（8个）
   Step6 大运与流年运势推演（依赖Step1+2）─┤
   命柱详解（四柱，依赖Step1+2）           ─┤
-  神煞详解（依赖Step1+2）                 ─┘
+  神煞详解（依赖Step1+2）                 ─┤
+  命盘特点详解（优势/注意事项各3条，依赖Step1+2）─┘
 
 2026-08-03 内容深度扩充（非bug修复，见 claude-docs/已知问题与修复记录.md 对应日期条目）：
 六步（现七步，新增Step2b）narrative目标字数大致翻倍，Step1新增strengths/cautions
@@ -81,6 +83,59 @@ GeminiCallError返回空dict）——因为是"点击标签才会看到"的补�
 1989-05-09巳时），此前两种情况落盘后都是`{'shensha_items': []}`，前者会被
 永久误判缓存无效、每次打开报告都重跑整条流水线。完整推导见
 `_sanitize_shensha_detail()`/`_shensha_detail_valid()`附近注释。
+
+2026-08-11 新增「命盘特点详解」`step_traits_detail`（响应"3D岛屿命盘特点标注"
+需求第一阶段，前端 js/analysis.js::buildTraitPanel() 消费，`js/island-annotate.js`
+新增的✅/⚠️锚点点击后展示）：把Step1已生成的3条`strengths`+3条`cautions`短句
+（≤30字）逐条展开成80-120字说明，跟四柱/神煞详解同一种模式——只依赖ctx+step1+
+step2，加入既有 asyncio.gather 并行批次，用`_step_traits_detail_safe()`做独立
+失败隔离。**跟四柱/神煞详解不同的一点**：那两步允许"部分完整"（跳过式降级，
+比如缺一根柱子/一条神煞不影响其它），本步骤刻意设计成"3+3要么全部合法要么
+整体判定为空"——因为这里是固定3条优势+3条注意事项、按index与Step1原句严格
+一一对应展开，没有"部分可用"的中间态：如果只做到2/3条合法就落盘，前端按index
+配对summary+detail时会出现"第3条优势配到第2条详解"这种错位，比完全没有detail
+（前端优雅降级回退summary本身）更糟糕。max_tokens直接复用Step2已验证的7168
+（数据量约6条×80-120字≈480-720字内容，比pillars详解同量级或更小，不新造未
+验证的数字）。缓存版本从 v5 升级到 v6（LS_PREFIX 'bazi_ai_v6_'），`_cache_read()`
+新增第五道校验 `_traits_detail_valid()`（要求`strengths_detail`/`cautions_detail`
+都恰好3条，不是"非空"这种宽松校验——理由同上，这里没有"部分可用"的中间态）。
+
+2026-08-11 qa-reviewer复查PLAUSIBLE修复（非阻塞，本轮一并处理）：上面这道
+"恰好3+3"校验虽然逻辑本身没错，但**校验对象选错了层级**——`_sanitize_traits_detail()`
+已经在落盘前把"3+3要么全部合法要么整体判定为空"这条规则彻底把关死了（写入
+`step_traits_detail`的值只可能是`{}`或"恰好3+3的合法数据"两种形态之一，不存在
+第三种可能），`_traits_detail_valid()`在读取时又重新验一遍"是否恰好3+3"，
+效果上完全等价于"是否非空"，属于对同一条不变量的重复校验，没有额外收益。
+真正的代价在于它选中的失败信号太宽泛：Step1的`strengths`/`cautions`
+prompt模板（`_step1_foundation_sync()`）只在示例JSON里给了3个占位符，**没有**像
+`_step_traits_detail_sync()`自己的prompt那样显式加上"必须恰好3条，不多不少"
+这句强约束——模型偶发返回2条或4条时，`_step_traits_detail_sync()`开头的短路
+判断会触发、返回`{}`，这不是网络/超时/限流那种`GeminiCallError`（已被
+`_step_traits_detail_safe()`独立捕获隔离），而是一种"合法请求成功、只是内容
+形状对不上"的确定性结果——但当前`_traits_detail_valid()`对这种情况和对总失败
+一视同仁，判定`False`，进而拖累`_cache_read()`把**整份**含其它7个步骤正常
+数据的分析结果当作未命中，触发全部8-9次Gemini调用重新生成。这跟
+`_pillars_detail_valid()`/`_shensha_detail_valid()`遵循的"不能因为一个补充
+细节字段的部分/全部缺失就拖累整条缓存"设计初衷是同一个精神，只是命柱/神煞
+详解允许"部分完整"所以用"非空"作为折中；`step_traits_detail`因为
+sanitize层面严格all-or-nothing、没有"部分完整"这个中间态可用，"非空"校验
+在这里等价于"完全成功"，起不到同等的宽松效果。修复：`_traits_detail_valid()`
+改为只检查`step_traits_detail`这个key是否存在于结果dict里（不检查值的内容/
+长度），把"内容是否合法"这件事完全交给已经证明正确、且保持不变的
+`_sanitize_traits_detail()`——`analyze_bazi()`落盘前无条件写入这个key（值
+可能是`{}`也可能是合法3+3数据），所以这个key只要走完过一次成功的完整流水线
+就必然存在，用它做canary等价于"整条流水线本身是否成功跑完"，而不再额外
+关心这一个补充细节字段自己是否生成成功。**权衡取舍（刻意的，不是疏漏）**：
+这意味着`step_traits_detail`一旦因为上述短路或真实生成失败而落盘为`{}`，
+不会再有自愈重试路径——跟命柱/神煞详解"总失败仍会在下次请求触发重新生成"
+不同。这是有意接受的：①`step_traits_detail`是点击3D岛屿✅/⚠️锚点才会看到的
+补充细节，前端`buildTraitPanel()`拿到`{}`/空数组时本就优雅降级回退显示
+`trait.summary`本身（Step1原句），不留空白不报错，不是断供；②如果失败根因
+是Step1输出形状偶发漂移（不是网络类瞬时故障），不能假设"重新跑一遍就会变成
+3+3"，为了一个大概率不会因为重试而改善的字段去牺牲其它7个已经生成正确的
+步骤重新烧一遍Gemini配额，得不偿失。`js/bazi-analysis.js::_traitsDetailValid()`
+同一次改动里做一模一样的放宽（历史教训：`_computeHash`两处独立实现同一算法
+不同步的坑，这次两端在同一次改动里一起改，不分两轮）。
 
 **必须保留、不改的机制**（都是踩过生产坑才做对的，见已知问题日志2026-07-29多轮记录）：
 - _redact()：API Key脱敏，防止网络层异常把真实Key泄漏进响应体
@@ -324,6 +379,26 @@ def _shensha_detail_valid(data: dict) -> bool:
     return isinstance(sd.get('shensha_items'), list) and len(sd['shensha_items']) > 0
 
 
+# 2026-08-11 新增（命盘特点详解），2026-08-11 qa-reviewer复查PLAUSIBLE后同日
+# 修订（完整推导见本文件顶部docstring对应日期条目）：`step_traits_detail`的
+# "3+3要么全部合法要么整体判定为空"这条不变量已经由`_sanitize_traits_detail()`
+# 在落盘前彻底把关死（写入的值只可能是`{}`或恰好3+3的合法数据，没有第三种
+# 形态）——这里**不再**重复验证"是否恰好3+3"（那等价于验证"是否非空"，起不到
+# 独立防错作用，只会把Step1输出形状偶发漂移导致的确定性`{}`短路结果，跟真正
+# 需要重试的失败混为一谈，代价是拖累整份含其它7个步骤正常数据的分析结果被
+# `_cache_read()`判定整体未命中，重新烧一遍8-9次Gemini调用）。改为只检查
+# `step_traits_detail`这个key本身是否存在——`analyze_bazi()`落盘前无条件写入
+# 这个key（值可能是`{}`也可能是合法数据），用它做canary等价于"整条流水线是否
+# 成功跑完"，不再额外要求这一个补充细节字段自己生成成功。内容层面的合法性
+# （3+3是否对齐、是否为空）完全交给`_sanitize_traits_detail()`把关，前端
+# `buildTraitPanel()`拿到`{}`时优雅降级回退显示`trait.summary`（Step1原句）
+# 本身，不留空白不报错。刻意的取舍：这意味着`step_traits_detail`落盘为`{}`后
+# 不会再有自愈重试路径（跟命柱/神煞详解"总失败仍会在下次请求触发重试"不同）——
+# 权衡后接受，理由见docstring对应日期条目。
+def _traits_detail_valid(data: dict) -> bool:
+    return 'step_traits_detail' in data
+
+
 def _cache_read(h: str):
     path = ANALYSIS_CACHE / f"{h}.json"
     if not path.exists():
@@ -375,9 +450,18 @@ def _cache_read(h: str):
     # 存在性+"非空"（不是"完全齐全"，返工后的取舍见 `_pillars_detail_valid()`/
     # `_shensha_detail_valid()` 上方大段注释，含CONFIRMED 1/CONFIRMED 2两个
     # 方向的教训），任一不满足都判定未命中。
+    #
+    # 2026-08-11 v5→v6：新增「命盘特点详解」`step_traits_detail`。第五道校验
+    # `_traits_detail_valid()`——同日qa-reviewer复查后已放宽为只检查key存在性
+    # （不再要求`strengths_detail`/`cautions_detail`恰好3条），理由见
+    # `_traits_detail_valid()` 上方注释与本文件顶部docstring对应日期条目：内容
+    # 层面的合法性已由`_sanitize_traits_detail()`落盘前把关（3+3全合法或整体
+    # `{}`，没有第三种形态），这里重复验证等价于验证"是否非空"，只会让Step1
+    # 输出形状偶发漂移拖累整份缓存被判未命中、触发不必要的全量重新生成。
     if (isinstance(data, dict) and 'step1_foundation' in data and 'step2b_shishen' in data
             and _score_fields_valid(data)
-            and _pillars_detail_valid(data) and _shensha_detail_valid(data)):
+            and _pillars_detail_valid(data) and _shensha_detail_valid(data)
+            and _traits_detail_valid(data)):
         return data
     return None
 
@@ -1400,6 +1484,121 @@ def _sanitize_shensha_detail(data, ctx: dict) -> dict:
     return result
 
 
+# ── 新增 Step「命盘特点详解」──────────────────────────────────
+# 2026-08-11 新增，响应"3D岛屿命盘特点标注"第一阶段需求（完整方案见
+# claude-docs/已知问题与修复记录.md对应日期条目 + 项目根目录 PROMPT_SYSTEM.md
+# 修改记录），前端 js/island-annotate.js 新增的✅/⚠️锚点 + js/analysis.js::
+# buildTraitPanel() 消费。跟四柱/神煞详解同一种模式：只依赖ctx+step1+step2，
+# 加入既有 asyncio.gather 并行批次，不新增串行阶段。
+#
+# Step1 已经产出3条`strengths`+3条`cautions`短句（≤30字，供UI列表展示用），
+# 本步骤把这6条原句逐条展开成详细说明——**不改写原句本身**，只是给每条原句
+# 配一段展开解释，前端按index一一配对`{summary: 原句, detail: 本步骤输出}`。
+#
+# 核心产品要求（用户明确强调，优先级高于任何未来可能的变现设计）：这些展开
+# 说明必须忠实于命理逻辑本身推导出的结论，如实反映这条优势/注意事项在命盘
+# 里的真实权重，绝不能为了让内容显得更严重/更有必要处理而夸大问题、制造
+# 焦虑感，也不能使用任何带货/营销式措辞——这是本项目AI人设一贯坚持的原则
+# （见上方 PERSONA_SYSTEM 附近 2026-08-04 前的既有共识："去掉水晶推荐/会员
+# 营销话术"），本步骤同样适用：诊断内容与后续可能挂载的商业化展示（游戏币
+# 兑换实体水晶等）是完全独立的两层，不应该互相渗透。
+def _step_traits_detail_sync(ctx: dict, step1: dict, step2: dict) -> dict:
+    strengths = step1.get('strengths')
+    cautions = step1.get('cautions')
+    # 固定3+3按index一一对应展开，没有"部分可用"的中间态（跟pillars/shensha那种
+    # 允许"部分完整"的场景不同，理由见 `_traits_detail_valid()` 上方注释）——
+    # Step1如果没有按要求恰好产出3+3条（模型偶发未遵循schema/字段缺失），这里
+    # 直接短路返回空dict，不做部分对齐或强行补全，避免生成出的detail与Step1
+    # 原句数量对不上、前端按index配对时错位。
+    if not (isinstance(strengths, list) and len(strengths) == 3
+            and isinstance(cautions, list) and len(cautions) == 3):
+        return {}
+
+    rag_query = f"{ctx['dm']}日主 {ctx['strength_str']} 性格优势 注意事项 十神"
+    rag_snippet = rag_service.query(rag_service.COLLECTION_NAME, rag_query,
+                                     tags=['日主', '十神', 'ten-gods', 'wuxing', 'fundamentals'])
+
+    strengths_block = '\n'.join(f"{i + 1}. {s}" for i, s in enumerate(strengths))
+    cautions_block = '\n'.join(f"{i + 1}. {c}" for i, c in enumerate(cautions))
+
+    prompt = f"""{_shared_chart_block(ctx)}
+
+【前两步结论（供你衔接判断，不要重复输出）】
+{_step2_context_block(step1, step2)}
+【已生成的3条命盘优势短句（原句，你不能改写，只需要逐条展开说明）】
+{strengths_block}
+【已生成的3条注意事项短句（原句，你不能改写，只需要逐条展开说明）】
+{cautions_block}
+{_rag_block(rag_snippet)}
+【本步骤任务】把上面这6条已有的短句逐条展开成详细说明，严格按原顺序、原数量
+一一对应展开，不允许改写原句本身、不允许增删或调换顺序：
+
+每条优势的展开说明（strengths_detail）：结合这张命盘真实的十神/五行占比/日主
+身强弱等推导依据，说明"为什么这张命盘会有这个特点"，以及"这个特点具体会在
+日常生活/工作/人际关系中怎么表现出来"，80-120字。
+
+每条注意事项的展开说明（cautions_detail）：同样先说明命理依据+具体表现，
+额外必须包含一句**具体可执行**的化解/调整建议（不要写"多注意""要留心"这种
+空泛的话，要给出真正能做的具体行动，比如具体的沟通方式/具体的时间管理调整/
+具体该找什么类型的人配合），80-120字（含建议句在内）。
+
+**极其重要的措辞约束**：这6段说明必须如实反映命盘真实的命理逻辑推导结论，
+按这条优势/注意事项在命盘里的真实权重客观陈述，绝对不能为了让内容显得更
+严重/更需要处理而夸大问题、制造焦虑感，也不能使用任何带货/营销式的措辞。
+
+请输出严格JSON（不含markdown代码块，不含JSON之外的任何文字）：
+{{
+  "strengths_detail": ["对应第1条优势的展开说明，80-120字", "对应第2条", "对应第3条"],
+  "cautions_detail": ["对应第1条注意事项的展开说明（含化解建议），80-120字", "对应第2条", "对应第3条"]
+}}
+strengths_detail和cautions_detail都必须恰好3条，严格按原句顺序一一对应，不多不少。"""
+    # max_tokens=7168：直接复用Step2已验证的量级，不新造未经验证的数字——本步骤
+    # 内容量约6条×80-120字≈480-720字中文内容，比pillars详解（4柱×3字段，实测
+    # 复用同一个7168）同量级或更小，远小于shensha详解最坏场景（21条×220字，
+    # 需要单独的16384）。
+    raw = _call_gemini(prompt, max_tokens=7168, system_instruction=PERSONA_SYSTEM)
+    return _parse_json(raw)
+
+
+async def _step_traits_detail(ctx: dict, step1: dict, step2: dict) -> dict:
+    return await asyncio.to_thread(_step_traits_detail_sync, ctx, step1, step2)
+
+
+async def _step_traits_detail_safe(ctx: dict, step1: dict, step2: dict) -> dict:
+    """命盘特点详解是"锦上添花"的补充细节（点击3D岛屿✅/⚠️锚点才会看到），不是
+    七/八步核心叙事主体——独立捕获 GeminiCallError，失败时返回空dict，只让这一
+    小块内容缺失，不拖垮 asyncio.gather 里其它并行步骤和整条 analyze_bazi() 请求
+    （前端 buildTraitPanel() 拿不到对应AI detail时会优雅降级回退展示trait.summary
+    本身，不留空白不报错，见 js/analysis.js 对应改动）。"""
+    try:
+        return await _step_traits_detail(ctx, step1, step2)
+    except GeminiCallError as e:
+        print(f"[gemini_analysis WARN] 命盘特点详解生成失败（不影响其它步骤）: {_redact(str(e))}")
+        return {}
+
+
+def _sanitize_traits_detail(data) -> dict:
+    """落盘前结构校验：跟 `_sanitize_pillars_detail()`/`_sanitize_shensha_detail()`
+    的"跳过式降级"取舍不同——那两个允许部分条目缺失、其余照常保留，这里刻意
+    做成"3+3要么全部合法要么整体判定为空"，理由同 `_step_traits_detail_sync()`
+    短路分支、`_traits_detail_valid()` 上方注释：固定3条优势+3条注意事项按
+    index跟Step1原句严格一一对应，没有"部分可用"的中间态。如果只对齐了2/3条
+    就落盘，前端按index配对summary+detail时会出现"第3条优势配到第2条详解"这
+    种错位——比完全没有detail（前端优雅降级回退summary本身）更糟糕，所以宁可
+    整体丢弃、下次请求触发重新生成，也不要落盘一份数量对不齐的残缺结果。"""
+    if not isinstance(data, dict):
+        return {}
+    sd = data.get('strengths_detail')
+    cd = data.get('cautions_detail')
+    if not (isinstance(sd, list) and len(sd) == 3
+            and all(isinstance(x, str) and x.strip() for x in sd)):
+        return {}
+    if not (isinstance(cd, list) and len(cd) == 3
+            and all(isinstance(x, str) and x.strip() for x in cd)):
+        return {}
+    return {'strengths_detail': [x.strip() for x in sd], 'cautions_detail': [x.strip() for x in cd]}
+
+
 # ── 主分析函数 ────────────────────────────────────────────
 async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0,
                         force_refresh: bool = False) -> dict:
@@ -1453,7 +1652,12 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
         # （尤其神煞详解 max_tokens=16384 已超出常规MAX_TOKENS加倍重试封顶，理论
         # 失败率更高）拖垮整条请求；其余5个既有任务保持原有"任一失败则整体失败"
         # 行为不变。
-        step2b, step3, step4, step5, step6, pillars_detail_raw, shensha_detail_raw = await asyncio.gather(
+        # 2026-08-11 新增「命盘特点详解」（`_step_traits_detail_safe`）同样加入
+        # 这个批次：只依赖Step1+2，同一依赖层级，不新增串行阶段；同样用`_safe`
+        # 包装独立失败隔离，理由同四柱/神煞详解——这是点击3D岛屿✅/⚠️锚点才会
+        # 看到的补充细节，不应该因为一次调用失败拖垮整条请求。
+        (step2b, step3, step4, step5, step6, pillars_detail_raw, shensha_detail_raw,
+         traits_detail_raw) = await asyncio.gather(
             _step2b_shishen(ctx, step1, step2),
             _step3_career_wealth(ctx, step1, step2),
             _step4_relationship(ctx, step1, step2),
@@ -1461,6 +1665,7 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
             _step6_dayun_liunian(ctx, step1, step2),
             _step_pillars_detail_safe(ctx, step1, step2),
             _step_shensha_detail_safe(ctx, step1, step2),
+            _step_traits_detail_safe(ctx, step1, step2),
         )
 
         analysis = {
@@ -1480,6 +1685,11 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
             # 卡在残缺状态。
             'step_pillars_detail': _sanitize_pillars_detail(pillars_detail_raw),
             'step_shensha_detail': _sanitize_shensha_detail(shensha_detail_raw, ctx),
+            # 2026-08-11新增：跟上面两个字段的"跳过式降级"不同，这里是"3+3要么全部
+            # 合法要么整体判定为空"（见 `_sanitize_traits_detail()` docstring），
+            # 落盘的要么是完整的3+3条展开说明，要么整个字段是空dict——前端
+            # buildTraitPanel() 遇到空dict时优雅降级回退展示trait.summary本身。
+            'step_traits_detail': _sanitize_traits_detail(traits_detail_raw),
             'keywords': keywords,
         }
         # 2026-08-04 qa-reviewer复查修复（CONFIRMED 2）：落盘前校验六维打分字段类型，

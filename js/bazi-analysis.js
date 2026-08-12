@@ -40,7 +40,21 @@ const BaziAnalysis = (() => {
   // _pillarsDetailValid()/_shenshaDetailValid()）——**2026-08-04同日qa-reviewer
   // 复查后返工**：两个校验函数的判定粒度改为"非空即有效"（不要求四柱/全部神煞
   // 齐全），完整推导见两个函数定义处注释，与后端同一次返工保持一致，不再赘述。
-  const LS_PREFIX   = 'bazi_ai_v5_';
+  // v5→v6：2026-08-11新增「命盘特点详解」step_traits_detail（{strengths_detail:
+  // [3条], cautions_detail:[3条]}，对应Step1已有的strengths/cautions短句逐条
+  // 展开），供 js/island-annotate.js 新增的✅/⚠️锚点点击后、js/analysis.js::
+  // buildTraitPanel() 渲染详情。老v5缓存整体缺这个字段——不会报错（前端优雅
+  // 降级回退展示summary短句本身），但用户会一直看不到展开说明，直到手动"轻量
+  // 刷新"。沿用同一套模式换key前缀+新增字段校验（见下方_traitsDetailValid()）。
+  // 2026-08-11 qa-reviewer复查PLAUSIBLE后同日修订：_traitsDetailValid()判定
+  // 粒度已从"strengths_detail/cautions_detail都恰好3条"放宽为"key存在即可"——
+  // 理由见后端gemini_analysis.py::_traits_detail_valid()上方注释与本文件同名
+  // 函数定义处注释：内容层面"3+3全齐或整体为空"这条不变量已经由后端
+  // _sanitize_traits_detail()落盘前把关死，这里重复验证条数等价于验证"是否
+  // 非空"，只会让Step1输出形状偶发漂移（跟GeminiCallError那种瞬时失败不同，
+  // 见后端对应注释）拖累整份含其它7个步骤正常数据的分析结果被判定未命中，
+  // 前后端这道校验口径必须完全一致。
+  const LS_PREFIX   = 'bazi_ai_v6_';
 
   // 后端七步RAG流水线（gemini_analysis.py::analyze_bazi()，Step1→Step2严格串行，
   // Step2b+Step3-6并行）真实耗时预算：
@@ -221,6 +235,31 @@ const BaziAnalysis = (() => {
     return Array.isArray(sd.shensha_items) && sd.shensha_items.length > 0;
   }
 
+  // ── 命盘特点详解 结构校验（2026-08-11新增，同日qa-reviewer复查PLAUSIBLE后
+  // 修订）────────────────────────────────────────────────
+  // 必须与后端 gemini_analysis.py::_traits_detail_valid() 保持同一套判定逻辑
+  // （历史教训见 _computeHash 两处独立实现同一算法的反面案例）。
+  // 第一版：要求 strengths_detail/cautions_detail 都恰好3条才算有效（跟
+  // _pillarsDetailValid()/_shenshaDetailValid() 的"非空即有效"判定粒度刻意
+  // 不同）——理由是 step_traits_detail 固定3条优势+3条注意事项按index跟
+  // Step1原句严格一一对应展开，没有"部分可用"的中间态，"非空数组"这种宽松
+  // 校验会放过按index错位配对的残缺结果。这条理由本身没错，但校验对象选错了
+  // 层级：后端 _sanitize_traits_detail() 落盘前已经把"3+3全合法或整体为空"
+  // 这条不变量彻底把关死（写入的值只可能是{}或恰好3+3的合法数据），这里再验
+  // 一遍条数完全等价于验证"是否非空"，唯一效果是把Step1的strengths/cautions
+  // prompt没有强制"必须恰好3条"（不像本步骤自己的prompt有这条约束）导致的
+  // 偶发2/4条短路结果，跟真正需要重试的失败一视同仁，代价是拖累整份含其它7个
+  // 步骤正常数据的分析结果被 _lsGet()/seedCache() 判定整体未命中/拒绝写入。
+  // 修订：改为只检查 step_traits_detail 这个key是否存在，不再检查内部条数——
+  // 内容层面的合法性完全交给已经证明正确、且保持不变的后端 sanitize 逻辑。
+  // 刻意的取舍：这意味着 step_traits_detail 一旦落盘为{}，前端也不会再有
+  // 途径触发重试（跟命柱/神煞详解不同），换来的是不会因为这一个补充细节字段
+  // 就拖累其它7步正常数据的缓存读写——前端 buildTraitPanel() 拿到{}/空数组时
+  // 本就优雅降级回退展示 trait.summary（Step1原句）本身，不留空白不报错。
+  function _traitsDetailValid(analysis) {
+    return !!(analysis && Object.prototype.hasOwnProperty.call(analysis, 'step_traits_detail'));
+  }
+
   // ── localStorage ──────────────────────────────────────
   // v2→v3结构校验：即便某条记录意外地被写进了 LS_PREFIX（v3）前缀的 key 下，
   // 读取时仍二次确认它具备 v3 结构标志字段 step2b_shishen——没有就当作未命中，
@@ -233,6 +272,8 @@ const BaziAnalysis = (() => {
   // 两个新字段都单独查（不是只查其中一个当canary代表整体，同六维打分字段那次
   // CONFIRMED 2 教训），理由见上方两个函数定义处注释（含2026-08-04同日qa-reviewer
   // 复查后返工的判定粒度调整）。
+  // v5→v6：新增第六道校验——_traitsDetailValid()，判定粒度2026-08-11同日
+  // qa-reviewer复查后已从"3+3全齐"放宽为"key存在即可"，理由见该函数定义处注释。
   function _lsGet(hash) {
     try {
       const raw = localStorage.getItem(LS_PREFIX + hash);
@@ -243,6 +284,7 @@ const BaziAnalysis = (() => {
       if (!_allScoreFieldsValid(analysis)) return null;
       if (!_pillarsDetailValid(analysis)) return null;
       if (!_shenshaDetailValid(analysis)) return null;
+      if (!_traitsDetailValid(analysis)) return null;
       return analysis;
     } catch { return null; }
   }
@@ -414,12 +456,15 @@ const BaziAnalysis = (() => {
   // 四柱详解/神煞详解），同上一轮教训，这次在同一次改动里一并补上（不留给下一轮
   // qa发现）：_pillarsDetailValid()/_shenshaDetailValid() 与 _lsGet() 共用同一份
   // 判断逻辑。
+  // 2026-08-11 v5→v6：新增step_traits_detail（命盘特点详解），同上一轮教训，
+  // _traitsDetailValid() 与 _lsGet() 共用同一份判断逻辑，不要两处各写一份。
   function seedCache(baziData, gender, analysis) {
     if (!baziData || !analysis) return;
     if (!analysis.step2b_shishen) return; // 老结构（v2及更早）存档：不种缓存
     if (!_allScoreFieldsValid(analysis)) return; // 老结构（v3及更早）/坏数据存档：不种缓存
     if (!_pillarsDetailValid(analysis)) return; // 老结构（v4及更早）存档：不种缓存
     if (!_shenshaDetailValid(analysis)) return; // 老结构（v4及更早）存档：不种缓存
+    if (!_traitsDetailValid(analysis)) return; // 老结构（v5及更早）存档：不种缓存
     const hash = _hash(baziData, gender);
     _lsSet(hash, analysis);
   }

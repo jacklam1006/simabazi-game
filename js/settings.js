@@ -7,7 +7,8 @@
  *   - AuthManager.updateProfile() / getProfile()          （js/auth.js）
  *   - BaziAnalysis.getAnalysis(d, gender, {forceRefresh})  （js/bazi-analysis.js）
  *   - Analysis.refreshAiAnalysis(analysis)                  （js/analysis.js，只渲染不请求）
- *   - App.regenerateCurrentIsland() / _getBaziData() / _getBirthInfo() / _showScreen()（js/main-new.js）
+ *   - App.regenerateCurrentIsland() / _getBaziData() / _getBirthInfo() / _showScreen()
+ *     / _applyAiAnalysis() / getIslandGeneration() / getCurrentIslandId()（js/main-new.js）
  */
 const SettingsUI = (() => {
 
@@ -169,6 +170,20 @@ const SettingsUI = (() => {
       // 若报告弹窗当前开着，原地渲染显示；未开过则静默不做事（refreshAiAnalysis内部处理）
       if (typeof Analysis !== 'undefined' && typeof Analysis.refreshAiAnalysis === 'function') {
         Analysis.refreshAiAnalysis(analysis);
+      }
+
+      // 把新结果同步套用到3D岛屿标注（✅/⚠️ trait标签）+ 命柱/神煞详解缓存——
+      // 与首次生成/加载岛屿时 main-new.js::_onIslandReady() 调用的是同一份
+      // 实现（App._applyAiAnalysis()），不在这里另写一份重复逻辑。此前这里
+      // 完全没有调用任何东西，导致轻量刷新成功后3D标注/四柱详情面板依然停留
+      // 在旧内容（甚至首次生成AI深析超时失败时是零标注），必须手动刷新整个
+      // 页面才会更新，见 claude-docs/已知问题与修复记录.md 对应日期条目。
+      // expectedGeneration 传 genAtRequest：本函数在上面已经用同一个
+      // App.getIslandGeneration() 自行比对过一次（genNow !== genAtRequest 时
+      // 已提前 return），这里传入同一个快照值只是"双保险"，语义一致不冲突
+      // （详见 _applyAiAnalysis() 定义处注释）。
+      if (typeof App !== 'undefined' && typeof App._applyAiAnalysis === 'function') {
+        App._applyAiAnalysis(analysis, genAtRequest);
       }
 
       // 已登录且当前岛屿已保存过 → 补写回数据库（fire-and-forget，失败不影响UI）
