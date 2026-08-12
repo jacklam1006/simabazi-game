@@ -52,6 +52,33 @@ const IslandDecorations = (() => {
     crystal_obsidian: { frac:{x:-0.60, z:-0.40, y:0.30, hover:0.15}, type:'crystal', color:0x1a1a2e, size:0.7, glb:'bracelet_obsidian.glb' },
   };
 
+  // ── 五行维护系统占位装饰（第三阶段，2026-08-13）──────────────
+  // js/wuxing-scene.js::attach() 按当次命盘 WuxingIssues.deriveIssues() 算出
+  // 的 {wx, direction} 组合动态决定挂哪几个、挂在哪——世界坐标由调用方通过
+  // 本文件新增的 add(decorId, baziData, overridePos) 第三参数直接给出，这里
+  // 的 frac 字段因此实际上不会被用到（overridePos 总是有值），只是为了防御性
+  // 兜底（万一将来某处误调用不传 overridePos，也不会因为 DECOR_DEFS 里没有
+  // 这个 key 而直接跳过渲染）保留一个占位坐标，不代表真实设计位置。
+  // 本轮只做占位几何体（不等真实GLB，故 glb:null），10个组合（5行×2方向）
+  // 用循环生成而不是手写10条字面量，避免以后调色/改形状要维护10处重复代码。
+  // 视觉隐喻区分方向（与 wuxing-scene.js 里 💧/✂️ 图标呼应，不靠颜色区分
+  // 方向）：nourish（喜用神不足，需要"培育/灌溉"）用 tree（幼苗）占位类型；
+  // restrain（忌神过旺，需要"约束/克制"）用 ring（锁环）占位类型。颜色统一
+  // 复用 CONFIG.WUXING_COLORS[wx].hex（不新造配色系统，跨全项目一致）。
+  (function _registerWuxingMaintenanceDecors() {
+    const WX_LIST = ['木', '火', '土', '金', '水'];
+    WX_LIST.forEach(wx => {
+      const hex = (typeof CONFIG !== 'undefined' && CONFIG.WUXING_COLORS && CONFIG.WUXING_COLORS[wx])
+        ? CONFIG.WUXING_COLORS[wx].hex : 0xc9a96e;
+      DECOR_DEFS[`wxmaint_${wx}_nourish`] = {
+        frac: { x: 0.00, z: 0.00, y: 0.30, hover: 0.15 }, type: 'tree', color: hex, size: 0.9, glb: null,
+      };
+      DECOR_DEFS[`wxmaint_${wx}_restrain`] = {
+        frac: { x: 0.00, z: 0.00, y: 0.30, hover: 0.15 }, type: 'ring', color: hex, size: 0.5, glb: null,
+      };
+    });
+  })();
+
   // IslandAnnotate 计算包围盒失败/未就绪时的最终兜底（与 island-annotate.js
   // 的 FALLBACK_BOX 保持一致比例），只在异常路径触发，正常情况下走
   // IslandAnnotate.getIslandBox() 现算真实包围盒
@@ -86,7 +113,14 @@ const IslandDecorations = (() => {
   }
 
   // ── 添加单个装饰 ─────────────────────────────────────────
-  function add(decorId, baziData) {
+  // 2026-08-13：新增可选第三参数 overridePos（THREE.Vector3 或 {x,y,z} 世界
+  // 坐标）——js/wuxing-scene.js 的五行维护装饰点位是按当次命盘问题动态算出的
+  // （环形分布，数量2-3个），不是 DECOR_DEFS 里写死的静态 frac 比例。传入时
+  // 直接使用该坐标，跳过 _computePlacement() 内部查 DECOR_DEFS[decorId].frac
+  // 那一步；不传（undefined）时行为与改动前完全一致——全部既有调用方
+  // （本文件 restoreAll()、tasks.js:139、products.js:198）都只传两个参数，
+  // 不受此次改动影响（已逐一核实，见本次改动的验证记录）。
+  function add(decorId, baziData, overridePos) {
     if (!_scene) return;
     if (_placed[decorId]) return;   // 已存在
 
@@ -94,8 +128,8 @@ const IslandDecorations = (() => {
     if (!def) return;
 
     // 每次 add() 都现算一次真实包围盒——不同岛屿模型尺寸/比例不同，
-    // 不能复用上一次或其他装饰算出的结果
-    const placement = _computePlacement(def);
+    // 不能复用上一次或其他装饰算出的结果（overridePos 有值时跳过这步）
+    const placement = overridePos ? _placementFromOverride(overridePos, def) : _computePlacement(def);
 
     // 有GLB文件优先加载，否则用几何占位
     if (def.glb && typeof THREE.GLTFLoader !== 'undefined') {
@@ -103,6 +137,19 @@ const IslandDecorations = (() => {
     } else {
       _addPlaceholder(decorId, def, placement);
     }
+  }
+
+  // ── 外部直接给定世界坐标时的占位换算 ──────────────────────
+  // 只做 Vector3/{x,y,z} → [x,y,z] 数组的形状归一化 + 沿用 def.size，不做
+  // ring 类型的 radiusFrac 动态缩放（那需要现算包围盒 hx/hz，而 overridePos
+  // 路径的设计意图就是跳过包围盒计算）——目前唯一的 overridePos 调用方
+  // （wuxing-scene.js）传入的 decorId 都不是 radiusFrac 类型，不受影响；
+  // 未来若有新调用方需要 ring+radiusFrac+overridePos 组合，需要另外扩展。
+  function _placementFromOverride(overridePos, def) {
+    const pos = (overridePos && typeof overridePos.x === 'number')
+      ? [overridePos.x, overridePos.y, overridePos.z]
+      : [0, 0, 0];
+    return { pos, size: def.size };
   }
 
   // ── 相对比例 → 世界坐标 ──────────────────────────────────

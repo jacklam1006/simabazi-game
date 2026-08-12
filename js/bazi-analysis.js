@@ -54,7 +54,25 @@ const BaziAnalysis = (() => {
   // 非空"，只会让Step1输出形状偶发漂移（跟GeminiCallError那种瞬时失败不同，
   // 见后端对应注释）拖累整份含其它7个步骤正常数据的分析结果被判定未命中，
   // 前后端这道校验口径必须完全一致。
-  const LS_PREFIX   = 'bazi_ai_v6_';
+  // v6→v7：2026-08-13新增「五行维护叙事」step_wuxing_maintenance（第三阶段
+  // "五行维护系统"，取代第一阶段✅/⚠️浮动图标标注，供 js/wuxing-scene.js
+  // 3D场景挂载 + js/analysis.js::buildMaintenancePanel() 渲染消费）。
+  // 2026-08-13 qa-reviewer复查CONFIRMED后同日修复：`_wuxingMaintenanceValid()`
+  // 首版判定粒度是"条目数与 js/wuxing-issues.js::WuxingIssues.deriveIssues()
+  // 当次算出的条目数完全一致"——理由是该函数纯规则引擎、期望条目数不依赖AI
+  // 输出，但这个设计复现了`_traits_detail_valid()`第一版"恰好3+3"被打回的
+  // 同一个坑：只回答了当年两个理由之一，漏看了"不该让点开才看得到的补充字段
+  // 拖累整份含其它8步正常数据的分析结果被判定未命中"这一条，而且影响面更大——
+  // 只要AI偶发漏1条issue对应的输出（或该步骤单独触发429/5xx被安全降级为空），
+  // `step_wuxing_maintenance`就会永久无法通过精确匹配，之后每次点开命柱/神煞
+  // 面板（`_openZonePanel()`都会调`getAnalysis()`）都可能触发后端重跑整条9步
+  // 流水线。修复：判定粒度改为与`_pillarsDetailValid()`/`_shenshaDetailValid()`
+  // 同一套"非空即有效"（不再需要`baziData`参数重算期望条目数），允许"部分
+  // 完整"（AI漏1条issue的叙事）长期缓存——详见下方`_wuxingMaintenanceValid()`
+  // 与后端`gemini_analysis.py::_wuxing_maintenance_valid()`两处同一套判定
+  // 逻辑（历史教训：`_computeHash`两处独立实现同一算法不同步的坑，这次两端
+  // 在同一次改动里一起改，不分两轮）。
+  const LS_PREFIX   = 'bazi_ai_v7_';
 
   // 后端七步RAG流水线（gemini_analysis.py::analyze_bazi()，Step1→Step2严格串行，
   // Step2b+Step3-6并行）真实耗时预算：
@@ -260,6 +278,37 @@ const BaziAnalysis = (() => {
     return !!(analysis && Object.prototype.hasOwnProperty.call(analysis, 'step_traits_detail'));
   }
 
+  // ── 五行维护叙事 结构校验（2026-08-13新增，第三阶段"五行维护系统"，同日
+  // qa-reviewer复查CONFIRMED后返工）──────────────────────────
+  // 必须与后端 gemini_analysis.py::_wuxing_maintenance_valid() 保持同一套
+  // 判定逻辑（历史教训见 _computeHash 两处独立实现同一算法的反面案例）。
+  //
+  // **首版设计（已废弃，教训记录在此）**：判定粒度是"条目数与
+  // js/wuxing-issues.js::WuxingIssues.deriveIssues(baziData) 当次算出的
+  // 条目数完全一致"——理由是 deriveIssues() 纯规则引擎、期望条目数不依赖AI
+  // 输出、不存在"合法结果被误判"。这个理由本身没错，但只回答了
+  // _traitsDetailValid() 第一版"恰好3+3"被打回的两个理由之一，漏看了另一个
+  // 同样成立、这次影响更大的理由：不该让"点开才看得到的补充字段"的部分失败
+  // 拖累整份含其它8步正常数据的分析结果被判定整体未命中。qa-reviewer实测
+  // 了真实故障链路：只要AI偶发漏1条issue对应的输出（或这一步单独触发429/5xx
+  // 被安全降级为空），`step_wuxing_maintenance`就会永久无法通过精确匹配——
+  // 而触发点不止"点开这个字段自己对应的3D装饰物"，`_openZonePanel()`里点开
+  // 任意`pillar_`/`shensha_`面板都会调 getAnalysis()，等于用户每点一次命柱/
+  // 神煞面板就可能触发后端重跑整条9步流水线。
+  //
+  // **返工后**：彻底放弃"条目数精确匹配"，改为与 _pillarsDetailValid()/
+  // _shenshaDetailValid() 完全同一套"非空数组即有效"判定粒度（允许"部分
+  // 完整"长期缓存，不再要求`baziData`参数重算期望条目数）。代价（接受）：
+  // AI偶发漏1条时，这一条issue在维护面板里可能永久没有AI叙事，
+  // js/analysis.js::buildMaintenancePanel() 本就有narrative缺失时的通用
+  // 兜底文案、不留空白，与pillars/shensha详解允许部分缺失的既有取舍完全
+  // 对齐，不再是例外。完整故障链路与返工理由见后端同名函数上方大段注释，
+  // 两处判定粒度必须逐字对齐。
+  function _wuxingMaintenanceValid(analysis) {
+    return !!(analysis && Array.isArray(analysis.step_wuxing_maintenance)
+      && analysis.step_wuxing_maintenance.length > 0);
+  }
+
   // ── localStorage ──────────────────────────────────────
   // v2→v3结构校验：即便某条记录意外地被写进了 LS_PREFIX（v3）前缀的 key 下，
   // 读取时仍二次确认它具备 v3 结构标志字段 step2b_shishen——没有就当作未命中，
@@ -274,6 +323,9 @@ const BaziAnalysis = (() => {
   // 复查后返工的判定粒度调整）。
   // v5→v6：新增第六道校验——_traitsDetailValid()，判定粒度2026-08-11同日
   // qa-reviewer复查后已从"3+3全齐"放宽为"key存在即可"，理由见该函数定义处注释。
+  // v6→v7：新增第七道校验——_wuxingMaintenanceValid()（2026-08-13
+  // qa-reviewer复查CONFIRMED后已改为"非空即有效"，不再需要baziData重算期望
+  // 条目数，理由见该函数定义处注释）。
   function _lsGet(hash) {
     try {
       const raw = localStorage.getItem(LS_PREFIX + hash);
@@ -285,6 +337,7 @@ const BaziAnalysis = (() => {
       if (!_pillarsDetailValid(analysis)) return null;
       if (!_shenshaDetailValid(analysis)) return null;
       if (!_traitsDetailValid(analysis)) return null;
+      if (!_wuxingMaintenanceValid(analysis)) return null;
       return analysis;
     } catch { return null; }
   }
@@ -458,6 +511,9 @@ const BaziAnalysis = (() => {
   // 判断逻辑。
   // 2026-08-11 v5→v6：新增step_traits_detail（命盘特点详解），同上一轮教训，
   // _traitsDetailValid() 与 _lsGet() 共用同一份判断逻辑，不要两处各写一份。
+  // 2026-08-13 v6→v7：新增step_wuxing_maintenance（五行维护叙事），同上一轮
+  // 教训，_wuxingMaintenanceValid() 与 _lsGet() 共用同一份判断逻辑（2026-08-13
+  // qa-reviewer复查CONFIRMED后已改为"非空即有效"，不再需要baziData参数）。
   function seedCache(baziData, gender, analysis) {
     if (!baziData || !analysis) return;
     if (!analysis.step2b_shishen) return; // 老结构（v2及更早）存档：不种缓存
@@ -465,6 +521,7 @@ const BaziAnalysis = (() => {
     if (!_pillarsDetailValid(analysis)) return; // 老结构（v4及更早）存档：不种缓存
     if (!_shenshaDetailValid(analysis)) return; // 老结构（v4及更早）存档：不种缓存
     if (!_traitsDetailValid(analysis)) return; // 老结构（v5及更早）存档：不种缓存
+    if (!_wuxingMaintenanceValid(analysis)) return; // 老结构（v6及更早）存档：不种缓存
     const hash = _hash(baziData, gender);
     _lsSet(hash, analysis);
   }

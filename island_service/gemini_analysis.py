@@ -5,19 +5,20 @@
 RAG向量检索古籍/断语原文片段再生成"。完整背景与分工设计见项目根目录
 PROMPT_SYSTEM.md 对应"修改记录"、claude-docs/已知问题与修复记录.md 对应日期条目。
 
-六步框架（严格串行 Step1→Step2，其余8个步骤用 asyncio.gather 并行发起——2026-08-11
+六步框架（严格串行 Step1→Step2，其余9个步骤用 asyncio.gather 并行发起——2026-08-11
 新增命柱/神煞详解两步后并行批次从5个变为7个，同日又新增命盘特点详解后变为8个，
-见下方对应日期说明）：
+2026-08-13再新增五行维护叙事后变为9个，见下方对应日期说明）：
   Step1 命局「出厂设置」扫描（日主/月令/五行强弱/性格底色）
   Step2 定格局与找用神（依赖Step1）
   Step2b 十神详解        （依赖Step1+2）─┐
   Step3 事业与财富深度剖析（依赖Step1+2）─┤
   Step4 婚恋与感情世界    （依赖Step1+2）─┤
-  Step5 健康与潜在风险提示（依赖Step1+2）─┤ 并行（8个）
+  Step5 健康与潜在风险提示（依赖Step1+2）─┤ 并行（9个）
   Step6 大运与流年运势推演（依赖Step1+2）─┤
   命柱详解（四柱，依赖Step1+2）           ─┤
   神煞详解（依赖Step1+2）                 ─┤
-  命盘特点详解（优势/注意事项各3条，依赖Step1+2）─┘
+  命盘特点详解（优势/注意事项各3条，依赖Step1+2）─┤
+  五行维护叙事（喜用神/忌神问题各1条具象化叙事，依赖Step1+2）─┘
 
 2026-08-03 内容深度扩充（非bug修复，见 claude-docs/已知问题与修复记录.md 对应日期条目）：
 六步（现七步，新增Step2b）narrative目标字数大致翻倍，Step1新增strengths/cautions
@@ -137,6 +138,72 @@ sanitize层面严格all-or-nothing、没有"部分完整"这个中间态可用�
 同一次改动里做一模一样的放宽（历史教训：`_computeHash`两处独立实现同一算法
 不同步的坑，这次两端在同一次改动里一起改，不分两轮）。
 
+2026-08-13 新增「五行维护叙事」`step_wuxing_maintenance`（第三阶段"五行维护
+系统"第一批：判定逻辑+具象化文案+占位可视化，取代第一阶段✅/⚠️浮动图标标注，
+详见 /Users/linyu/.claude/plans/structured-nibbling-duckling.md 第三阶段
+部分与 PROMPT_SYSTEM.md 对应修改记录）：
+- 判定层新增 `_derive_wuxing_issues(ctx)`——纯规则引擎函数，输入
+  `ctx['favorable']`/`ctx['favorable2']`/`ctx['unfavorable']`/`ctx['wuxing']`
+  （均已由`_build_context()`归一化），输出该命盘需要维护的五行问题列表
+  `[{'wx','direction','severity'}]`（通常2-3条，命理逻辑本身决定条目数，
+  不强求固定数量）。**这是本次改动里唯一被有意设计成两处独立实现同一算法的
+  地方**——前端 `js/wuxing-issues.js::WuxingIssues.deriveIssues()` 有一份
+  逐字对齐的复刻（供3D场景挂载/拖拽维护在浏览器端零延迟判定），两边必须同步
+  改动，详见 `_derive_wuxing_issues()` 上方大段注释与 `js/wuxing-issues.js`
+  文件顶部注释——这是本项目一贯"确定性优先/单一权威实现"原则里明确记录的
+  一次刻意例外，不是疏漏。
+- 叙事层新增 `_step_wuxing_maintenance_sync()`：给每条issue生成"具象化"中文
+  叙事，核心要求是同一个五行方向在不同日主命盘下必须讲出不同的意象角度（用户
+  明确强调的"不死板"要求），prompt里显式要求扣住日主本体意象展开，不能对
+  不同日主用同一套通用命理术语堆砌套话。为此给 `bazi_prompt.py` 新增了
+  `DAY_MASTER_CORE_ZH`（10个日主的中文意象摘要，与已有的纯英文
+  `DAY_MASTER_CORE` 是两份独立维护的内容——英文版专供TripoAI图像提示词，
+  直接把英文塞进中文叙事prompt会导致模型自己音译、风格漂移和语言混杂，
+  所以单独维护中文版）。跟四柱/神煞/命盘特点详解同一种模式：只依赖
+  ctx+step1+step2（+issues），加入既有 asyncio.gather 并行批次，
+  `_step_wuxing_maintenance_safe()`独立失败隔离，复用max_tokens=7168。
+- 落盘前 `_sanitize_wuxing_maintenance()` 按 (wx, direction) 配对提取AI输出
+  里对应issues的合法条目，允许"部分成功"（AI遗漏某条issue时只丢弃那一条，
+  不是像 `_sanitize_traits_detail()` 那样整体作废）——因为这里每条issue自带
+  (wx,direction)这个天然唯一标识，可以精确配对，不存在traits那种"按index
+  对应、缺一条就全部错位"的风险。
+- 缓存版本从 v6 升级到 v7（LS_PREFIX 'bazi_ai_v7_'），`_cache_read()` 新增
+  第六道校验 `_wuxing_maintenance_valid()`——判定粒度与
+  `_pillars_detail_valid()`/`_shensha_detail_valid()`一致的"非空list即有效"
+  （**首版曾设计成"条目数与`_derive_wuxing_issues()`当次算出的条目数完全
+  一致"，同日被qa-reviewer复查CONFIRMED打回并已修复，见下一条日期条目**）。
+  `js/bazi-analysis.js::_wuxingMaintenanceValid()` 同一次改动里做同一套
+  判定粒度（历史教训：`_computeHash`两处独立实现同一算法不同步的坑，这次
+  两端在同一次改动里一起改）。
+
+2026-08-13 qa-reviewer复查修复（CONFIRMED，同日）：上面这版`_wuxing_
+maintenance_valid()`最初设计成"条目数与`_derive_wuxing_issues()`当场算出的
+条目数完全一致"，理由是该函数纯规则引擎、expected count不依赖AI输出、不存在
+"合法结果被误伤"——这个理由本身没错，但**只回答了`_traits_detail_valid()`
+第一版"恰好3+3"被打回的两个理由之一**，漏看了另一个同样成立、且这次被放大
+的理由：不该让"点开才看得到的补充字段"的部分失败拖累整份含其它8步正常数据
+的分析结果被判定整体未命中。qa-reviewer实测了真实故障链路：9个并行Gemini
+调用里只要`_step_wuxing_maintenance`这一个撞上429/5xx（被`_step_wuxing_
+maintenance_safe()`独立捕获返回`{}`）、或模型漏写/改写了某条wx/direction，
+`step_wuxing_maintenance`就会落盘成`[]`或短列表——此后每次请求都判定未命中、
+重跑全部9次Gemini调用（分钟级+真实费用），而触发点不止"点开这个字段自己对应
+的3D装饰物"：`_openZonePanel()`里点开任意`pillar_`/`shensha_`面板都会调
+`getAnalysis()`，等于**用户每点一次命柱/神煞面板，就可能触发一次完整9步
+流水线重跑**，比`_traits_detail_valid()`当年的影响面更大。另外发现一个
+连带的"白写"问题：`js/bazi-analysis.js::getAnalysis()`拿到后端返回结果后
+无条件调`_lsSet()`写入localStorage（不经过`_wuxingMaintenanceValid()`校验，
+这是该文件里所有analysis字段写入路径的既有通用模式，不是本次新引入），在
+精确匹配校验下"AI只漏1条"这类部分成功结果会被写入却永远读不回——放宽为
+"非空list"后这类部分成功结果写入后也能正常读回，问题自然消失，不需要另外
+改`_lsSet()`本身（`_lsSet()`不做写入前校验是本文件对pillars/shensha/traits
+等字段的既有统一设计，自愈完全依赖读时校验，这次不破例）。**修复**：彻底
+放弃"条目数精确匹配"这个设计目标，`_wuxing_maintenance_valid()`改为与
+`_pillars_detail_valid()`/`_shensha_detail_valid()`完全同一套判定粒度（非空
+list即有效，允许"部分完整"长期缓存）；相应地`_cache_read()`不再需要提前
+构建`ctx`/重算`expected_wuxing_count`，`analyze_bazi()`里`ctx`构建位置改回
+原来的"缓存未命中后才构建"。`js/bazi-analysis.js::_wuxingMaintenanceValid()`
+同一次改动里做一模一样的放宽（不再需要`baziData`/`WuxingIssues`依赖）。
+
 **必须保留、不改的机制**（都是踩过生产坑才做对的，见已知问题日志2026-07-29多轮记录）：
 - _redact()：API Key脱敏，防止网络层异常把真实Key泄漏进响应体
 - GeminiCallError：统一的、带明确诊断信息的调用失败异常
@@ -165,6 +232,7 @@ import requests
 from pathlib import Path
 
 import rag_service
+import bazi_prompt  # DAY_MASTER_CORE_ZH（日主中文意象摘要）供 step_wuxing_maintenance 使用
 
 GEMINI_API_KEY  = os.environ.get('GEMINI_API_KEY', '')
 
@@ -399,6 +467,41 @@ def _traits_detail_valid(data: dict) -> bool:
     return 'step_traits_detail' in data
 
 
+# 2026-08-13 新增，同日 qa-reviewer 复查 CONFIRMED 后返工（第三阶段"五行维护
+# 系统"）：`_cache_read()` 第六道校验，用于 `step_wuxing_maintenance`。
+#
+# **第一版设计（已废弃，教训记录在此，不要重蹈）**：判定粒度是"条目数与
+# `_derive_wuxing_issues()`当次算出的条目数完全一致"——理由是`_derive_wuxing_
+# issues()`是纯规则引擎函数、expected_count不依赖AI输出、不存在"合法结果被
+# 误伤"的情况。这个理由本身没错，但**只回答了`_traits_detail_valid()`第一版
+# 被打回的两个理由之一**，漏看了另一个同样成立、且这里被放大的理由：不该让
+# "点开才看得到的补充字段"的部分失败拖累整份含其它8步正常数据的分析结果被
+# `_cache_read()`判定整体未命中。qa-reviewer实测了真实故障链路：只要9个并行
+# Gemini调用里`_step_wuxing_maintenance`这一个撞上429/5xx（被`_step_wuxing_
+# maintenance_safe()`独立捕获返回`{}`）、或模型漏写/改写了某条wx/direction，
+# `step_wuxing_maintenance`就会落盘成`[]`或短列表——此后**每次**请求都会被
+# 判定未命中、重跑全部9次Gemini调用（分钟级+真实费用），而触发点不止"点开这
+# 个字段自己对应的3D装饰物"，`_openZonePanel()`里点开任意`pillar_`/`shensha_`
+# 面板都会调 `getAnalysis()`，等于**用户每点一次命柱/神煞面板，就可能触发一次
+# 完整9步流水线重跑**——比`_traits_detail_valid()`当年的影响面更大（后者只在
+# 点开✅/⚠️锚点这个特定时机触发）。
+#
+# **返工后**：彻底放弃"条目数精确匹配"这个设计目标，改为与
+# `_pillars_detail_valid()`/`_shensha_detail_valid()`完全同一套判定粒度——
+# 只要求非空list（允许"部分完整"长期缓存，不要求全部issue都配到AI叙事）。
+# 代价（接受）：AI偶发漏1条时，这一条issue在维护面板里可能永久没有AI叙事、
+# 前端需要优雅降级（`js/analysis.js::buildMaintenancePanel()`本就有narrative
+# 缺失时的通用兜底文案，不留空白），换来的是不会让这一个补充字段拖累其它8步
+# 正常数据反复重新生成——这是本项目对这类"部分完整也可长期接受"字段的既定
+# 收敛方案，不再为`step_wuxing_maintenance`单独发明一套更严格的粒度。
+# `js/bazi-analysis.js::_wuxingMaintenanceValid()`同一次改动里做一模一样的
+# 放宽（历史教训：`_computeHash`两处独立实现同一算法不同步的坑，两端在同一次
+# 改动里一起改，不分两轮）。
+def _wuxing_maintenance_valid(data: dict) -> bool:
+    wm = data.get('step_wuxing_maintenance')
+    return isinstance(wm, list) and len(wm) > 0
+
+
 def _cache_read(h: str):
     path = ANALYSIS_CACHE / f"{h}.json"
     if not path.exists():
@@ -458,10 +561,18 @@ def _cache_read(h: str):
     # 层面的合法性已由`_sanitize_traits_detail()`落盘前把关（3+3全合法或整体
     # `{}`，没有第三种形态），这里重复验证等价于验证"是否非空"，只会让Step1
     # 输出形状偶发漂移拖累整份缓存被判未命中、触发不必要的全量重新生成。
+    #
+    # 2026-08-13 v6→v7：新增「五行维护叙事」`step_wuxing_maintenance`。第六道
+    # 校验 `_wuxing_maintenance_valid()`——同日qa-reviewer复查CONFIRMED后已从
+    # "条目数与`_derive_wuxing_issues()`当场算出的条目数完全一致"返工为与
+    # `_pillars_detail_valid()`/`_shensha_detail_valid()`同一套"非空list即
+    # 有效"判定粒度，完整故障链路与返工理由见 `_wuxing_maintenance_valid()`
+    # 上方大段注释。
     if (isinstance(data, dict) and 'step1_foundation' in data and 'step2b_shishen' in data
             and _score_fields_valid(data)
             and _pillars_detail_valid(data) and _shensha_detail_valid(data)
-            and _traits_detail_valid(data)):
+            and _traits_detail_valid(data)
+            and _wuxing_maintenance_valid(data)):
         return data
     return None
 
@@ -817,6 +928,76 @@ def _rag_block(snippet: str) -> str:
     if not snippet:
         return ''
     return f"\n【古籍/断语参考资料（可化用判断逻辑增强专业依据感，勿逐字大段照抄）】\n{snippet}\n"
+
+
+# ── 五行维护问题判定（第三阶段"五行维护系统"，2026-08-13新增）──────────────
+# ⚠️ 与 js/wuxing-issues.js::WuxingIssues.deriveIssues() 是同一份判定逻辑的
+# 两处独立实现，这是本次改动里**唯一**被有意设计成两处实现同一算法的地方（本
+# 项目一贯的"确定性优先/单一权威实现"原则——见 island_service/bazi_prompt.py
+# 模块docstring——在这里被打破是有明确理由的：前端3D场景挂载(js/wuxing-scene.js)
+# 和后续拖拽维护交互需要在浏览器端零延迟判定，不能每次都等一次后端往返；而
+# Gemini中文叙事prompt又必须在Python侧拿到同一份判定结果才能喂给AI。两边的
+# 分档阈值（0.35/0.20/0.06）、severity方向映射、去重规则，必须逐字对齐——
+# 任一处改动都要同步另一处文件，避免重蹈本项目历史上"同一算法两处独立实现
+# 不同步"的教训（js/bazi-analysis.js 与 js/tutorial.js 的 `_computeHash` 双
+# 实现、当年 `_favorable()` 的bug，详见 claude-docs/已知问题与修复记录.md）。
+def _wuxing_level(pct: float) -> str:
+    """与 bazi_prompt.wuxing_level() 是同一份分档函数，这里独立重复定义
+    （而不是直接调用 bazi_prompt.wuxing_level()）是为了让本函数与
+    js/wuxing-issues.js::_wuxingLevel() 的对应关系一目了然，不夹一层间接
+    跳转——两边数值必须保持一致，改动请同步 bazi_prompt.wuxing_level()
+    与 js/wuxing-issues.js。"""
+    if pct >= 0.35: return 'strong'
+    if pct >= 0.20: return 'medium'
+    if pct >= 0.06: return 'weak'
+    return 'absent'
+
+
+# direction × level → severity(0-2)。理由与 js/wuxing-issues.js 完全一致：
+# nourish（需要"补/灌溉"）占比越低越紧迫，restrain（需要"克/除草"）占比越高
+# 越紧迫。
+_NOURISH_SEVERITY = {'absent': 2, 'weak': 1, 'medium': 0, 'strong': 0}
+_RESTRAIN_SEVERITY = {'strong': 2, 'medium': 1, 'weak': 0, 'absent': 0}
+
+
+def _derive_wuxing_issues(ctx: dict) -> list:
+    """输入 `_build_context()` 输出的 ctx（`favorable`/`favorable2`/
+    `unfavorable` 已经过 `_as_list()` 归一化为list，`wuxing` 是 {五行:0-100
+    整数百分比} 字典），输出
+    `[{'wx':..., 'direction':'nourish'|'restrain', 'severity':0-2}, ...]`。
+    与 js/wuxing-issues.js::WuxingIssues.deriveIssues() 必须是同一套判定
+    逻辑，详见本函数上方模块级注释。"""
+    wuxing = ctx.get('wuxing')
+    if not isinstance(wuxing, dict) or not wuxing:
+        return []
+    total = sum(v for v in wuxing.values() if isinstance(v, (int, float))) or 1
+
+    def level_of(wx):
+        pct = (wuxing.get(wx) or 0) / total
+        return _wuxing_level(pct)
+
+    issues = []
+    seen = set()
+
+    def add_issue(wx, direction):
+        if not wx or wx not in wuxing:
+            return  # 中和格局下 favorable2 是空字符串，或不认识的五行字符，跳过
+        key = (wx, direction)
+        if key in seen:
+            return  # 防止 favorable === favorable2 产生重复条目（理论上罕见但不假设不会发生）
+        seen.add(key)
+        level = level_of(wx)
+        severity = _NOURISH_SEVERITY[level] if direction == 'nourish' else _RESTRAIN_SEVERITY[level]
+        issues.append({'wx': wx, 'direction': direction, 'severity': severity})
+
+    fav = ctx.get('favorable') or []
+    fav2 = ctx.get('favorable2') or []
+    unfav = ctx.get('unfavorable') or []
+    add_issue(fav[0] if fav else '', 'nourish')
+    add_issue(fav2[0] if fav2 else '', 'nourish')
+    add_issue(unfav[0] if unfav else '', 'restrain')
+
+    return issues
 
 
 # 2026-08-04 新增：六维主题打分（Step2 pattern_score / Step3 career_score+
@@ -1599,6 +1780,163 @@ def _sanitize_traits_detail(data) -> dict:
     return {'strengths_detail': [x.strip() for x in sd], 'cautions_detail': [x.strip() for x in cd]}
 
 
+# 2026-08-13 新增「五行维护叙事」`step_wuxing_maintenance`（第三阶段"五行维护
+# 系统"第一批：判定逻辑+具象化文案+占位可视化，取代第一阶段✅/⚠️浮动图标标注，
+# 前端 js/analysis.js::buildMaintenancePanel() 消费）：输入是
+# `_derive_wuxing_issues(ctx)` 算出的确定性问题列表（通常2-3条，命理逻辑本身
+# 决定条目数，不强求固定数量，见该函数注释），任务是给每条issue生成"具象化"的
+# 中文叙事，让同一个五行方向在不同日主命盘下讲出不同的意象角度——不能用"木弱
+# 需补水"这种通用命理术语堆砌套话，这是本步骤存在的核心目的（用户明确强调的
+# "不死板"要求），必须在prompt文本里显式约束，不能只依赖模型自己领会。
+# 跟四柱/神煞/命盘特点详解同一种模式：只依赖ctx+step1+step2（+这里独有的
+# issues参数），加入既有 asyncio.gather 并行批次，用`_step_wuxing_maintenance_
+# safe()`做独立失败隔离，复用Step2已验证的max_tokens=7168（内容量约2-3条×
+# 90-130字≈180-390字，远小于pillars/traits详解量级，7168只是沿用既有验证过的
+# 数字，不是按这个量级精算出的下限）。
+# **措辞约束延续本项目AI人设一贯坚持的原则**（见上方 PERSONA_SYSTEM 附近注释：
+# 去掉水晶推荐/会员营销话术）：诊断内容必须如实反映命理逻辑本身推导出的结论，
+# 不因为这条issue之后可能挂载"灵气兑换水晶"的商业化展示，就刻意加重措辞、
+# 制造焦虑感——商品挂载是后续UI层单独挂载的模块，不应该反向渗透进AI生成的
+# 诊断文本本身。
+def _step_wuxing_maintenance_sync(ctx: dict, step1: dict, step2: dict, issues: list) -> dict:
+    if not issues:
+        return {'items': []}
+
+    dm = ctx.get('dm', '')
+    dm_core_zh = bazi_prompt.DAY_MASTER_CORE_ZH.get(dm, '')
+
+    direction_label = {
+        'nourish':  '需要滋养/灌溉（命局喜用神，八字里这个五行不够）',
+        'restrain': '需要克制/修剪（命局忌神，八字里这个五行太多）',
+    }
+    severity_label = {0: '程度较轻', 1: '程度中等', 2: '程度明显'}
+    issues_block = '\n'.join(
+        f"{i + 1}. 五行【{it['wx']}】· {direction_label.get(it['direction'], it['direction'])} · "
+        f"{severity_label.get(it['severity'], '')}"
+        for i, it in enumerate(issues)
+    )
+
+    prompt = f"""{_shared_chart_block(ctx)}
+
+【前两步结论（供你衔接判断，不要重复输出）】
+{_step2_context_block(step1, step2)}
+【{dm}日主本体意象参考（用于具象化叙事的核心抓手，不要生硬直译成英文翻译腔）】
+{dm_core_zh or '（无参考资料，凭你自己扎实的命理功底判断这个日主的核心意象）'}
+
+【本次需要生成具象化叙事的五行问题（按下面顺序逐条对应输出，不多不少、不换序）】
+{issues_block}
+
+【本步骤任务】把上面每一条"五行问题"转化成扣住{dm}日主自身意象的具象化说法，
+不是干巴巴的命理术语堆砌。**核心要求，必须严格遵守**：同一个五行方向的问题，
+在不同日主身上必须讲出不同的具象化角度，举例说明这个原则（不要照抄这两个例子，
+只是让你理解"角度要扣住日主本体"是什么意思）——甲木日主（参天古松）遇到"缺水
+需要滋养"，应该扣住"古松的根系深扎山野，需要水分持续灌溉才能枝繁叶茂"这类
+具体意象展开；壬水日主（江海大川）本身属水，如果命局是"木弱需要滋养"或
+"水本身过旺需要克制"，应该扣住壬水本体的意象展开（比如水过旺就是"没有堤岸
+约束的江河，水势虽壮却容易泛滥失控"）。不能对不同日主套用同一套"某五行不足/
+太旺"这种通用命理讲法，必须紧扣上面给你的{dm}日主本体意象参考来展开，不要
+脱离这个日主本身的具体形象空谈五行生克。
+
+对每一条问题输出：
+- title：8-14字的短标题，概括这个具象化角度（风格类似"古松渴水，亟待灌溉"，
+  不是"五行水偏弱"这种直白术语堆砌）。
+- narrative：60-100字的具象化说明，先扣住日主意象展开这个五行问题具体在命盘
+  里怎么表现，再简要说明命理依据（结合{ctx['strength_str']}的身强弱判断和
+  喜用神/忌神逻辑），语气延续你一贯的人设——通俗、接地气、专业但不故弄玄虚。
+- action_hint：20-30字，这条问题在"经营维护"视角下大致该往什么方向改善
+  （仅供后续美术/游戏化选型内部参考，不会直接展示给用户，所以可以偏向具体
+  意象化的动作描述，比如"引水入林""疏浚河道"，不需要写成用户可执行的建议句）。
+
+**极其重要的措辞约束**：这些说明必须如实反映命盘真实的命理逻辑推导结论，
+按这条问题在命盘里的真实权重客观陈述，绝对不能为了让内容显得更严重/更需要
+处理而夸大问题、制造焦虑感，也不能使用任何带货/营销式的措辞。
+
+请输出严格JSON（不含markdown代码块，不含JSON之外的任何文字）：
+{{
+  "items": [
+    {{"wx": "对应第1条的五行字符（原样复制上面给出的字符，不要改写）", "direction": "对应第1条的nourish或restrain（原样复制，只能是这两个英文单词之一）", "title": "...", "narrative": "...", "action_hint": "..."}}
+  ]
+}}
+items必须严格按上面给出的问题顺序和数量逐一对应，不多不少，wx/direction字段
+必须原样复制（不要翻译/改写/调换）。"""
+    raw = _call_gemini(prompt, max_tokens=7168, system_instruction=PERSONA_SYSTEM)
+    return _parse_json(raw)
+
+
+async def _step_wuxing_maintenance(ctx: dict, step1: dict, step2: dict, issues: list) -> dict:
+    return await asyncio.to_thread(_step_wuxing_maintenance_sync, ctx, step1, step2, issues)
+
+
+async def _step_wuxing_maintenance_safe(ctx: dict, step1: dict, step2: dict, issues: list) -> dict:
+    """五行维护叙事是"点击3D岛屿五行问题装饰物才会看到"的补充细节，不是核心
+    叙事主体——独立捕获 GeminiCallError，失败时返回空dict，只让这一小块内容
+    缺失，不拖垮 asyncio.gather 里其它并行步骤和整条 analyze_bazi() 请求。"""
+    try:
+        return await _step_wuxing_maintenance(ctx, step1, step2, issues)
+    except GeminiCallError as e:
+        print(f"[gemini_analysis WARN] 五行维护叙事生成失败（不影响其它步骤）: {_redact(str(e))}")
+        return {}
+
+
+def _sanitize_wuxing_maintenance(data, issues: list) -> list:
+    """落盘前结构校验：按 (wx, direction) 配对提取AI输出里对应issues的合法
+    条目——不依赖AI输出顺序，也不要求AI输出条目数与issues完全一致才处理（哪怕
+    多给/少给几条，能配对上的照样保留），只丢弃字段缺失/类型不对/未知
+    (wx,direction)组合的条目。跟 `_sanitize_traits_detail()` 的"3+3全合法或
+    整体为空"不同（那里是固定index一一对应，没有"部分可用"中间态）——这里的
+    每条issue本身就带着(wx,direction)这个天然唯一标识，可以精确配对，允许
+    "部分成功"这种中间态（比如AI遗漏了issues里的第2条，返回结果就只有1条），
+    比"因为一条对不上就整体作废"更能保留有效内容。
+
+    返回值：list，长度可能小于 len(issues)（AI遗漏部分条目时）。2026-08-13
+    qa-reviewer复查CONFIRMED后：`_wuxing_maintenance_valid()` 已不再要求条目数
+    与 `len(issues)` 精确匹配（那套设计会导致部分失败被反复判定未命中、拖累
+    整份含其它8步正常数据的分析结果重新生成，完整故障链路见该函数上方大段
+    注释），现在只要求非空list——这份"部分缺失"的结果会被当作有效缓存长期
+    复用，与 `_sanitize_pillars_detail()`/`_sanitize_shensha_detail()` 允许
+    "部分完整永久缓存"的取舍完全对齐，不再是例外。"""
+    if not issues:
+        return []
+    if not isinstance(data, dict):
+        return []
+    raw_items = data.get('items')
+    if not isinstance(raw_items, list):
+        return []
+
+    by_key = {}
+    for it in raw_items:
+        if not isinstance(it, dict):
+            continue
+        wx = it.get('wx')
+        direction = it.get('direction')
+        title = it.get('title')
+        narrative = it.get('narrative')
+        action_hint = it.get('action_hint')
+        if not (isinstance(wx, str) and wx
+                and direction in ('nourish', 'restrain')
+                and isinstance(title, str) and title.strip()
+                and isinstance(narrative, str) and narrative.strip()):
+            continue
+        key = (wx, direction)
+        if key in by_key:
+            continue  # 重复条目：保留先出现的一条
+        by_key[key] = {
+            'wx': wx,
+            'direction': direction,
+            'title': title.strip(),
+            'narrative': narrative.strip(),
+            'action_hint': action_hint.strip() if isinstance(action_hint, str) else '',
+        }
+
+    # 按issues原始顺序输出，找不到匹配的AI条目就跳过（不强行补全占位内容）
+    result = []
+    for it in issues:
+        matched = by_key.get((it.get('wx'), it.get('direction')))
+        if matched:
+            result.append(matched)
+    return result
+
+
 # ── 主分析函数 ────────────────────────────────────────────
 async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0,
                         force_refresh: bool = False) -> dict:
@@ -1631,6 +1969,15 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
         return {'hash': bz_hash, 'analysis': None, 'error': 'no_api_key'}
 
     ctx = _build_context(bazi_data, gender, birth_year)
+    # `_derive_wuxing_issues(ctx)`（纯规则引擎函数）供下面 `_step_wuxing_
+    # maintenance_safe()` 生成叙事、`_sanitize_wuxing_maintenance()` 落盘前
+    # 按(wx,direction)配对使用。2026-08-13曾一度把 ctx 构建提前到缓存命中判断
+    # 之前、让 `_cache_read()` 用它重算期望条目数做精确匹配校验，同日
+    # qa-reviewer复查CONFIRMED后连同那套精确匹配校验一起撤销（详见
+    # `_wuxing_maintenance_valid()` 上方大段注释）——`_cache_read()` 不再需要
+    # ctx，ctx 构建位置相应改回原来的"缓存未命中后才构建"，不再有提前构建的
+    # 必要，避免无意义的额外说明和潜在的心智负担。
+    wuxing_issues = _derive_wuxing_issues(ctx)
 
     try:
         # Step1 → Step2 严格串行：Step2 的 prompt 依赖 Step1 的文本输出作为上下文
@@ -1656,8 +2003,16 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
         # 这个批次：只依赖Step1+2，同一依赖层级，不新增串行阶段；同样用`_safe`
         # 包装独立失败隔离，理由同四柱/神煞详解——这是点击3D岛屿✅/⚠️锚点才会
         # 看到的补充细节，不应该因为一次调用失败拖垮整条请求。
+        # 2026-08-13 新增「五行维护叙事」（`_step_wuxing_maintenance_safe`）同样
+        # 加入这个批次：只依赖Step1+2+`wuxing_issues`（缓存未命中、确认要走
+        # 生成流程后才构建`ctx`并算出`wuxing_issues`，就在上面进入本函数体不久
+        # 处，晚于缓存判断——2026-08-13同日qa-reviewer复查CONFIRMED后撤销了
+        # 一度提前到缓存判断之前构建的版本，见`_wuxing_maintenance_valid()`
+        # 上方大段注释），同一依赖层级，不新增串行阶段；同样用`_safe`
+        # 包装独立失败隔离——这是点击3D岛屿五行问题装饰物才会看到的补充细节，
+        # 取代第一阶段的✅/⚠️浮动图标标注，不应该因为一次调用失败拖垮整条请求。
         (step2b, step3, step4, step5, step6, pillars_detail_raw, shensha_detail_raw,
-         traits_detail_raw) = await asyncio.gather(
+         traits_detail_raw, wuxing_maintenance_raw) = await asyncio.gather(
             _step2b_shishen(ctx, step1, step2),
             _step3_career_wealth(ctx, step1, step2),
             _step4_relationship(ctx, step1, step2),
@@ -1666,6 +2021,7 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
             _step_pillars_detail_safe(ctx, step1, step2),
             _step_shensha_detail_safe(ctx, step1, step2),
             _step_traits_detail_safe(ctx, step1, step2),
+            _step_wuxing_maintenance_safe(ctx, step1, step2, wuxing_issues),
         )
 
         analysis = {
@@ -1690,6 +2046,17 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
             # 落盘的要么是完整的3+3条展开说明，要么整个字段是空dict——前端
             # buildTraitPanel() 遇到空dict时优雅降级回退展示trait.summary本身。
             'step_traits_detail': _sanitize_traits_detail(traits_detail_raw),
+            # 2026-08-13新增：五行维护叙事，list（不是dict），每条对应
+            # `wuxing_issues`里的一条问题，按(wx,direction)配对、允许AI遗漏部分
+            # 条目（`_sanitize_wuxing_maintenance()`跳过式提取，不强行补全）。
+            # `_wuxing_maintenance_valid()`只要求这份list非空即判定缓存有效
+            # （与`_pillars_detail_valid()`/`_shensha_detail_valid()`同一套
+            # "非空即有效、允许部分完整长期缓存"判定粒度，不再要求条目数与
+            # `len(wuxing_issues)`精确匹配——2026-08-13同日qa-reviewer复查
+            # CONFIRMED后从"精确匹配"改为现在这版，完整故障链路见该函数
+            # 上方大段注释），只有真正的彻底失败（落盘为空list）才判定未命中、
+            # 触发下次请求重新生成。
+            'step_wuxing_maintenance': _sanitize_wuxing_maintenance(wuxing_maintenance_raw, wuxing_issues),
             'keywords': keywords,
         }
         # 2026-08-04 qa-reviewer复查修复（CONFIRMED 2）：落盘前校验六维打分字段类型，

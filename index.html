@@ -306,6 +306,78 @@
       100%{transform:scale(1) rotateY(0); filter:brightness(1.25) drop-shadow(0 0 8px rgba(111,207,151,.7))}
     }
 
+    /* ══ 五行维护系统3D热点（第三阶段，2026-08-13新增，js/wuxing-scene.js）══
+       取代上面这套 .trait-marker 图标标注（旧系统代码保留但不再从主流程
+       触发，见 island-annotate.js 顶部对应停用说明）。结构/展开交互跟
+       .trait-marker 同款（小圆点热点 → 点击展开引导线+卡片，同一时刻只
+       展开一张），class名用 wx- 前缀跟旧系统适度区分。
+       颜色不新造配色系统：每个热点按当次 wx（五行）从
+       CONFIG.WUXING_COLORS 取色，通过内联 --wx-color/--wx-glow 两个CSS变量
+       传入（见 wuxing-scene.js::_makeHotspot()），而不是靠5行×2方向写10套
+       静态class。方向（nourish喜用神不足 / restrain忌神过旺）不靠颜色区分，
+       靠图标（💧/✂️，见 wuxing-scene.js 里 ICON_BY_DIRECTION）和对应3D占位
+       形状（tree幼苗/ring锁环，见 island-decorations.js 新增的 DECOR_DEFS）
+       区分。触摸目标28px（大于旧trait-dot的20px）——本轮点位数从6个降到
+       通常2-3个，密度压力小很多，有余量把单点触摸目标做得更大更好点。 */
+    .wx-marker{position:relative;pointer-events:none;display:flex;align-items:center}
+    .wx-dot{
+      display:flex;align-items:center;justify-content:center;
+      width:28px;height:28px;border-radius:50%;font-size:14px;line-height:1;
+      background:rgba(8,8,20,.9);cursor:pointer;pointer-events:auto;user-select:none;
+      border:1px solid var(--wx-color,#c9a96e);
+      box-shadow:0 0 6px var(--wx-glow,rgba(201,169,110,.3));
+      transition:transform .2s;
+    }
+    .wx-dot:hover{transform:scale(1.12)}
+    /* severity（命理静态权重，0~2）越高，热点常驻发光越明显——不是动态
+       劣化等级，纯粹用于在多个问题并存时帮用户一眼看出哪条权重更高 */
+    .wx-sev-1 .wx-dot{box-shadow:0 0 8px var(--wx-glow,rgba(201,169,110,.4))}
+    .wx-sev-2 .wx-dot{box-shadow:0 0 11px var(--wx-glow,rgba(201,169,110,.5)),0 0 3px var(--wx-color,#c9a96e) inset}
+    .wx-leader{
+      position:absolute;left:28px;top:50%;width:20px;height:1px;
+      background:rgba(201,169,110,.35);
+      opacity:0;pointer-events:none;transition:opacity .25s ease;
+    }
+    /* 同 .trait-card 的 width:max-content 技巧（父级 .wx-marker 因子元素
+       全是 absolute 定位，自身不撑宽度，shrink-to-fit 可用宽度恒为负，
+       不加 width:max-content 文本会被强行夹到 min-width）*/
+    .wx-card{
+      position:absolute;left:50px;top:50%;
+      transform:translateY(-50%) translateX(-8px);
+      width:max-content;min-width:120px;max-width:190px;
+      background:rgba(8,8,20,.94);border-radius:8px;padding:8px 12px;
+      border:1px solid var(--wx-color,#c9a96e);
+      font-size:11px;line-height:1.6;color:rgba(232,224,208,.85);
+      opacity:0;pointer-events:none;cursor:pointer;
+      transition:opacity .25s ease,transform .25s ease;
+    }
+    .wx-marker.wx-expand-left .wx-leader{left:auto;right:28px}
+    .wx-marker.wx-expand-left .wx-card{left:auto;right:50px;transform:translateY(-50%) translateX(8px)}
+    .wx-marker.expanded .wx-leader{opacity:1}
+    .wx-marker.expanded .wx-card{opacity:1;pointer-events:auto;transform:translateY(-50%) translateX(0)}
+
+    /* 2026-08-13：灵气兑换"改善"某条五行问题成功后的翻牌+淡出过渡
+       （js/wuxing-scene.js::markResolved()触发），设计语言对齐第二阶段
+       island-annotate.js::markTraitResolved() 的 @keyframes trait-flip
+       （scale+rotateY翻牌，中点切图标，末尾drop-shadow发光收尾），这里额外
+       多一步：发光停留一瞬后整个热点淡出消失（因为五行问题热点被markResolved
+       后是彻底移除，不像trait系统是"⚠️→✅原地常驻"）。两段动画各自独立：
+       .wx-dot 的 wx-flip 负责翻牌（.5s），.wx-marker 的 wx-fadeout 负责
+       淡出（.3s，延迟.7s让翻牌+发光效果先完整播完再消失），JS里的
+       setTimeout(1020ms) 与这里的 .7s+.3s=1.0s 总时长对齐，留20ms余量。 */
+    .wx-marker.wx-resolving .wx-dot{animation:wx-flip .5s ease-in-out}
+    .wx-marker.wx-resolving{animation:wx-fadeout .3s ease-in .7s forwards}
+    @keyframes wx-flip{
+      0%{transform:scale(1)}
+      40%{transform:scale(.6) rotateY(90deg); filter:brightness(1.6)}
+      60%{transform:scale(.6) rotateY(90deg)}
+      100%{transform:scale(1) rotateY(0); filter:brightness(1.3) drop-shadow(0 0 8px rgba(111,207,151,.75))}
+    }
+    @keyframes wx-fadeout{
+      0%{opacity:1}
+      100%{opacity:0}
+    }
+
     /* 右侧分析面板 */
     /* 2026-08-11修复（qa CONFIRMED 1）：外壳本身不再滚动（overflow:hidden），
        只有 #zone-panel-content 内部滚动；#zone-panel-close 是外壳的直接子元素，
@@ -1165,10 +1237,14 @@
 <script src="js/config.js"></script>
 <script src="js/auth.js"></script>
 <script src="js/bazi-engine.js"></script>
+<!-- 五行维护系统判定层：纯函数，只依赖BaziEngine输出，需在bazi-analysis.js（校验用）
+     和后续wuxing-scene.js（3D挂载，frontend-3d领域）之前加载 -->
+<script src="js/wuxing-issues.js"></script>
 <script src="js/user-state.js"></script>
 <script src="js/island-loader.js"></script>
 <script src="js/island-annotate.js"></script>
 <script src="js/island-decorations.js"></script>
+<script src="js/wuxing-scene.js"></script>
 <script src="js/products.js"></script>
 <script src="js/bazi-analysis.js"></script>
 <script src="js/analysis.js"></script>

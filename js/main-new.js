@@ -467,20 +467,64 @@ const App = (() => {
   // 只是"双保险"，两处比对的是同一个 _islandGeneration 计数器、同一套语义
   // （都是"请求发起时的世代 !== 当前世代则丢弃"），不会互相冲突或重复判断出错，
   // 中间也没有额外的 await 会让世代值在两次比对之间发生变化。
+  //
+  // 第三阶段"五行维护系统"：本函数不再调用 IslandAnnotate.attachTraits()
+  // 挂载✅/⚠️浮动图标标签（该套TRAIT_LAYOUT/attachTraits()代码保留在
+  // island-annotate.js里但不再从这个调用点触发，见该文件顶部停用说明），
+  // 改为把 WuxingIssues.deriveIssues() 算出的确定性五行判定（wx/direction/
+  // severity）与 analysis.step_wuxing_maintenance 里AI生成的具象化叙事
+  // （title/narrative/action_hint）按 wx+direction 合并成完整issue，交给
+  // WuxingScene.attach() 在岛屿地形上挂真实3D装饰（占位几何体）。
   function _applyAiAnalysis(analysis, expectedGeneration) {
-    if (!analysis) return;
     if (typeof expectedGeneration === 'number' && expectedGeneration !== _islandGeneration) return; // 会话已切换，静默丢弃
 
-    if (typeof IslandAnnotate !== 'undefined' && IslandAnnotate.attachTraits) {
-      const td = analysis.step_traits_detail || {};
-      const s1 = analysis.step1_foundation || {};
-      const strengths = (s1.strengths || []).map((summary, i) => ({
-        summary, detail: (td.strengths_detail || [])[i]
-      }));
-      const cautions = (s1.cautions || []).map((summary, i) => ({
-        summary, detail: (td.cautions_detail || [])[i]
-      }));
-      IslandAnnotate.attachTraits(IslandLoader.getScene(), _baziData, { strengths, cautions });
+    // 2026-08-13 qa-reviewer第二轮CONFIRMED（对上一轮"换岛屿热点残留"修复的
+    // 回归）：这里曾经在 `if (!analysis) return;` 之前无条件调用过一次
+    // WuxingScene.detach()，本意是覆盖"AI深析失败"这条不会走到下方attach()
+    // 的路径——但qa-reviewer浏览器实跑验证发现这个前提是错的：
+    //   1) "换岛屿"场景下，_onIslandReady() 已经在AI深析请求发出之前就
+    //      同步调用过 WuxingScene.detach()（见该函数内联注释），本函数收到
+    //      结果时（不论成功/失败）旧热点早就清空过了，这里再detach一次清的
+    //      永远是空集，纯属多余。
+    //   2) 真正会被这次detach误伤的是"同一岛屿轻量刷新AI深析"场景
+    //      （settings.js::refreshAiOnly()）——此时当前岛屿的热点是有效内容，
+    //      AI深析失败（js/bazi-analysis.js: "恒不reject，失败一律
+    //      resolve(null)"）只是意味着"这次没有更新的数据"，不代表"当前
+    //      内容已经过期该清空"。无条件detach会把用户正常在用的热点/3D装饰
+    //      全部误删，且此后没有任何路径会重新挂上（restoreAll()只管商品
+    //      装饰、不管wxmaint_；_onIslandReady()不会再触发），只能整页刷新
+    //      才能恢复。
+    // 修复：不再在这里做任何清理，`if (!analysis) return;` 直接提前返回、
+    // 保留当前已挂载的有效内容原样不动；AI深析成功时下方 WuxingScene.attach()
+    // 内部本身第一行就会自己先 detach() 再挂载新热点（见 js/wuxing-scene.js），
+    // "换岛屿"这条路径的清理完全由 _onIslandReady() 一处覆盖，不需要在这里
+    // 重复兜底。
+    if (!analysis) return;
+
+    if (typeof WuxingIssues !== 'undefined' && typeof WuxingIssues.deriveIssues === 'function'
+      && typeof WuxingScene !== 'undefined' && typeof WuxingScene.attach === 'function') {
+      const baseIssues = WuxingIssues.deriveIssues(_baziData) || [];
+      // step_wuxing_maintenance 本身就是裸数组（island_service/gemini_analysis.py::
+      // _sanitize_wuxing_maintenance() 返回 list，analyze_bazi() 直接原样写入该
+      // 字段），不是 {maintenance_items:[...]} 包一层——2026-08-13总agent交叉核对
+      // 发现的CONFIRMED bug，此前误加的 `.maintenance_items` 导致 narrItems 永远
+      // 是空数组，AI叙事从未真正传到WuxingScene。
+      const narrItems  = analysis.step_wuxing_maintenance || [];
+      const issues = baseIssues.map(issue => {
+        const narr = narrItems.find(n => n.wx === issue.wx && n.direction === issue.direction) || {};
+        return {
+          wx:          issue.wx,
+          direction:   issue.direction,
+          severity:    issue.severity,
+          title:       narr.title,
+          narrative:   narr.narrative,
+          action_hint: narr.action_hint,
+        };
+      });
+      // WuxingScene.attach() 内部第一行会自己先 detach() 清掉上一次（本函数
+      // 上一次AI深析成功时）挂载的热点，再挂载这一批新的——同一岛屿"轻量
+      // 刷新AI深析"成功场景下天然是"清旧挂新"，不需要本函数额外调用detach()。
+      WuxingScene.attach(IslandLoader.getScene(), _baziData, issues);
     }
   }
 
@@ -490,6 +534,23 @@ const App = (() => {
 
     // 标注系统（含诊断徽标）
     IslandAnnotate.attach(scene, _baziData);
+
+    // 2026-08-13 qa-reviewer CONFIRMED：换岛屿场景下，上一张命盘挂载的
+    // wxmaint_五行热点（CSS2D DOM，跟随同一个THREE.Scene常驻，不会随
+    // "加载新岛屿"自动消失——island-loader.js::initScene()整个会话复用
+    // 同一个Scene对象）必须在这里立即清一次，不能指望"这张新岛屿的AI深析
+    // 成功后WuxingScene.attach()会自己先detach()"这个隐含前提——AI深析
+    // 可能失败/超时（_applyAiAnalysis()此时会直接return，见该函数定义处
+    // 新增的注释），届时上一张命盘的热点会永久残留在这张新岛屿上；用户点击
+    // 这些孤儿热点会把"点击时闭包携带的旧命盘baziData"跟"此刻已经切换到
+    // 的新岛屿App.getCurrentIslandId()"混在同一次兑换请求里，造成跨命盘
+    // 数据污染（真实可复现路径见 claude-docs/已知问题与修复记录.md 对应
+    // 日期条目）。这里清理跟 island-annotate.js::attach() 里对四柱/神煞/
+    // 旧trait标签的防御性清理是同一模式，仅仅是WuxingScene是本轮新增模块、
+    // 迁移时漏掉了对应这一句。
+    if (typeof WuxingScene !== 'undefined' && typeof WuxingScene.detach === 'function') {
+      WuxingScene.detach(scene);
+    }
 
     // 异步获取AI深析数据，挂载3D特点标注（见 _applyAiAnalysis()定义处
     // 注释）。静默失败——岛屿本身已经渲染完成，这里只是锦上添花的
@@ -772,12 +833,180 @@ const App = (() => {
   // 与本文件里 _islandGeneration 世代计数器是同一套防御模式。
   let _zonePanelToken = 0;
 
+  // ── 五行维护"灵气兑换"区块（接线方实现，见 js/analysis.js::
+  //    buildMaintenancePanel() 上方注释里约定的 #wxmaint-redeem-slot
+  //    低耦合contract）────────────────────────────────────────────
+  // 2026-08-13总agent交叉核对发现：本区块此前完全未实现，面板里的
+  // #wxmaint-redeem-slot占位容器一直是空的，用户看不到任何兑换入口。
+  // 补齐后走"预渲染HTML字符串 + Analysis.buildMaintenancePanel()第4参数
+  // 直接嵌入"这条协作路径（另一条是DOM插入后querySelector定位，这里选前者
+  // 因为跟 _renderZonePanelHtml() 已有的"整段HTML一次性塞进innerHTML"风格
+  // 一致，不需要额外一次DOM查询+事件绑定）。
+  //
+  // 复用 js/analysis.js::_traitRedeemBlock()（1400-1451行，第二阶段已跑通、
+  // qa-reviewer验收过）同款结构（商品卡片列表/灵气不足禁用态/已改善徽标），
+  // 但该函数是analysis.js模块私有、未导出，且改造对象从trait的{kind,idx}
+  // 换成五行问题的{wx,direction}——按CLAUDE.md"不改bazi-pipeline领域文件"
+  // 的边界，这里在本文件内重新实现一份等价版本，不去改analysis.js。
+  // badge()/section() 同理是analysis.js模块私有辅助函数，未导出，这里用
+  // 同款CSS class（.zone-badge/.zone-section等，index.html里定义，不是
+  // trait专属样式）手写等价的一行HTML，不新造样式体系。
+  //
+  // 竞态防护：_lastWxmaintCtx 记录"最近一次渲染五行维护面板时"的
+  // {baziData, issue, token}，token 就是当次 _openZonePanel() 用的
+  // _zonePanelToken 快照值（wxmaint_面板只会被 _openZonePanel() 同步渲染
+  // 一次，不像pillar_/shensha_那样还有一次异步AI详解到达后的二次渲染，
+  // 因此直接读取"此刻"的 _zonePanelToken 即为本次渲染对应的令牌，不需要
+  // 额外再引入一个新计数器）。兑换网络请求resolve后用这个快照值跟"此刻"的
+  // _zonePanelToken 比对——不一致说明用户在await期间已经切换/关闭了面板，
+  // 静默丢弃不覆盖，与 analysis.js::_refreshTraitPanel() 的 _zonePanelGen
+  // 比对是同一套防御模式（该文件历史上真实出过"await期间用户切走导致内容
+  // 被错误覆盖"的bug，这里不能省略这层防护）。
+  let _lastWxmaintCtx = null;
+
+  function _wxBadge(text, type) {
+    return `<span class="zone-badge badge-${type}">${text}</span>`;
+  }
+  function _wxSection(title, body) {
+    return `<div class="zone-section"><div class="zone-section-title">${title}</div><div class="zone-section-body">${body}</div></div>`;
+  }
+  // i18n查表辅助——跟 js/products.js::_t() 同款写法（Lang.t()本身不支持
+  // 占位符插值，这里补一层简单 {n} 替换）。2026-08-13 qa-reviewer PLAUSIBLE
+  // 发现补齐：本文件里五行维护面板的UI文案此前全是硬编码中文，未经i18n查表，
+  // 英文用户看不到翻译，违反CLAUDE.md"i18n完整性"强制规则。
+  function _wxT(key, vars) {
+    let s = (typeof Lang !== 'undefined') ? Lang.t(key) : key;
+    if (vars) {
+      Object.keys(vars).forEach(k => { s = s.replace('{' + k + '}', vars[k]); });
+    }
+    return s;
+  }
+  function _wxProductIcon(product) {
+    const key = ((product && (product.decorId || product.id)) || '').toLowerCase();
+    if (key.includes('amethyst')) return '🔮';
+    if (key.includes('rose'))     return '💗';
+    if (key.includes('obsidian')) return '⚫';
+    if (key.includes('water') || key.includes('basin') || key.includes('clear')) return '💧';
+    return '💎';
+  }
+
+  // 构建 #wxmaint-redeem-slot 内嵌HTML；issue 形状同 extra：
+  // {wx, direction, severity, title, narrative, action_hint}。
+  // 副作用：记下 _lastWxmaintCtx 供 App.redeemWuxingProduct() 兑换成功后
+  // 的原地刷新使用——跟 analysis.js::buildTraitPanel() 内部记 _lastTraitCtx
+  // 同一惯例（该函数本身在文档里也标注了"纯函数"但内部一样有这层缓存副作用，
+  // 是这套zone-panel渲染管线里的既有模式，不是本次新引入的例外）。
+  function _wxmaintRedeemBlockHtml(baziData, issue) {
+    issue = issue || {};
+    const wx = issue.wx, direction = issue.direction;
+    if (!wx || (direction !== 'nourish' && direction !== 'restrain')) return '';
+
+    _lastWxmaintCtx = { baziData, issue, token: _zonePanelToken };
+
+    if (typeof Products === 'undefined' || typeof Products.getProducts !== 'function') return '';
+    if (typeof UserState === 'undefined') return '';
+
+    const baziKey = (typeof UserState.baziKey === 'function') ? UserState.baziKey(baziData) : null;
+    const resolved = (baziKey && typeof UserState.isWuxingIssueResolved === 'function')
+      ? UserState.isWuxingIssueResolved(baziKey, wx, direction)
+      : false;
+
+    if (resolved) {
+      return _wxSection(_wxT('wxmaint.progress_label'), _wxBadge(_wxT('wxmaint.resolved_badge') + ' ✅', 'good'));
+    }
+
+    let products = [];
+    try { products = Products.getProducts() || []; } catch (e) { products = []; }
+    if (!products.length) return '';
+
+    const lang        = (typeof Lang !== 'undefined' && typeof Lang.getLang === 'function') ? Lang.getLang() : 'zh';
+    const spirit       = (typeof UserState.getSpirit === 'function') ? (UserState.getSpirit() || 0) : 0;
+    const spiritLabel  = _wxT('products.spirit_label');
+    const redeemLabel  = _wxT('products.redeem_btn');
+
+    const cardsHtml = products.map(p => {
+      const name = (p && p.name && (p.name[lang] || p.name.zh)) || (p && p.id) || '';
+      const cost = (p && Number(p.spiritCost)) || 0;
+      const enough = spirit >= cost;
+      const icon = _wxProductIcon(p);
+      const btnHtml = enough
+        ? `<button class="trait-redeem-btn" onclick="App.redeemWuxingProduct('${String(p.id).replace(/'/g, "\\'")}', this)">${redeemLabel}</button>`
+        : `<button class="trait-redeem-btn disabled" disabled>${_wxT('wxmaint.insufficient_btn', { n: cost - spirit })}</button>`;
+      return `
+        <div class="trait-product-card">
+          <div class="trait-product-icon">${icon}</div>
+          <div class="trait-product-info">
+            <div class="trait-product-name">${name}</div>
+            <div class="trait-product-price">${cost} ${spiritLabel}</div>
+          </div>
+          ${btnHtml}
+        </div>`;
+    }).join('');
+
+    return _wxSection(_wxT('wxmaint.redeem_now'), `<div class="trait-product-list">${cardsHtml}</div>`);
+  }
+
+  // ── 兑换按钮 onclick 调用：编排一次五行维护商品兑换，成功后原地刷新当前
+  //    已打开的wxmaint面板（复用 _lastWxmaintCtx，见其声明处的竞态防护说明）。
+  async function _redeemWuxingProduct(productId, btnEl) {
+    if (typeof Products === 'undefined' || typeof Products.redeem !== 'function') return;
+    if (!_lastWxmaintCtx) return;
+
+    const ctxAtClick = _lastWxmaintCtx;
+    const { baziData, issue } = ctxAtClick;
+    const originalText = btnEl ? btnEl.textContent : '';
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = _wxT('wxmaint.redeeming');
+    }
+
+    let ok = false;
+    try {
+      ok = await Products.redeem(productId, {
+        wx:        issue.wx,
+        direction: issue.direction,
+        summary:   issue.title,
+        baziData,
+      });
+    } catch (e) {
+      ok = false;
+    }
+
+    if (ok) {
+      _refreshWxmaintPanel(ctxAtClick);
+    } else if (btnEl) {
+      // 兑换失败（灵气不足/未登录被引导中止/网络错误等，具体原因与提示由
+      // Products.redeem() 内部负责）：还原按钮，不清空/替换面板其余内容——
+      // 与 analysis.js::redeemTraitProduct() 失败分支同一原则。
+      btnEl.disabled = false;
+      btnEl.textContent = originalText || _wxT('products.redeem_btn');
+    }
+  }
+
+  // 内部：用点击那一刻快照下来的 ctxAtClick 重新调用 _renderZonePanelHtml()
+  // 并原地替换 zone-panel-content 的内容——兑换成功后
+  // UserState.isWuxingIssueResolved() 会变为true，重渲染即可自然切换到
+  // "已改善"徽标态。竞态守卫见 _lastWxmaintCtx 声明处注释。
+  function _refreshWxmaintPanel(ctxAtClick) {
+    if (!ctxAtClick || ctxAtClick.token !== _zonePanelToken) return;
+    const panel = document.getElementById('zone-panel');
+    if (!panel || !panel.classList.contains('open')) return;
+    const content = document.getElementById('zone-panel-content');
+    if (!content) return;
+    const { baziData, issue } = ctxAtClick;
+    const zoneKey = `wxmaint_${issue.wx}_${issue.direction}`;
+    content.innerHTML = _renderZonePanelHtml(zoneKey, baziData, null, issue);
+  }
+
   // 根据 zoneKey 渲染面板 HTML（纯函数，无副作用）。analysis 为 null/undefined
   // 时走静态兜底，拿到 AI 深析结果后传入 analysis 走完整详解。extra 是
   // island-annotate.js::attachTraits() 的trait标签点击时闭包携带的
-  // {kind, idx, summary, detail} 数据，只有 'trait_' 开头的 zoneKey 会用到——
-  // trait 数据本身在标签创建时就已经完整拿到手（见该文件内的说明），不像
-  // pillar_/shensha_ 那样需要在这里异步等 AI 深析结果到达才能渲染完整版。
+  // {kind, idx, summary, detail} 数据，只有 'trait_' 开头的 zoneKey 会用到
+  // （该套trait标注本身已停用，见 _applyAiAnalysis() 注释，但代码保留）；
+  // wxmaint_ 开头的 zoneKey 同理复用这第四参数，携带 WuxingScene 创建装饰时
+  // 闭包携带的 {wx, direction, severity, title, narrative, action_hint}。
+  // 两者数据都在标签/装饰创建时就已经完整拿到手，不像 pillar_/shensha_ 那样
+  // 需要在这里异步等 AI 深析结果到达才能渲染完整版。
   function _renderZonePanelHtml(zoneKey, baziData, analysis, extra) {
     if (zoneKey.startsWith('pillar_')) {
       const col    = zoneKey.replace('pillar_', '');
@@ -793,6 +1022,14 @@ const App = (() => {
     if (zoneKey.startsWith('trait_')) {
       return Analysis.buildTraitPanel(zoneKey, baziData, extra);
     }
+    // 第三阶段"五行维护系统"：wxmaint_{wx}_{direction} 由 WuxingScene 挂载的
+    // 3D装饰点击时触发，extra 是创建装饰时闭包直接携带的完整issue
+    // {wx, direction, severity, title, narrative, action_hint}——跟trait_同款
+    // 模式，数据在点击那一刻已经齐全，不需要在这里再异步等AI深析结果。
+    if (zoneKey.startsWith('wxmaint_')) {
+      const redeemHtml = _wxmaintRedeemBlockHtml(baziData, extra);
+      return Analysis.buildMaintenancePanel(zoneKey, baziData, extra, redeemHtml);
+    }
     return Analysis.buildZonePanel(zoneKey, baziData);
   }
 
@@ -801,13 +1038,15 @@ const App = (() => {
   // Tutorial 的"查看完整详解"按钮（见 viewTutorialDetail()），点击前已经
   // 调用过 Tutorial.pause() 把引导自身的 Modal/overlay 隐藏掉，两者不会
   // 同时抢视觉焦点。
-  // extra：可选第四参数，island-annotate.js::attachTraits() 的trait标签点击时
-  // 传入 {kind, idx, summary, detail} 形状，供 zoneKey 以 'trait_' 开头的分支
-  // 透传给 Analysis.buildTraitPanel()（见上方 _renderZonePanelHtml）。放在第四
-  // 位而不是复用第三位的 force，是因为两者语义完全独立、调用方不同（Tutorial
-  // 传布尔 force，island-annotate.js 传对象 extra），合并进同一个位置容易在
-  // 未来被误传/误判类型。pillar_/shensha_/其余分支忽略该参数，不传时（现有
-  // 调用点）行为与改动前完全一致。
+  // extra：可选第四参数，island-annotate.js::attachTraits()（已停用trait标注，
+  // 代码保留）传入 {kind, idx, summary, detail}，或 WuxingScene（本轮新增的
+  // 五行维护3D装饰）传入 {wx, direction, severity, title, narrative,
+  // action_hint}——分别供 zoneKey 以 'trait_'/'wxmaint_' 开头的分支透传给
+  // Analysis.buildTraitPanel()/buildMaintenancePanel()（见上方
+  // _renderZonePanelHtml）。放在第四位而不是复用第三位的 force，是因为两者
+  // 语义完全独立、调用方不同（Tutorial 传布尔 force，标签/装饰点击传对象
+  // extra），合并进同一个位置容易在未来被误传/误判类型。pillar_/shensha_/
+  // 其余分支忽略该参数，不传时（现有调用点）行为与改动前完全一致。
   function _openZonePanel(zoneKey, baziData, force, extra) {
     // 引导激活期间，标签点击由 Tutorial 接管，此处直接返回（"查看完整详解"
     // 走 force=true 绕开这道 guard）
@@ -932,6 +1171,7 @@ const App = (() => {
     toggleBgm, toggleSfx,
     restartTutorial,   // 测试模式 HUD 用
     viewTutorialDetail, // 引导Modal"查看完整详解"按钮用
+    redeemWuxingProduct: _redeemWuxingProduct, // wxmaint面板"兑换"按钮 onclick 用
     // AuthUI 内部调用（勿删）
     _getBaziData:  () => _baziData,
     _getBirthInfo: () => _birthInfo,

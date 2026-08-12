@@ -58,6 +58,31 @@ const IslandAnnotate = (() => {
   // 2026-08-11：新功能"命盘特点3D标注"第一阶段（见
   // claude-docs 计划 structured-nibbling-duckling），独立于 PILLAR_LAYOUT/
   // SHENSHA_LAYOUT，不复用/不改动它们的数组或生命周期。
+  //
+  // 2026-08-13【已停用，代码保留】：第三阶段"五行维护系统"上线后，
+  // TRAIT_LAYOUT / attachTraits() / detachTraits() 这一整套"贴片式"图标
+  // 标注已不再从 main-new.js 主流程触发（原调用点改为
+  // WuxingScene.attach()/detach()，见 js/wuxing-scene.js + js/wuxing-issues.js
+  // ——用岛屿上真正的3D装饰物取代漂浮图标，问题判定也从"AI自由生成3+3条"
+  // 换成"js/bazi-engine.js::_favorable()确定性五行计算"）。这套函数本体
+  // 之所以没有被删除，是因为：
+  //   1) 【2026-08-13订正】设计阶段曾计划让灵气兑换系统的"改善"回调继续复用
+  //      这里的 markTraitResolved()，但实际实现时 frontend-3d 为
+  //      WuxingScene 新写了独立的 markResolved(wx, direction)（见
+  //      js/wuxing-scene.js），products.js 兑换成功回调实际调用的是
+  //      WuxingScene.markResolved()，不是这里的 markTraitResolved()——
+  //      qa-reviewer实测grep确认 markTraitResolved() 目前在本文件之外
+  //      【零调用方】。这条不是"仍在被复用"，是"当初设想复用、后来没有"，
+  //      如果未来真的要复用需要显式接线，不要假设它已经生效。
+  //   2) 这一整套"环形布局比例换算 + CSS2DObject小圆点热点 + 展开卡片防
+  //      裁切 + 自转停转锁"的实现经过多轮qa-reviewer实测调校（见下方各
+  //      函数内联注释的日期记录），本身有复用/参考价值，直接删除会丢失
+  //      这些已经踩过坑、验证过的经验，WuxingScene 的同款逻辑很大程度上
+  //      就是照搬这里的写法（包括 markResolved() 本身的"翻牌+发光"过渡
+  //      设计语言，直接源自这里的 markTraitResolved()）。
+  // 换言之：如果你在追踪"为什么这段代码看起来没人调用了"，答案就是上面
+  // 这段——不是遗留死代码，是有意保留的可复用参考实现，目前没有任何外部
+  // 调用方（纯代码资产，不是过渡态）。
   // 6个点，半径取 x/z ≈ 0.26~0.52（换算后再乘 LAYOUT_INSET），刻意比四柱
   // (半径约0.8，y 0.55~0.85) 更靠内、比神煞(半径1.0，y=0.25定高) 更靠内，
   // 高度上也分两层（0.18/0.32）跟神煞的固定0.25错开，降低三类标注互相

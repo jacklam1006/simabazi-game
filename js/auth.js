@@ -235,6 +235,13 @@ const AuthManager = (() => {
   // ── 创建灵气兑换水晶商品请求 ─────────────────────────────
   // 涉及"欠用户一个真实商品发货"的业务承诺，失败不能静默——console.error 打印
   // 详情，返回 null 让调用方（js/products.js）决定要不要提示用户重试/退灵气。
+  //
+  // 第三阶段"五行维护系统"：kind/idx 两个参数名保持不变（避免这里再改一次
+  // 签名），但 js/products.js 调用方传入的实际语义已经变成 direction（
+  // 'nourish'/'restrain'）和 wx 映射出的 0-4 整数下标（trait_index 列是
+  // INTEGER，存不了'木'这种中文字符串，映射规则见 products.js::_wxToIndex()
+  // 定义处注释）——trait_kind/trait_index 这两个数据库列名本身不改（历史
+  // 遗留自旧trait系统，字段类型天然兼容新语义，不需要新增列/迁移）。
   async function createRedemptionRequest({ productId, productName, spiritCost, islandId, kind, idx, summary }) {
     if (!_sb || !_user) { console.error('[Auth] 创建兑换请求失败: 未登录'); return null; }
     try {

@@ -13,6 +13,8 @@
  *   smb_tasks        已完成任务列表
  *   smb_decorations  已解锁装饰列表
  *   smb_achievements 已获得成就
+ *   smb_trait_resolved  旧trait系统（已停用）：已兑换改善的{baziKey,kind,idx}
+ *   smb_wuxing_resolved 五行维护系统：已兑换改善的{baziKey,wx,direction}
  */
 
 const UserState = (() => {
@@ -149,10 +151,18 @@ const UserState = (() => {
     return getDecorations().some(d => d.id === decorId);
   }
 
-  // ── 灵气兑换：注意事项/命盘特点已改善标记 ──────────────────
-  // 记录"哪条命盘（baziKey）的哪条注意事项（kind+idx）已经通过灵气兑换水晶商品
-  // 标记为已改善"，供 js/products.js 兑换成功后调用、js/island-annotate.js /
-  // 详情面板读取渲染"已改善"状态。
+  // ── 灵气兑换：注意事项/命盘特点已改善标记（旧trait系统，仅供已停用的
+  //    ✅/⚠️浮动图标标注 island-annotate.js::TRAIT_LAYOUT/attachTraits() 及
+  //    js/analysis.js::buildTraitPanel() 使用）─────────────────────────
+  // 第三阶段"五行维护系统"上线后，图标标注已被3D装饰物取代、不再从
+  // main-new.js 的调用点触发，但 attachTraits()/buildTraitPanel() 代码本身
+  // 保留（未来可能复用坐标验证经验），它们仍在用 (baziKey, kind, idx) 这套
+  // 旧签名调用 resolveTrait()/isTraitResolved()——这两个函数原样保留，不
+  // 跟随本次重构改签名，避免这些"保留但不触发"的旧代码因为参数类型不匹配
+  // 产生隐藏bug。新的五行维护系统请使用下方 resolveWuxingIssue()/
+  // isWuxingIssueResolved()，两套函数共享 get()/set() 底层辅助但存在各自
+  // 独立的 localStorage key（trait_resolved vs wuxing_resolved），刻意不
+  // 混用同一份存储，避免"同一个key、两种数据形状"的语义混乱。
   function getResolvedTraits() { return get('trait_resolved') || []; }
 
   function resolveTrait(baziKey, kind, idx, productId) {
@@ -166,6 +176,25 @@ const UserState = (() => {
 
   function isTraitResolved(baziKey, kind, idx) {
     return getResolvedTraits().some(t => t.baziKey === baziKey && t.kind === kind && t.idx === idx);
+  }
+
+  // ── 灵气兑换：五行维护问题已改善标记（第三阶段新系统）───────────────
+  // 记录"哪条命盘（baziKey）的哪个五行方向（wx+direction）已经通过灵气兑换
+  // 水晶商品标记为已改善"，供 js/products.js 兑换成功后调用、
+  // js/wuxing-scene.js / 维护详情面板读取渲染"已改善"状态。
+  function getResolvedWuxingIssues() { return get('wuxing_resolved') || []; }
+
+  function resolveWuxingIssue(baziKey, wx, direction, productId) {
+    const list = getResolvedWuxingIssues();
+    if (list.find(t => t.baziKey === baziKey && t.wx === wx && t.direction === direction)) return false;
+    list.push({ baziKey, wx, direction, productId, resolvedAt: Date.now() });
+    set('wuxing_resolved', list);
+    _emit('wuxingIssueResolved', { wx, direction });
+    return true;
+  }
+
+  function isWuxingIssueResolved(baziKey, wx, direction) {
+    return getResolvedWuxingIssues().some(t => t.baziKey === baziKey && t.wx === wx && t.direction === direction);
   }
 
   // ── 成就 ──────────────────────────────────────────────────
@@ -215,6 +244,7 @@ const UserState = (() => {
     getCompletedTasks, completeTask, isTaskDone,
     getDecorations, unlockDecoration, hasDecoration,
     getResolvedTraits, resolveTrait, isTraitResolved,
+    getResolvedWuxingIssues, resolveWuxingIssue, isWuxingIssueResolved,
     getAchievements,
     clearAll, on,
   };

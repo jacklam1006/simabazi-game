@@ -118,6 +118,18 @@ const Analysis = (() => {
     return `<div class="zone-section"><div class="zone-section-title">${title}</div><div class="zone-section-body">${body}</div></div>`;
   }
 
+  // i18n查表辅助（2026-08-13新增，供 buildMaintenancePanel() 用）——跟
+  // js/products.js::_t()/js/main-new.js::_t() 同款写法，Lang.t()本身不支持
+  // 占位符插值，这里补一层简单replace；Lang模块未加载时原样返回key，不报错
+  // （不同文件各自维护一份同款小helper是本项目既有惯例，不是遗漏，见
+  // products.js/main-new.js/settings.js里同名函数的一致写法）。
+  function _t(key, vars) {
+    let s = (typeof Lang !== 'undefined') ? Lang.t(key) : key;
+    if (vars) Object.keys(vars).forEach(k => { s = s.replace('{' + k + '}', vars[k]); });
+    return s;
+  }
+  function _isZh() { return (typeof Lang === 'undefined') || Lang.getLang() === 'zh'; }
+
   function wxStrength(score) {
     if (score >= 40) return '极旺';
     if (score >= 25) return '旺';
@@ -1476,6 +1488,22 @@ const Analysis = (() => {
   // 原地刷新。做法：点击这一刻把 _lastTraitCtx（连同它当时记下的 gen）整个
   // 快照下来，resolve后交给 _refreshTraitPanel() 比对，见该函数及
   // _zonePanelGen 声明处的说明。
+  //
+  // ⚠️ 2026-08-13 qa-reviewer复查PLAUSIBLE后同日补充说明——本函数目前
+  // **已失效**，是"保留但已失效的死代码"，不是仍在正常工作的功能：第三阶段
+  // "五行维护系统"把 `Products.redeem()` 的签名从解构 `{kind, idx, ...}`
+  // 改成了解构 `{wx, direction, ...}`（见 js/products.js::redeem() 与
+  // _wxToIndex()），但下面这段调用仍然传的是 `{kind, idx, summary, baziData}`
+  // ——`_wxToIndex(undefined)` 会返回 `null`，`Products.redeem()` 内部据此
+  // 直接失败返回。qa-reviewer确认这条路径目前完全不可达（只有已停用的
+  // `trait_`系统——`buildTraitPanel()`——会生成调用它的onclick，而`trait_`
+  // 系统本身在 `js/main-new.js` 里已经没有任何调用方触发，见
+  // `js/island-annotate.js` 顶部关于 TRAIT_LAYOUT/attachTraits() 停用的
+  // 说明），所以不是一个"活着的bug"，**不需要修复**——第三阶段已经用
+  // `js/wuxing-scene.js` + `buildMaintenancePanel()` + `Products.redeem()`
+  // 新签名重新实现了同一套兑换体验，为已停用的trait系统resurrect一套
+  // {kind,idx}兼容层不值得。这里只是留一句明确说明，避免未来会话看到这段
+  // 代码"看起来完整、能跑"就误以为它仍然可用。
   async function redeemTraitProduct(productId, btnEl) {
     if (typeof Products === 'undefined' || typeof Products.redeem !== 'function') return;
     if (!_lastTraitCtx) return;
@@ -1551,5 +1579,91 @@ const Analysis = (() => {
     return map[name] || `${name}入命，对${dm}日主的${wx}行格局产生深远影响，宜把握其吉意，化解其凶性`;
   }
 
-  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildTraitPanel, buildReport, refreshAiAnalysis, showAiRefreshing, clearAiRefreshing, refreshStrengthGauge, redeemTraitProduct };
+  // ── 五行维护详情面板（2026-08-13新增，第三阶段"五行维护系统"：岛屿地形
+  // 具象化命盘问题，取代第一阶段✅/⚠️浮动图标标注的trait详情面板）────────
+  // issue: { wx, direction:'nourish'|'restrain', title, narrative, action_hint? }
+  //   - wx/direction 来自 js/wuxing-issues.js::WuxingIssues.deriveIssues(baziData)
+  //     算出的确定性问题列表（通常2-3条，命理逻辑本身决定条目数），点击3D
+  //     装饰物时由调用方闭包携带（见 js/wuxing-scene.js，frontend-3d领域），
+  //     不依赖某个模块级变量在点击那一刻"恰好还缓存着"——跟 buildTraitPanel()
+  //     一贯的接线原则一致。
+  //   - title/narrative 来自后端 gemini_analysis.py::step_wuxing_maintenance
+  //     （按 wx+direction 配对提取，可能因AI生成失败/老版本本地缓存未生成过
+  //     这个字段而缺失，本函数防御性优雅降级、不留空白不报错，跟
+  //     buildTraitPanel() 的 detail 缺失处理同一原则）。
+  //   - action_hint 仅供后端美术/游戏化选型内部参考，本函数不展示给用户。
+  //
+  // 视觉语言（direction → insight 类型，均按用户/orchestrator既定约定）：
+  // nourish（喜用神，命局缺它，需要"补充/灌溉"）用 insight(...,'good')；
+  // restrain（忌神，命局多它，需要"克制/除草"）用 insight(...,'warn')——不是
+  // "好消息/坏消息"的字面意思，是延续本项目"灌溉=偏green/blue调good、
+  // 修剪=偏警示色调warn"这套既有视觉语言约定（与 buildTraitPanel() 里
+  // strength/caution 分别对应 good/warn 是同一套配色体系，复用不新造）。
+  //
+  // redeemBlockHtml（可选第4参数，低耦合协作contract）：本轮不实现拖拽维护
+  // 小游戏，"立即改善"入口走灵气兑换，但具体商品列表/兑换按钮逻辑依赖
+  // user-system 子agent并行重构中的 Products/UserState 模块（签名将改为
+  // {wx,direction}，见项目计划文档第三阶段"灵气兑换重新挂靠"一节）——本次
+  // 改动范围不包含那部分实现，且对方模块的最终方法名/参数形状本次改动时
+  // 尚未定稿，不适合在这里硬编码假设、制造两边对不上的风险。为了不阻塞并行
+  // 开发、也不需要互相大改对方代码，采用如下contract：
+  //   - 不传该参数（或传非字符串）时，只渲染一个稳定的占位容器
+  //     `<div id="wxmaint-redeem-slot" data-wx="..." data-direction="...">`，
+  //     接线方（main-new.js，由user-system实现）可以在本函数返回的HTML被
+  //     插入DOM之后，用这个容器做 querySelector 定位，自行插入兑换按钮并用
+  //     addEventListener绑定（不必依赖 onclick 字符串转义那一套写法）。
+  //   - 传入非空字符串时，直接把这段HTML塞进占位容器内部（相当于调用方已经
+  //     预渲染好整个兑换区块，本函数原样嵌入）。
+  //   两种协作方式都支持，具体选哪种、以及 Products/UserState 的最终API
+  //   形状，由接线方决定，本函数不对此做任何假设。
+  function buildMaintenancePanel(zoneKey, baziData, issue, redeemBlockHtml) {
+    issue = issue || {};
+    const wx = issue.wx || '';
+    const direction = issue.direction === 'restrain' ? 'restrain' : 'nourish';
+    const isNourish = direction === 'nourish';
+    const type = isNourish ? 'good' : 'warn';
+    const isZh = _isZh();
+    const wxSuffix = isZh ? '行' : ''; // "行"是中文里"XX元素"的语法后缀，英文不需要
+
+    // 2026-08-13 qa-reviewer复查PLAUSIBLE后同日修复：以下文案此前全部硬编码
+    // 中文，js/i18n.js里新增的wxmaint.*中英文key从未被引用。改为走Lang.t()
+    // 查表（i18n.js里补齐的key见wxmaint.title_fallback_nourish/restrain、
+    // wxmaint.fallback_nourish/restrain、wxmaint.section_title、
+    // wxmaint.subtitle_ai），与本文件buildTraitPanel()等既有函数一贯的i18n
+    // 接线写法保持一致。注意：wx本身（木/火/土/金/水单字）与后端AI生成的
+    // narrative/title内容一样，本项目目前没有对这类命理领域术语做逐字英译
+    // （全文件范围内没有五行名的英文对照表，buildTraitPanel/buildShenshaPanel
+    // 等既有函数同样只翻译UI chrome文案、不翻译命理术语本身），这里保持
+    // 同一取舍，不在本次改动里顺带新增一套五行名翻译体系。
+    const directionLabel = _t(isNourish ? 'wxmaint.direction_nourish' : 'wxmaint.direction_restrain');
+    const icon = (isNourish ? '💧 ' : '✂️ ') + wx + wxSuffix + (isZh ? '' : ' ') + directionLabel;
+
+    const title = (issue.title && String(issue.title).trim())
+      || _t(isNourish ? 'wxmaint.title_fallback_nourish' : 'wxmaint.title_fallback_restrain', { wx: wx + wxSuffix });
+    const narrativeText = (issue.narrative && String(issue.narrative).trim()) || '';
+
+    let body = `
+      <div>${badge(icon, type)}</div>
+      <div class="zone-title">${title}</div>
+      <div class="zone-subtitle">${_t('wxmaint.panel_title')} · ${wx}${wxSuffix} · ${_t('wxmaint.subtitle_ai')}</div>
+    `;
+
+    // narrative缺失时（AI生成失败/老版本本地缓存未生成过这个字段）优雅降级，
+    // 不留空白——跟 buildTraitPanel() 的 detail 缺失处理同一原则，只是这里
+    // 没有像trait那样的"summary原句"可回退，改用一句忠实反映命理方向、但不
+    // 空洞的通用兜底文案（不编造具体命理细节，只陈述"需要滋养/克制"这个已经
+    // 由确定性判定逻辑算出的结论本身）。
+    const fallbackNarrative = _t(
+      isNourish ? 'wxmaint.fallback_nourish' : 'wxmaint.fallback_restrain',
+      { wx: wx + wxSuffix }
+    );
+    body += section(_t('wxmaint.section_title'), insight(narrativeText || fallbackNarrative, type));
+
+    const slotInner = (typeof redeemBlockHtml === 'string' && redeemBlockHtml) ? redeemBlockHtml : '';
+    body += `<div id="wxmaint-redeem-slot" data-zone-key="${zoneKey || ''}" data-wx="${wx}" data-direction="${direction}">${slotInner}</div>`;
+
+    return body;
+  }
+
+  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildTraitPanel, buildMaintenancePanel, buildReport, refreshAiAnalysis, showAiRefreshing, clearAiRefreshing, refreshStrengthGauge, redeemTraitProduct };
 })();

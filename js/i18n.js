@@ -226,6 +226,26 @@ const I18N = {
     'products.success':         '兑换成功！我们会尽快通过 WhatsApp 联系你安排发货',
     'products.fail':            '兑换失败，请稍后重试',
     'products.spirit_label':    '灵气',
+
+    // ── 五行维护系统（第三阶段）─────────────────
+    'wxmaint.panel_title':      '命盘五行诊断',
+    'wxmaint.direction_nourish':'需要滋养',
+    'wxmaint.direction_restrain':'需要克制',
+    'wxmaint.severity_label':   '问题程度',
+    'wxmaint.action_hint_label':'建议做法',
+    'wxmaint.redeem_now':       '用灵气立即改善',
+    'wxmaint.resolved_badge':   '已改善',
+    'wxmaint.progress_label':   '改善进度',
+    'wxmaint.redeeming':        '兑换中…',
+    'wxmaint.insufficient_btn': '还需要 {n} 灵气',
+    // 2026-08-13 qa-reviewer复查PLAUSIBLE后补齐（js/analysis.js::buildMaintenancePanel()
+    // 此前硬编码这几句文案，从未接i18n，见claude-docs/已知问题与修复记录.md对应日期条目）：
+    'wxmaint.section_title':          '命理解读',
+    'wxmaint.subtitle_ai':            'AI解读',
+    'wxmaint.title_fallback_nourish': '{wx}偏弱，需要补充滋养',
+    'wxmaint.title_fallback_restrain':'{wx}偏旺，需要适度克制',
+    'wxmaint.fallback_nourish':       '命盘中{wx}的力量偏弱，是这张命盘需要补充滋养的方向。',
+    'wxmaint.fallback_restrain':      '命盘中{wx}的力量偏旺，是这张命盘需要适度克制的方向。',
   },
 
   /* ════════════════════════════════════════════
@@ -440,6 +460,25 @@ const I18N = {
     'products.success':         'Redeemed! We\'ll contact you via WhatsApp soon to arrange shipping',
     'products.fail':            'Redemption failed, please try again later',
     'products.spirit_label':    'Spirit',
+
+    // ── Five-Element Maintenance System (Phase 3) ──
+    'wxmaint.panel_title':      'Five-Element Diagnosis',
+    'wxmaint.direction_nourish':'Needs Nourishing',
+    'wxmaint.direction_restrain':'Needs Restraining',
+    'wxmaint.severity_label':   'Severity',
+    'wxmaint.action_hint_label':'Suggested Action',
+    'wxmaint.redeem_now':       'Improve Now with Spirit',
+    'wxmaint.resolved_badge':   'Improved',
+    'wxmaint.progress_label':   'Progress',
+    'wxmaint.redeeming':        'Redeeming…',
+    'wxmaint.insufficient_btn': '{n} more spirit needed',
+    // 2026-08-13 qa-reviewer复查PLAUSIBLE后补齐，与上方zh区块同一批新增key对称：
+    'wxmaint.section_title':          'Interpretation',
+    'wxmaint.subtitle_ai':            'AI Reading',
+    'wxmaint.title_fallback_nourish': '{wx} is relatively weak, needs nourishing',
+    'wxmaint.title_fallback_restrain':'{wx} is relatively strong, needs restraining',
+    'wxmaint.fallback_nourish':       'The {wx} element is relatively weak in this chart — a direction that could use extra nourishment.',
+    'wxmaint.fallback_restrain':      'The {wx} element is relatively strong in this chart — a direction that could use some moderation.',
   },
 };
 
