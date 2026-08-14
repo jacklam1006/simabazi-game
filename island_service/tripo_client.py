@@ -93,18 +93,47 @@ class TripoAuthError(RuntimeError):
     pass
 
 
+class TripoInsufficientCreditError(RuntimeError):
+    """
+    2026-08-14新增：TripoAI账户额度（credit）不足，无法创建新任务——这与鉴权失败
+    （TRIPO_API_KEY本身是否有效）是完全不同的两类故障，但此前共用同一条"鉴权失败"
+    报错文案，误导用户去核实Key状态、浪费排查时间。
+
+    真实复现证据（`generate_wuxing_assets.py` 全量生成水行6个组合时实测捕获）：
+    TripoAI原始响应为 `{'code': 2010, 'message': "You don't have enough credit to
+    create this task", 'suggestion': 'Please purchase more credit'}`。根因是此前
+    `is_auth_error` 判定逻辑里"HTTP status in (401, 403) 即视为鉴权失败"这条规则
+    过于粗粒度——TripoAI对"额度不足"这类403 Forbidden语义的错误也会用401/403返回，
+    导致额度问题被误判成鉴权问题。现在额度不足的判定（`_CREDIT_ERROR_CODES`/
+    `_CREDIT_ERROR_HINTS`）在 `_parse_tripo_response()` 里被放在鉴权判定之前，
+    优先命中，不会再被状态码规则抢先误判。
+    """
+    pass
+
+
 _AUTH_ERROR_HINTS = (
     'authentication', 'unauthorized', 'invalid credentials',
     'invalid api key', 'auth failed', 'credentials is valid',
 )
 
+# 2026-08-14新增：真实复现过的"账户额度不足"错误码/关键词。TripoAI官方文档未
+# 公开完整错误码表，这里不试图穷举全部可能取值——只精确覆盖已实测确认的
+# code:2010，并用message关键词兜底覆盖措辞可能变化、但语义仍是"余额/额度不足"
+# 的情况，命中任一条即可判定。未来如果实测遇到其他确认过的额度类错误码，直接
+# 往 `_CREDIT_ERROR_CODES` 里追加即可。
+_CREDIT_ERROR_CODES = (2010,)
+_CREDIT_ERROR_HINTS = ('credit', 'insufficient balance', 'not enough balance')
+
 
 def _parse_tripo_response(resp: requests.Response, context: str) -> dict:
     """
-    统一解析TripoAI响应，明确区分三类故障，全部抛出包含完整（脱敏后）响应内容的错误：
-      1. 鉴权失败（Key无效/过期/被吊销）——抛 TripoAuthError
-      2. 路径/参数错误等其他API层错误（HTTP非2xx，或 code 显式非0）——抛 RuntimeError
-      3. 响应不是合法JSON（比如网关/CDN直接返回HTML错误页）——抛 RuntimeError，带原始文本
+    统一解析TripoAI响应，明确区分四类故障，全部抛出包含完整（脱敏后）响应内容的错误：
+      1. 账户额度不足（code:2010等，message含"credit"关键词）——抛 TripoInsufficientCreditError
+         （必须排在鉴权判定之前——额度不足的HTTP状态码在TripoAI侧也会用401/403，
+         会被下面更粗粒度的状态码规则误判成鉴权失败，见该异常类docstring里的真实复现记录）
+      2. 鉴权失败（Key无效/过期/被吊销）——抛 TripoAuthError
+      3. 路径/参数错误等其他API层错误（HTTP非2xx，或 code 显式非0）——抛 RuntimeError
+      4. 响应不是合法JSON（比如网关/CDN直接返回HTML错误页）——抛 RuntimeError，带原始文本
     """
     status = resp.status_code
     try:
@@ -115,18 +144,36 @@ def _parse_tripo_response(resp: requests.Response, context: str) -> dict:
             f"也可能路径本身就不存在）。原始响应前300字符: {_redact(resp.text)[:300]}"
         )
 
+    code = data.get('code')
     message = str(data.get('message', ''))
     message_lower = message.lower()
+
+    is_credit_error = (
+        code in _CREDIT_ERROR_CODES
+        or any(hint in message_lower for hint in _CREDIT_ERROR_HINTS)
+    )
+    # 额度不足优先判定，命中后不再走鉴权判定——避免被下面的状态码规则抢先
+    # 误判成鉴权失败（见 TripoInsufficientCreditError docstring）。
     is_auth_error = (
-        status in (401, 403)
-        or any(hint in message_lower for hint in _AUTH_ERROR_HINTS)
+        not is_credit_error
+        and (
+            status in (401, 403)
+            or any(hint in message_lower for hint in _AUTH_ERROR_HINTS)
+        )
     )
 
-    if status >= 400 or data.get('code') not in (0, None):
+    if status >= 400 or code not in (0, None):
+        if is_credit_error:
+            raise TripoInsufficientCreditError(
+                f"TripoAI{context}: 账户额度（credit）不足，无法创建新任务，请到"
+                f"TripoAI控制台（https://platform.tripo3d.ai/）充值后重试"
+                f"（不是TRIPO_API_KEY失效问题，也不是路径/参数问题）。"
+                f"原始响应: {_redact(str(data))[:300]}"
+            )
         if is_auth_error:
             raise TripoAuthError(
                 f"TripoAI{context}: 鉴权失败，怀疑 TRIPO_API_KEY 无效/过期/被吊销/未配置，"
-                f"请到TripoAI控制台核实Key状态（不是路径或参数问题）。"
+                f"请到TripoAI控制台核实Key状态（不是路径或参数问题，也不是额度问题）。"
                 f"原始响应: {_redact(str(data))[:300]}"
             )
         raise RuntimeError(

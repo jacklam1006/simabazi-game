@@ -132,6 +132,49 @@ def wuxing_level(pct: float) -> str:
     if pct >= 0.06: return 'weak'
     return 'absent'
 
+# ── 全局风格锚点 ─────────────────────────────────────────────
+# 2026-08-13抽取（第四阶段"3D资产生产流程"）：此前只内联在
+# generate_island_prompt() 结尾一处，本次新增的离线批量资产生成脚本
+# generate_wuxing_assets.py 也需要同一套风格描述——抽成命名常量后两处
+# 共享同一份文本，避免各自维护一份、日后走偏。
+#
+# 2026-08-13 二次修正（总agent复查`--dry-run`输出后发现的自相矛盾）：
+# 最初把 generate_island_prompt() 结尾整段文本原样抽成单一 STYLE_ANCHOR，
+# 但这段文本混了两类完全不同性质的内容——①真正跨场景通用的风格语言
+# （低多边形/无写实渲染/中式神话美学/从上方打光）；②专属"完整浮岛取景"
+# 的场景描述（"floating island with rocky underside"本身就是在描述一整个
+# 地形/场景物体，不是纯风格形容词）。generate_wuxing_assets.py 的"孤立
+# 小装饰物"提示词如果原样整段复用这个常量，会同时出现"ISOLATED OBJECT
+# SHOT: ...no ground plane and no other objects or scenery of any kind..."
+# （要求干净孤立、绝对没有场景）和"floating island with rocky underside,
+# dark starry background with subtle nebula"（本身就是在要求画一整个浮岛
+# 场景）两句互相矛盾的指令，容易让生成模型画成"装饰物长在一座小浮岛上"
+# 而不是干净孤立的单个物件，直接破坏3D提取所需要的清晰轮廓这个目的。
+#
+# 现拆成三个不再互相依赖拼接顺序的最小拼图块（下方 `_STYLE_*`，唯一权威
+# 定义处），再由这些拼图块分别组装出两个用途不同的公开常量——不是从旧的
+# 单一 STYLE_ANCHOR 用字符串切片/替换的方式"抠掉"岛屿场景部分（那种做法
+# 脆弱易碎，一旦原始措辞顺序变化就会切错位置）：
+# - `STYLE_ANCHOR`：完整岛屿专用，内容与拆分前的原始文本逐字节完全一致
+#   （`generate_island_prompt()` 的输出因此不受本次拆分影响），继续包含
+#   "floating island with rocky underside..."这段场景描述。
+# - `STYLE_ANCHOR_CORE`：跨场景通用部分（含"从上方打光"——孤立小物件同样
+#   需要这条通用的布光要求），**不含**任何岛屿场景描述，供
+#   generate_wuxing_assets.py 的孤立物件提示词使用。
+_STYLE_GENERIC = (
+    "low-poly geometric style like premium mobile game art, clean faceted "
+    "surfaces, no photorealism, Chinese mythology aesthetic"
+)
+_STYLE_LIGHTING = "dramatic lighting from above"
+_STYLE_ISLAND_SCENE = (
+    "floating island with rocky underside, dark starry background with subtle nebula"
+)
+
+STYLE_ANCHOR = (
+    f"STYLE REQUIREMENTS: {_STYLE_GENERIC}, {_STYLE_ISLAND_SCENE}, {_STYLE_LIGHTING}."
+)
+STYLE_ANCHOR_CORE = f"STYLE REQUIREMENTS: {_STYLE_GENERIC}, {_STYLE_LIGHTING}."
+
 # ── 纳音 → 地貌材质修饰 ─────────────────────────────────────
 NAYIN_MODIFIER = {
     '海中金': 'ocean-floor metallic mineral deposits beneath water surface',
@@ -269,7 +312,7 @@ SHENSHA OBJECTS ON ISLAND:
 
 {pillar_labels}
 
-STYLE REQUIREMENTS: low-poly geometric style like premium mobile game art, clean faceted surfaces, no photorealism, Chinese mythology aesthetic, floating island with rocky underside, dark starry background with subtle nebula, dramatic lighting from above."""
+{STYLE_ANCHOR}"""
 
     return prompt.strip()
 
