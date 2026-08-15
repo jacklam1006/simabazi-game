@@ -148,3 +148,46 @@ CREATE POLICY "用户只能读取自己的兑换请求"
 CREATE UNIQUE INDEX IF NOT EXISTS idx_redemption_unique_trait
     ON redemption_requests(user_id, island_id, trait_kind, trait_index)
     WHERE status != 'cancelled';
+
+-- ── 五行维护状态表 ──────────────────────────────────────────
+-- 2026-08-15 第四阶段"五行经营机制"：记录用户对每一条五行问题
+-- （wx × direction）的当前维护档位所需的全部状态。跟上面
+-- redemption_requests"只增不改"的一次性记录不同，这张表会随
+-- 拖拽维护/花灵气调理/水晶兑换/请神仙巩固等动作反复 UPDATE
+-- （tier 本身是纯派生量，前端懒计算得出，不落库）。
+-- 用 bazi_key（八字哈希）而不是 island_id 关联：岛屿模型可能因为
+-- 重新生成 GLB 而产生新的 island_id，但用户在同一张命盘上积累的
+-- 维护进度不应因此丢失，bazi_key 是跨岛屿记录稳定不变的锚点。
+CREATE TABLE IF NOT EXISTS wuxing_maintenance_state (
+    id                     UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id                UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    bazi_key               TEXT NOT NULL,
+    wx                     TEXT NOT NULL,
+    direction              TEXT NOT NULL CHECK (direction IN ('nourish','restrain')),
+    base_tier              SMALLINT NOT NULL CHECK (base_tier BETWEEN 1 AND 3),
+    created_at             TIMESTAMPTZ DEFAULT NOW(),
+    last_maintained_at     TIMESTAMPTZ,
+    first_cycle_consumed   BOOLEAN DEFAULT FALSE,
+    ownership_tier         TEXT NOT NULL DEFAULT 'none' CHECK (ownership_tier IN ('none','crystal','shrine')),
+    ownership_product_id   TEXT,
+    last_free_maintain_date DATE,
+    updated_at             TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 同一用户对同一条命盘的同一条五行问题（wx+direction）只允许存在
+-- 一条状态记录，多设备 upsert 时靠这个唯一索引做冲突目标。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wuxing_maint_unique
+    ON wuxing_maintenance_state(user_id, bazi_key, wx, direction);
+
+-- ── 行级安全策略（RLS）──────────────────────────────────────
+-- 用户可以对自己的维护状态做全部操作（含 UPDATE，这是与
+-- redemption_requests 的关键区别——那张表状态流转由业务方在
+-- Supabase Studio 手动改，这张表则由用户自己的维护动作驱动）。
+
+ALTER TABLE wuxing_maintenance_state ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "用户只能操作自己的维护状态" ON wuxing_maintenance_state;
+CREATE POLICY "用户只能操作自己的维护状态"
+    ON wuxing_maintenance_state FOR ALL
+    USING (auth.uid() = user_id)
+    WITH CHECK (auth.uid() = user_id);

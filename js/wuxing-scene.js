@@ -31,6 +31,31 @@
  * js/products.js::redeem()）调用，把对应"问题"标注/装饰翻转为"已改善"
  * 视觉反馈（翻牌✅+发光过渡后移除），呼应第二阶段
  * island-annotate.js::markTraitResolved() 同一套设计语言。
+ * 【注意】第四阶段 js/products.js 已经完全迁移到下面的 reflectTier()/
+ * markShrined()，不再调用这个函数——markResolved() 目前零调用方，纯保留
+ * 代码（不删除的理由跟 island-annotate.js 顶部停用说明一致：仍是这套
+ * "翻牌+彻底删除热点"视觉语言的参考实现）。它的设计意图本来就跟
+ * reflectTier()/markShrined() 是两套不同语义，不要混用/复用彼此的实现。
+ *
+ * 2026-08-15追加（第四阶段"拖拽维护+时间衰减+四层付费结构"）：统一3档
+ * "维护档位"模型（1安泰/2见微/3亟待，懒计算，见 js/wuxing-maintenance.js）
+ * 取代静态 severity 驱动视觉状态——新增：
+ *   - reflectTier(wx, direction, tier)：把某条issue的3D装饰/热点发光切换到
+ *     指定档位（免费拖拽维护①、瞬间调理②、水晶兑换③成功后都调这个，效果
+ *     统一是"档位回1"，只是档位回落后的后续衰减节奏不同，那部分逻辑在
+ *     js/wuxing-maintenance.js里，不属于本文件职责）。
+ *   - markShrined(wx, direction)：④"请神仙/设炉灶"永久巩固后调用——与
+ *     markResolved() 的关键区别是**不删除热点DOM**，永久保留可点击查看
+ *     "已巩固"叙事内容，只是装饰换成通用造型（decorId per-issue独立，见
+ *     _shrineDecorId()，视觉上仍是同一个shrine_generic.glb模型）+ 热点加
+ *     .wx-shrined 金色柔光样式，退出 getActiveMarkers() 的拖拽维护目标池。
+ *   - getActiveMarkers()：供 js/wuxing-drag.js 做拖拽命中检测用的只读列表，
+ *     过滤掉已 markShrined() 的条目（那些不再是维护目标）。
+ * attach() 相应改为消费 issue.tier / issue.ownershipTier（主流程接线属
+ * user-system领域的 main-new.js，本文件只负责"收到这两个字段后应该渲染
+ * 成什么"）：ownershipTier==='shrine' 时直接按已巩固态创建，不再创建"问题
+ * 态"装饰；否则按 issue.tier 选择初始档位对应的 decorId（不再固定用某个
+ * 默认档位）；未传 tier 时防御性按 t1 处理，不报错。
  */
 const WuxingScene = (() => {
 
@@ -62,11 +87,45 @@ const WuxingScene = (() => {
     return s;
   }
 
-  let _markers = [];   // [{ css2d: CSS2DObject, div: HTMLElement, wx, direction, decorId }]
+  // [{ css2d, div, wx, direction, decorId, pos, tier, shrined }]
+  // 2026-08-15追加 pos/tier/shrined 三个字段（第四阶段）：
+  //   - pos：attach() 时环形布局算出的世界坐标（THREE.Vector3），reflectTier()/
+  //     markShrined() 换装饰时直接复用，避免重新查一次包围盒/重算角度。
+  //   - tier：当前渲染的档位（1/2/3），reflectTier() 调用后写回这里，供
+  //     getActiveMarkers() 读取。
+  //   - shrined：是否已"请神仙/设炉灶"永久巩固——true 的条目会被
+  //     getActiveMarkers() 过滤掉（不再是拖拽维护目标）。
+  let _markers = [];
   // attach() 时记录的场景引用，供 markResolved() 在没有 scene 参数的调用签名下
   // （见 js/products.js::redeem() 既定调用 WuxingScene.markResolved(wx, direction)
   // 的约定，不传scene）仍能把对应CSS2DObject从场景移除。detach() 会清空它。
   let _scene = null;
+  // attach() 时记录的命盘数据，供 reflectTier()/markShrined() 在同样不传
+  // baziData 的调用签名下（跟 markResolved() 同一惯例）仍能调用
+  // IslandDecorations.add(decorId, baziData, pos) 换装饰。detach() 会清空它。
+  let _baziData = null;
+
+  /** issue.tier 缺失/非法时防御性按 1 处理，合法范围内四舍五入夹到 1-3。 */
+  function _clampTier(tier) {
+    const n = Math.round(Number(tier));
+    if (!n || n < 1) return 1;
+    return n > 3 ? 3 : n;
+  }
+
+  // 2026-08-16 qa-reviewer CONFIRMED修复：已巩固款decorId此前是单一通用值
+  // 'wxmaint_shrine'（不分五行方向），但 IslandDecorations.add() 对同一个
+  // decorId只会真正放置一次（`if (_placed[decorId]) return`）——同一张命盘
+  // 有多条issue先后被markShrined()时，第二条起会因为decorId冲突被直接
+  // 跳过，而旧问题态decorId已经被remove()掉，净效果是"花灵气巩固，3D装饰
+  // 反而变少"（qa-reviewer用真实BaziEngine实测复现）。改成per-issue的
+  // decorId（对应 island-decorations.js::DECOR_DEFS 新增的
+  // wxmaint_shrine_{wx}_{direction} 10条），全部继续指向同一个
+  // shrine_generic.glb 文件——视觉上还是同一个模型，只是不再共享同一个
+  // decorId、不会互相顶掉。attach()/markShrined() 两处生成"已巩固"decorId
+  // 的地方统一走这个helper，不允许各写一份容易失配的拼接。
+  function _shrineDecorId(wx, direction) {
+    return `wxmaint_shrine_${wx}_${direction}`;
+  }
 
   /** 按 issues.length 均分角度，2条→180°对置，3条→120°三等分，以此类推 */
   function _computeAngles(n) {
@@ -85,7 +144,10 @@ const WuxingScene = (() => {
    * 生命周期——由AI异步分析完成后单独调用（main-new.js接线部分）。
    * @param {THREE.Scene} scene
    * @param {object} baziData
-   * @param {Array<{wx,direction,severity,title,narrative,action_hint}>} issues
+   * @param {Array<{wx,direction,severity,title,narrative,action_hint,tier,ownershipTier}>} issues
+   *   tier（1/2/3，第四阶段新增字段，main-new.js接线传入，user-system领域）
+   *   缺失时防御性按1处理；ownershipTier==='shrine'时直接按已巩固态创建
+   *   （不创建可维护的"问题态"装饰/发光样式）。
    */
   function attach(scene, baziData, issues) {
     detach(scene);
@@ -97,6 +159,7 @@ const WuxingScene = (() => {
     }
 
     _scene = scene;
+    _baziData = baziData;
     const { box, group } = IslandAnnotate.getIslandBox();
     const angles = _computeAngles(issues.length);
 
@@ -112,23 +175,32 @@ const WuxingScene = (() => {
         hover: HOVER_BY_DIRECTION[direction],
       };
       const pos = IslandAnnotate.layoutToWorld(frac, box, group);
-      const decorId = `wxmaint_${wx}_${direction}`;
 
-      // 3D占位装饰（tree=需要培育 / ring=需要约束，见 island-decorations.js
-      // 新增的 DECOR_DEFS 条目）——overridePos 是本轮新增的第三参数，跳过
-      // DECOR_DEFS 里静态 frac 坐标，直接用这里动态算出的世界坐标。
+      // 统一3档"维护档位"模型（第四阶段）：ownershipTier==='shrine' 时直接
+      // 按已巩固态创建（decorId用per-issue的已巩固款，见_shrineDecorId()，
+      // 不再是"问题态"），否则按 issue.tier 选初始档位对应的 decorId——
+      // 不再像第三阶段那样固定用某个默认档位，保证刚进岛看到的装饰状态
+      // 就是当次真实的维护档位。
+      const isShrined = issue.ownershipTier === 'shrine';
+      const tier       = isShrined ? 1 : _clampTier(issue.tier);
+      const decorId    = isShrined ? _shrineDecorId(wx, direction) : `wxmaint_${wx}_${direction}_t${tier}`;
+
+      // 3D装饰（tree=需要培育 / ring=需要约束 / shrine通用款，见
+      // island-decorations.js 新增的 DECOR_DEFS 三档条目）——overridePos 是
+      // 跳过 DECOR_DEFS 里静态 frac 坐标，直接用这里动态算出的世界坐标。
       if (typeof IslandDecorations !== 'undefined' && IslandDecorations.add) {
         IslandDecorations.add(decorId, baziData, pos);
       }
 
       // 点击热点（CSS2DObject小圆点+展开卡片），闭包直接携带完整issue数据
-      const { css2d, div } = _makeHotspot(wx, direction, issue, baziData);
+      const { css2d, div } = _makeHotspot(wx, direction, issue, baziData, tier, isShrined);
       css2d.position.copy(pos);
       scene.add(css2d);
-      // 记录 wx/direction/decorId，供 markResolved(wx, direction) 按key查找——
-      // 不依赖数组下标（issues顺序理论上稳定，但按语义key查找更稳妥，跟
+      // 记录 wx/direction/decorId/pos/tier/shrined，供 markResolved()/
+      // reflectTier()/markShrined()/getActiveMarkers() 按key查找——不依赖
+      // 数组下标（issues顺序理论上稳定，但按语义key查找更稳妥，跟
       // island-annotate.js::markTraitResolved() 按 kind+idx 查找是同一思路）。
-      _markers.push({ css2d, div, wx, direction, decorId });
+      _markers.push({ css2d, div, wx, direction, decorId, pos: pos.clone(), tier, shrined: isShrined });
     });
   }
 
@@ -160,6 +232,7 @@ const WuxingScene = (() => {
     });
     _markers = [];
     _scene = null;
+    _baziData = null;
     // 无条件交还自转停转锁——与 island-annotate.js::detachTraits() 同一个
     // 修复模式（见该函数2026-08-12注释）：即使销毁时恰有卡片展开
     // （'wxCard'锁被占用），DOM直接被移除也不会经过用户点击收起那条路径，
@@ -233,11 +306,121 @@ const WuxingScene = (() => {
     }, 1020);
   }
 
+  /**
+   * 把某条issue的3D装饰/热点发光切换到指定档位（第四阶段"统一3档维护档位
+   * 模型"）——①免费拖拽维护（js/wuxing-drag.js）、②瞬间调理（灵气购买立即
+   * 生效）、③水晶兑换成功后都调这个，效果统一是"档位回1"。
+   * 【与 markResolved() 的区别】不删除任何东西——只是把 decorId 从旧档位
+   * 换成新档位（如果确实变化了），热点DOM/CSS2DObject原样保留继续存活，
+   * 这条issue会继续留在 getActiveMarkers() 里等待下一轮衰减/维护。
+   * @param {string} wx        - 五行，如 '木'
+   * @param {string} direction - 'nourish' | 'restrain'
+   * @param {number} tier      - 1|2|3（新档位）
+   */
+  function reflectTier(wx, direction, tier) {
+    // 已巩固（markShrined过）的条目不再参与档位切换——那条issue已经完全
+    // 退出衰减循环，永久停留在 wxmaint_shrine_{wx}_{direction} 装饰，
+    // 不应该被误切回问题态。
+    const entry = _markers.find(m => m.wx === wx && m.direction === direction && !m.shrined);
+    if (!entry) {
+      console.warn(`[WuxingScene] reflectTier 未找到对应标注 wx=${wx} direction=${direction}（可能尚未挂载/已被清理/已巩固）`);
+      return;
+    }
+
+    const newTier    = _clampTier(tier);
+    const newDecorId = `wxmaint_${wx}_${direction}_t${newTier}`;
+    if (newDecorId !== entry.decorId) {
+      // 全量替换：先移除旧档位装饰，再在同一世界坐标 add() 新档位装饰——
+      // 复用 IslandDecorations 现成的"从下方浮现"入场动画做过渡，不需要
+      // GLB形变（该函数早已支持 overridePos 第三参数，直接复用 entry.pos，
+      // 不重新查一次包围盒）。
+      if (typeof IslandDecorations !== 'undefined' && IslandDecorations.remove) {
+        IslandDecorations.remove(entry.decorId);
+      }
+      if (typeof IslandDecorations !== 'undefined' && IslandDecorations.add) {
+        IslandDecorations.add(newDecorId, _baziData, entry.pos);
+      }
+      entry.decorId = newDecorId;
+    }
+
+    // 热点发光样式同步切换到新档位（.wx-sev-0/1/2 对应 tier 1/2/3），不管
+    // decorId 是否真的变化了——调用方可能是"档位没变但仍要确保样式跟当前
+    // 数据一致"的幂等调用，这里始终重算一次class，成本可忽略。
+    entry.div.classList.remove('wx-sev-0', 'wx-sev-1', 'wx-sev-2');
+    entry.div.classList.add(`wx-sev-${newTier - 1}`);
+    entry.tier = newTier;
+  }
+
+  /**
+   * "请神仙/设炉灶"永久巩固后调用（第四阶段④，未来 js/products.js 领域）。
+   * 【与 markResolved() 的关键区别】不删除热点DOM——永久保留可点击查看
+   * "已巩固"叙事内容，只做 remove旧decor → add(per-issue已巩固decorId,...)，
+   * 热点div加 .wx-shrined class（金色柔光，见index.html对应CSS）。这条
+   * issue从此彻底退出衰减循环、也退出 getActiveMarkers() 拖拽维护目标池
+   * （不再是免费/付费维护动作的目标——已经是终态）。
+   *
+   * 2026-08-16修复：decorId 不再用单一通用的 'wxmaint_shrine'（那会导致
+   * 同一命盘第二条起被markShrined()时，因IslandDecorations.add()对同一
+   * decorId"已存在则跳过"的逻辑而放不进新装饰，见 _shrineDecorId() 声明处
+   * 注释），改用 per-issue 的 `wxmaint_shrine_{wx}_{direction}`。
+   * @param {string} wx        - 五行，如 '木'
+   * @param {string} direction - 'nourish' | 'restrain'
+   */
+  function markShrined(wx, direction) {
+    const entry = _markers.find(m => m.wx === wx && m.direction === direction);
+    if (!entry) {
+      console.warn(`[WuxingScene] markShrined 未找到对应标注 wx=${wx} direction=${direction}（可能尚未挂载或已被清理）`);
+      return;
+    }
+    if (entry.shrined) return;   // 幂等：防止重复触发（网络重试等）造成重复remove/add
+
+    const shrineDecorId = _shrineDecorId(wx, direction);
+    if (typeof IslandDecorations !== 'undefined' && IslandDecorations.remove) {
+      IslandDecorations.remove(entry.decorId);
+    }
+    if (typeof IslandDecorations !== 'undefined' && IslandDecorations.add) {
+      IslandDecorations.add(shrineDecorId, _baziData, entry.pos);
+    }
+    entry.decorId = shrineDecorId;
+    entry.shrined = true;
+    entry.tier = 1;
+
+    const { div } = entry;
+    div.classList.remove('wx-sev-0', 'wx-sev-1', 'wx-sev-2');
+    div.classList.add('wx-shrined');
+    // 热点图标换成✨——跟 js/wuxing-drag.js 里"水晶态维护动作换皮消磁✨"
+    // 同一套"已巩固/超脱日常维护"的视觉语言，跟💧/✂️（仍需要日常打理）
+    // 明确区分开，不需要额外文字才能一眼看出这条已经不需要再维护了。
+    const dotEl = div.querySelector('.wx-dot');
+    if (dotEl) dotEl.textContent = '✨';
+  }
+
+  /**
+   * 供 js/wuxing-drag.js 做拖拽命中检测用的只读列表——不暴露 _markers 的
+   * 其它内部字段（css2d/decorId/pos等），过滤掉已 markShrined() 的条目
+   * （不再是拖拽维护目标）。
+   * @returns {Array<{wx:string, direction:'nourish'|'restrain', dotEl:HTMLElement, tier:number}>}
+   */
+  function getActiveMarkers() {
+    return _markers
+      .filter(m => !m.shrined)
+      .map(m => ({
+        wx: m.wx,
+        direction: m.direction,
+        dotEl: m.div.querySelector('.wx-dot') || m.div,
+        tier: m.tier,
+      }));
+  }
+
   // ── 热点 DOM ─────────────────────────────────────────────
-  function _makeHotspot(wx, direction, issue, baziData) {
+  // tier/isShrined（第四阶段新增参数）驱动初始视觉状态：已巩固态用
+  // .wx-shrined + ✨图标，否则用 .wx-sev-{tier-1}（不再用静态 issue.severity
+  // 驱动发光——tier 是"当前维护档位"这个动态量，severity 只是命理静态权重，
+  // 两者已在第四阶段统一收敛到同一条3档轴，视觉状态该跟着动态的那个走）。
+  function _makeHotspot(wx, direction, issue, baziData, tier, isShrined) {
     const div = document.createElement('div');
-    const severity = Math.max(0, Math.min(2, issue.severity | 0));
-    div.className = `wx-marker wx-${direction} wx-sev-${severity}`;
+    const t = _clampTier(tier);
+    div.className = `wx-marker wx-${direction} ` + (isShrined ? 'wx-shrined' : `wx-sev-${t - 1}`);
 
     const wxColor = (typeof CONFIG !== 'undefined' && CONFIG.WUXING_COLORS && CONFIG.WUXING_COLORS[wx])
       ? CONFIG.WUXING_COLORS[wx] : null;
@@ -246,7 +429,9 @@ const WuxingScene = (() => {
       div.style.setProperty('--wx-glow', wxColor.glow);
     }
 
-    const icon  = ICON_BY_DIRECTION[direction] || '❔';
+    // 已巩固态图标换成✨（见 markShrined() 同款处理），跟仍需日常打理的
+    // 💧/✂️明确区分开。
+    const icon  = isShrined ? '✨' : (ICON_BY_DIRECTION[direction] || '❔');
     // 2026-08-13修复（qa-reviewer复查PLAUSIBLE）：兜底文案此前硬编码中文，
     // AI叙事漏了某条issue的title时（现在因缓存校验放宽为"非空即有效"，属于
     // 会被长期缓存下来的常态情况，不是罕见边界）英文界面会直接漏出中文。
@@ -286,6 +471,10 @@ const WuxingScene = (() => {
           title: issue.title,
           narrative: issue.narrative,
           action_hint: issue.action_hint,
+          // 第四阶段新增：把渲染时用的档位/巩固态一并透传给面板层，供未来
+          // buildMaintenancePanel()（bazi-pipeline领域）按需展示"当前档位"，
+          // 不强制要求对方消费——纯additive字段，不影响既有解构用法。
+          tier: t, shrined: !!isShrined,
         });
       }
     });
@@ -356,5 +545,5 @@ const WuxingScene = (() => {
     }, 150);
   });
 
-  return { attach, detach, markResolved };
+  return { attach, detach, markResolved, reflectTier, markShrined, getActiveMarkers };
 })();

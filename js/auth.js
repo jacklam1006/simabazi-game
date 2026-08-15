@@ -268,6 +268,52 @@ const AuthManager = (() => {
     }
   }
 
+  // ── 五行维护状态同步（第四阶段"五行经营机制"，见 js/wuxing-maintenance.js）──
+  // fire-and-forget upsert，同 syncSpiritBalance() 一样的理由用 upsert 不用
+  // update（profiles表那个坑：update对不存在的行静默匹配0行"假成功"）。
+  // wuxing_maintenance_state 表的主键是自增 id（不是 user_id+bazi_key+wx+
+  // direction 这个业务唯一键），所以必须显式传 onConflict 指向
+  // supabase_setup.sql::idx_wuxing_maint_unique 这个唯一索引，否则 upsert
+  // 默认按主键冲突判断，每次都会插入新行而不是更新已有记录，造成同一条issue
+  // 在云端有多行重复记录。
+  // 不传 created_at：让数据库首次插入时用 DEFAULT NOW()，之后的 upsert
+  // 不在payload里带这个字段就不会覆盖已经写入过的原始创建时间（PostgREST
+  // upsert 只对 payload 里出现的列做 ON CONFLICT DO UPDATE）。
+  function syncWuxingMaintenanceState(baziKey, wx, direction, record) {
+    if (!_sb || !_user || !baziKey || !wx || !direction || !record) return;
+    _sb.from('wuxing_maintenance_state').upsert({
+      user_id:                 _user.id,
+      bazi_key:                baziKey,
+      wx:                      wx,
+      direction:               direction,
+      base_tier:               record.baseTier,
+      last_maintained_at:      record.lastMaintainedAt ? new Date(record.lastMaintainedAt).toISOString() : null,
+      first_cycle_consumed:    !!record.firstCycleConsumed,
+      ownership_tier:          record.ownershipTier || 'none',
+      ownership_product_id:    record.ownershipProductId || null,
+      last_free_maintain_date: record.lastFreeMaintainUTCDate || null,
+      updated_at:              new Date().toISOString(),
+    }, { onConflict: 'user_id,bazi_key,wx,direction' })
+      .then(({ error }) => { if (error) console.warn('[Auth] 五行维护状态同步失败:', error.message); })
+      .catch(e => console.warn('[Auth] 五行维护状态同步失败:', e));
+  }
+
+  // 登录成功/岛屿加载时调用（见 js/wuxing-maintenance.js::syncFromCloud()），
+  // 只按 bazi_key 过滤——同一账号下不同命盘（比如给家人算的命盘）各自独立，
+  // 不应该把无关命盘的维护记录也拉回来参与合并。
+  async function getWuxingMaintenanceStates(baziKey) {
+    if (!_sb || !_user || !baziKey) return [];
+    try {
+      const { data, error } = await _sb.from('wuxing_maintenance_state')
+        .select('*').eq('user_id', _user.id).eq('bazi_key', baziKey);
+      if (error) { console.warn('[Auth] 读取五行维护状态失败:', error.message); return []; }
+      return data || [];
+    } catch (e) {
+      console.warn('[Auth] 读取五行维护状态失败:', e);
+      return [];
+    }
+  }
+
   // ── 检查邮箱是否已注册 ──────────────────────────────────
   async function checkEmailExists(email) {
     try {
@@ -289,6 +335,7 @@ const AuthManager = (() => {
     logout, sendPasswordReset, getProfile, updateProfile,
     saveIsland, updateIslandAnalysis, updateIslandBaziData, getMyIslands, checkEmailExists,
     syncSpiritBalance, getSpiritBalance, createRedemptionRequest,
+    syncWuxingMaintenanceState, getWuxingMaintenanceStates,
     isLoggedIn: () => !!_user,
     currentUser: () => _user,
   };
@@ -490,6 +537,7 @@ const AuthUI = (() => {
       settingsBtn?.classList.remove('hidden');
       _refreshUserInfoDisplay();
       _mergeSpiritBalance();
+      _mergeWuxingMaintenanceState();
     } else {
       loginBtn?.classList.remove('hidden');
       logoutBtn?.classList.add('hidden');
@@ -518,6 +566,25 @@ const AuthUI = (() => {
       }
     } catch (e) {
       console.warn('[AuthUI] 灵气值合并失败:', e);
+    }
+  }
+
+  // ── 五行维护状态合并（第四阶段，登录时触发的另一半——main-new.js::
+  //    _onIslandReady() 是"岛屿加载时"触发的另一半，两处覆盖方案文档要求的
+  //    "登录成功/岛屿加载时"两个时机）─────────────────────────────────────
+  // 与 _mergeSpiritBalance() 不同：五行维护状态是按 baziKey 归属的复合对象，
+  // 没有当前命盘（比如刚打开首页、尚未生成/加载任何岛屿）时无法确定要合并
+  // 哪一份记录，直接跳过——不是遗漏，_onIslandReady() 会在岛屿真正加载完成时
+  // 自己再调一次 WuxingMaintenance.syncFromCloud()，两处调用互补不冲突
+  // （syncFromCloud() 内部逐字段单调合并，重复调用是安全的幂等操作）。
+  async function _mergeWuxingMaintenanceState() {
+    if (typeof WuxingMaintenance === 'undefined' || typeof WuxingMaintenance.syncFromCloud !== 'function') return;
+    try {
+      const bd = (typeof App !== 'undefined' && typeof App._getBaziData === 'function') ? App._getBaziData() : null;
+      if (!bd) return;
+      await WuxingMaintenance.syncFromCloud(bd);
+    } catch (e) {
+      console.warn('[AuthUI] 五行维护状态合并失败:', e);
     }
   }
 

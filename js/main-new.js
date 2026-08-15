@@ -510,15 +510,33 @@ const App = (() => {
       // 发现的CONFIRMED bug，此前误加的 `.maintenance_items` 导致 narrItems 永远
       // 是空数组，AI叙事从未真正传到WuxingScene。
       const narrItems  = analysis.step_wuxing_maintenance || [];
+      // 2026-08-15第四阶段集成缺口修复（frontend-3d浏览器端到端验证时发现，
+      // 见 claude-docs/已知问题与修复记录.md 对应日期条目）：WuxingScene.attach()
+      // 按冻结契约读 issue.tier 决定初始展示哪一档3D装饰，但这里此前只拼了
+      // WuxingIssues.deriveIssues() 的静态字段（wx/direction/severity）和AI叙事
+      // （title/narrative/action_hint），从未查过 WuxingMaintenance.getState()——
+      // 导致每次挂载都默认走tier1"安泰"展示，不反映真实维护进度，要等用户
+      // 主动触发一次 reflectTier()（拖拽维护/瞬间调理/开面板刷新）才会纠正。
+      // 补一次 getState() 查询，把 tier/ownershipTier 合并进issue对象——跟
+      // _wxmaintRedeemBlockHtml() 里已经在用的同一个调用方式，只是这里是在
+      // "初始挂载"这个时机调用，不是在"面板渲染"时机。
       const issues = baseIssues.map(issue => {
         const narr = narrItems.find(n => n.wx === issue.wx && n.direction === issue.direction) || {};
+        let tier = 1, ownershipTier = 'none';
+        if (typeof WuxingMaintenance !== 'undefined' && typeof WuxingMaintenance.getState === 'function') {
+          const state = WuxingMaintenance.getState(_baziData, issue.wx, issue.direction, issue.severity);
+          tier          = state.tier || 1;
+          ownershipTier = state.ownershipTier || 'none';
+        }
         return {
-          wx:          issue.wx,
-          direction:   issue.direction,
-          severity:    issue.severity,
-          title:       narr.title,
-          narrative:   narr.narrative,
-          action_hint: narr.action_hint,
+          wx:            issue.wx,
+          direction:     issue.direction,
+          severity:      issue.severity,
+          title:         narr.title,
+          narrative:     narr.narrative,
+          action_hint:   narr.action_hint,
+          tier:          tier,
+          ownershipTier: ownershipTier,
         };
       });
       // WuxingScene.attach() 内部第一行会自己先 detach() 清掉上一次（本函数
@@ -550,6 +568,59 @@ const App = (() => {
     // 迁移时漏掉了对应这一句。
     if (typeof WuxingScene !== 'undefined' && typeof WuxingScene.detach === 'function') {
       WuxingScene.detach(scene);
+    }
+
+    // 2026-08-16 qa-reviewer CONFIRMED修复：五行维护状态多设备合并（第四阶段）
+    // 此前只在 js/auth.js::AuthUI._mergeWuxingMaintenanceState()（登录事件那
+    // 一刻）尝试触发过一次，但那个时机 App._getBaziData() 通常还是null（用户
+    // 大概率还停在生辰输入页，登录事件先于岛屿加载发生），函数内部
+    // `if (!bd) return;` 直接短路——注释虽然写了"_onIslandReady()会在岛屿
+    // 真正加载完成时自己再调一次"，但这句调用从未真正被写进代码，导致换
+    // 设备/清缓存的老用户永远拉不回云端记录（含花1000灵气买的
+    // ownershipTier:'shrine'）。这里补上这个此前只存在于注释里、从未真正
+    // 执行过的调用——_baziData 在本函数被调用时必然已经赋值（_onIslandReady()
+    // 只在岛屿生成/加载成功后触发），是"岛屿加载完成"这个时机的正确落点。
+    // fire-and-forget：不阻塞岛屿渲染主流程，失败只影响"这次没能合并到最新
+    // 云端记录"，本地数据原样可用（WuxingMaintenance.syncFromCloud() 内部
+    // 已经对未登录/网络失败做了静默短路，这里不需要重复判断登录态）。
+    //
+    // 2026-08-16 qa-reviewer第二轮CONFIRMED：上面这句fire-and-forget调用本身
+    // 是对的（localStorage确实被合并了），但合并完成时3D场景往往早就已经用
+    // "合并前"的本地空状态attach()完毕——BaziAnalysis.getAnalysis() 因为
+    // loadSavedIsland() 已经 seedCache() 过，走的是本地缓存命中，一个微任务
+    // 就resolve；而 syncFromCloud() 要走一次真实Supabase网络请求（数百ms），
+    // 必然更晚完成。结果是"换设备刚打开就看到3D画面（问题态）跟面板
+    // （已巩固✅）自相矛盾"，且没有任何路径在合并完成后回头刷新3D视觉，只有
+    // 整页刷新才会一致。
+    //
+    // 修复：合并完成后，对当前已经挂载的每个五行标注按最新（合并后）状态
+    // 重新调用 reflectTier()/markShrined() 刷新3D视觉——不用整批重新
+    // detach()+attach()（成本更高、会有不必要的装饰移除/重建动画），只对
+    // "真的可能因为这次合并而变化"的每个marker做定点刷新。若此时AI深析还没
+    // 跑完（WuxingScene 尚未 attach() 过任何marker），getActiveMarkers() 会
+    // 是空数组，这里天然是no-op——不需要额外处理，因为AI深析稍后第一次调用
+    // _applyAiAnalysis() 时，WuxingMaintenance.getState() 读到的就已经是
+    // 合并后的最新值，首次attach()一步到位就是对的，不会重蹈同样的race。
+    if (typeof WuxingMaintenance !== 'undefined' && typeof WuxingMaintenance.syncFromCloud === 'function') {
+      const _genAtSync = _islandGeneration;
+      WuxingMaintenance.syncFromCloud(_baziData).then(() => {
+        if (_genAtSync !== _islandGeneration) return; // 会话已切换，静默丢弃
+        if (typeof WuxingScene === 'undefined' || typeof WuxingScene.getActiveMarkers !== 'function') return;
+        let markers = [];
+        try { markers = WuxingScene.getActiveMarkers() || []; } catch (e) { return; }
+        markers.forEach(m => {
+          if (!m || !m.wx || !m.direction) return;
+          // severity 只在record不存在时才会被用到——这些marker此时必然已经
+          // 在首次attach()时创建过record，这里传0只是占位，不会影响读到的
+          // 真实值（见 js/wuxing-maintenance.js::getState() 的既有行为）。
+          const state = WuxingMaintenance.getState(_baziData, m.wx, m.direction, 0);
+          if (state.ownershipTier === 'shrine') {
+            if (typeof WuxingScene.markShrined === 'function') WuxingScene.markShrined(m.wx, m.direction);
+          } else if (typeof WuxingScene.reflectTier === 'function') {
+            WuxingScene.reflectTier(m.wx, m.direction, state.tier);
+          }
+        });
+      }).catch(() => {});
     }
 
     // 异步获取AI深析数据，挂载3D特点标注（见 _applyAiAnalysis()定义处
@@ -892,10 +963,22 @@ const App = (() => {
 
   // 构建 #wxmaint-redeem-slot 内嵌HTML；issue 形状同 extra：
   // {wx, direction, severity, title, narrative, action_hint}。
-  // 副作用：记下 _lastWxmaintCtx 供 App.redeemWuxingProduct() 兑换成功后
-  // 的原地刷新使用——跟 analysis.js::buildTraitPanel() 内部记 _lastTraitCtx
-  // 同一惯例（该函数本身在文档里也标注了"纯函数"但内部一样有这层缓存副作用，
-  // 是这套zone-panel渲染管线里的既有模式，不是本次新引入的例外）。
+  // 副作用：记下 _lastWxmaintCtx 供 App.redeemWuxingProduct()/
+  // App.instantFixWuxingIssue() 操作成功后的原地刷新使用——跟
+  // analysis.js::buildTraitPanel() 内部记 _lastTraitCtx 同一惯例（该函数本身
+  // 在文档里也标注了"纯函数"但内部一样有这层缓存副作用，是这套zone-panel
+  // 渲染管线里的既有模式，不是本次新引入的例外）。
+  //
+  // 第四阶段"五行经营机制"改造：状态判断从读 UserState.isWuxingIssueResolved()
+  // （第三阶段"兑换=永久resolve"二元语义）改成读
+  // WuxingMaintenance.getState(...).tier/.ownershipTier（3档tier+可持续衰减）。
+  // 四种状态分支：
+  //   ownershipTier==='shrine' → "已巩固"静态徽标，不展示任何操作按钮（彻底
+  //     退出维护循环，唯一的终态）；
+  //   tier===1 且非crystal态 → 只展示"状态良好"提示，没有任何维护紧迫感；
+  //   其余情况（tier>1，或ownershipTier==='crystal'即便当前tier恰好是1）→
+  //     展示②瞬间调理（仅tier>1时）+③④商品卡（已是crystal态时不再重复展示
+  //     水晶选项，只保留可以"更进一步"升级的神龛）。
   function _wxmaintRedeemBlockHtml(baziData, issue) {
     issue = issue || {};
     const wx = issue.wx, direction = issue.direction;
@@ -904,46 +987,84 @@ const App = (() => {
     _lastWxmaintCtx = { baziData, issue, token: _zonePanelToken };
 
     if (typeof Products === 'undefined' || typeof Products.getProducts !== 'function') return '';
+    if (typeof WuxingMaintenance === 'undefined' || typeof WuxingMaintenance.getState !== 'function') return '';
     if (typeof UserState === 'undefined') return '';
 
-    const baziKey = (typeof UserState.baziKey === 'function') ? UserState.baziKey(baziData) : null;
-    const resolved = (baziKey && typeof UserState.isWuxingIssueResolved === 'function')
-      ? UserState.isWuxingIssueResolved(baziKey, wx, direction)
-      : false;
+    const state         = WuxingMaintenance.getState(baziData, wx, direction, issue.severity);
+    const tier           = state.tier || 1;
+    const ownershipTier  = state.ownershipTier || 'none';
 
-    if (resolved) {
-      return _wxSection(_wxT('wxmaint.progress_label'), _wxBadge(_wxT('wxmaint.resolved_badge') + ' ✅', 'good'));
+    // ④ 已巩固：彻底退出维护循环，唯一的静态终态，不再展示任何操作按钮
+    if (ownershipTier === 'shrine') {
+      return _wxSection(_wxT('wxmaint.progress_label'), _wxBadge(_wxT('wxmaint.shrined_badge') + ' ✅', 'good'));
     }
 
+    // tier===1 且非水晶态：没有维护紧迫感，不展示任何兑换/调理入口——避免
+    // 在用户命盘状态本就良好时还硬塞商品卡片制造不必要的消费引导。
+    if (tier === 1 && ownershipTier !== 'crystal') {
+      return _wxSection(_wxT('wxmaint.progress_label'), _wxBadge(_wxT('wxmaint.good_status'), 'good'));
+    }
+
+    const sections = [];
+
+    // 水晶庇护中提示——③已购但问题仍会衰减，只是周期拉长到6天、维护动作
+    // 换皮成"消磁"（拖拽UI本身由 js/wuxing-drag.js 负责，不在本面板内）。
+    if (ownershipTier === 'crystal') {
+      sections.push(_wxSection(_wxT('wxmaint.progress_label'), _wxBadge('💎 ' + _wxT('wxmaint.crystal_note'), 'good')));
+    }
+
+    // ② 瞬间调理：仅 tier>1 时显示，价格用 WuxingMaintenance.instantFixCost()
+    // 预览（跟 instantFix() 内部实际扣费公式是同一个函数，不会出现"面板显示
+    // 的价格"和"实际扣的钱"不一致）。
+    if (tier > 1) {
+      const spirit = UserState.getSpirit() || 0;
+      const cost   = (typeof WuxingMaintenance.instantFixCost === 'function')
+        ? WuxingMaintenance.instantFixCost(tier, issue.severity) : 0;
+      const enough = spirit >= cost;
+      const sevArg = Number(issue.severity) || 0;
+      const btnHtml = enough
+        ? `<button class="trait-redeem-btn" onclick="App.instantFixWuxingIssue('${wx}','${direction}',${sevArg}, this)">${_wxT('wxmaint.instant_fix_btn', { n: cost })}</button>`
+        : `<button class="trait-redeem-btn disabled" disabled>${_wxT('wxmaint.insufficient_btn', { n: Math.max(cost - spirit, 0) })}</button>`;
+      sections.push(_wxSection(_wxT('wxmaint.instant_fix_title'), btnHtml));
+    }
+
+    // ③④ 商品卡：已经是crystal态时不再重复展示水晶选项（避免同一issue买了
+    // 第二次水晶除了多花灵气没有任何额外效果），只保留神龛（可以从crystal
+    // 态"更进一步"升级到永久巩固）；shrine分支在上面已经提前return，走不到
+    // 这里，不需要再过滤。
     let products = [];
     try { products = Products.getProducts() || []; } catch (e) { products = []; }
-    if (!products.length) return '';
+    const visibleProducts = products.filter(p => p && !(p.kind === 'crystal' && ownershipTier === 'crystal'));
 
-    const lang        = (typeof Lang !== 'undefined' && typeof Lang.getLang === 'function') ? Lang.getLang() : 'zh';
-    const spirit       = (typeof UserState.getSpirit === 'function') ? (UserState.getSpirit() || 0) : 0;
-    const spiritLabel  = _wxT('products.spirit_label');
-    const redeemLabel  = _wxT('products.redeem_btn');
+    if (visibleProducts.length) {
+      const lang        = (typeof Lang !== 'undefined' && typeof Lang.getLang === 'function') ? Lang.getLang() : 'zh';
+      const spirit2      = UserState.getSpirit() || 0;
+      const spiritLabel  = _wxT('products.spirit_label');
+      const redeemLabel  = _wxT('products.redeem_btn');
 
-    const cardsHtml = products.map(p => {
-      const name = (p && p.name && (p.name[lang] || p.name.zh)) || (p && p.id) || '';
-      const cost = (p && Number(p.spiritCost)) || 0;
-      const enough = spirit >= cost;
-      const icon = _wxProductIcon(p);
-      const btnHtml = enough
-        ? `<button class="trait-redeem-btn" onclick="App.redeemWuxingProduct('${String(p.id).replace(/'/g, "\\'")}', this)">${redeemLabel}</button>`
-        : `<button class="trait-redeem-btn disabled" disabled>${_wxT('wxmaint.insufficient_btn', { n: cost - spirit })}</button>`;
-      return `
-        <div class="trait-product-card">
-          <div class="trait-product-icon">${icon}</div>
-          <div class="trait-product-info">
-            <div class="trait-product-name">${name}</div>
-            <div class="trait-product-price">${cost} ${spiritLabel}</div>
-          </div>
-          ${btnHtml}
-        </div>`;
-    }).join('');
+      const cardsHtml = visibleProducts.map(p => {
+        const name = (p.name && (p.name[lang] || p.name.zh)) || p.id || '';
+        const cost = Number(p.spiritCost) || 0;
+        const enough2 = spirit2 >= cost;
+        const icon = _wxProductIcon(p);
+        const btnHtml = enough2
+          ? `<button class="trait-redeem-btn" onclick="App.redeemWuxingProduct('${String(p.id).replace(/'/g, "\\'")}', this)">${redeemLabel}</button>`
+          : `<button class="trait-redeem-btn disabled" disabled>${_wxT('wxmaint.insufficient_btn', { n: Math.max(cost - spirit2, 0) })}</button>`;
+        return `
+          <div class="trait-product-card">
+            <div class="trait-product-icon">${icon}</div>
+            <div class="trait-product-info">
+              <div class="trait-product-name">${name}</div>
+              <div class="trait-product-price">${cost} ${spiritLabel}</div>
+            </div>
+            ${btnHtml}
+          </div>`;
+      }).join('');
 
-    return _wxSection(_wxT('wxmaint.redeem_now'), `<div class="trait-product-list">${cardsHtml}</div>`);
+      sections.push(_wxSection(_wxT('wxmaint.redeem_now'), `<div class="trait-product-list">${cardsHtml}</div>`));
+    }
+
+    return sections.join('');
   }
 
   // ── 兑换按钮 onclick 调用：编排一次五行维护商品兑换，成功后原地刷新当前
@@ -983,10 +1104,50 @@ const App = (() => {
     }
   }
 
+  // ── ②"瞬间调理"按钮 onclick：花灵气跳过拖拽直接把该五行问题调回档位1。
+  //    参照 _redeemWuxingProduct() 同款写法风格（快照 _lastWxmaintCtx、按钮
+  //    loading态、成功后走同一个 _refreshWxmaintPanel() 竞态守卫原地刷新）。
+  function _instantFixWuxingIssue(wx, direction, severity, btnEl) {
+    if (typeof WuxingMaintenance === 'undefined' || typeof WuxingMaintenance.instantFix !== 'function') return;
+    if (!_lastWxmaintCtx) return;
+
+    const ctxAtClick = _lastWxmaintCtx;
+    const { baziData } = ctxAtClick;
+    const originalText = btnEl ? btnEl.textContent : '';
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = _wxT('wxmaint.redeeming');
+    }
+
+    let result = null;
+    try {
+      result = WuxingMaintenance.instantFix(baziData, wx, direction, severity);
+    } catch (e) {
+      result = null;
+    }
+
+    if (result && result.ok) {
+      // 3D视觉立即切到档位1（跟 Products.redeem() 水晶分支同款调用），不等
+      // 用户下次重开面板才看到变化。
+      if (typeof WuxingScene !== 'undefined' && typeof WuxingScene.reflectTier === 'function') {
+        WuxingScene.reflectTier(wx, direction, 1);
+      }
+      _refreshWxmaintPanel(ctxAtClick);
+    } else if (btnEl) {
+      // 灵气不足：instantFix() 内部走 UserState.useSpirit() 失败时不会扣款
+      // 也不会改任何状态（见 js/wuxing-maintenance.js::instantFix() 注释），
+      // 这里只需要还原按钮——正常情况下按钮本就应该已经是disabled态（面板
+      // 渲染时已经按余量算过），这个分支主要覆盖"面板开着挂机很久、期间
+      // 灵气被其它标签页/操作消耗掉"这类极端时序。
+      btnEl.disabled = false;
+      btnEl.textContent = originalText || _wxT('wxmaint.instant_fix_btn', { n: 0 });
+    }
+  }
+
   // 内部：用点击那一刻快照下来的 ctxAtClick 重新调用 _renderZonePanelHtml()
-  // 并原地替换 zone-panel-content 的内容——兑换成功后
-  // UserState.isWuxingIssueResolved() 会变为true，重渲染即可自然切换到
-  // "已改善"徽标态。竞态守卫见 _lastWxmaintCtx 声明处注释。
+  // 并原地替换 zone-panel-content 的内容——兑换/瞬间调理成功后
+  // WuxingMaintenance.getState(...) 的 tier/ownershipTier 会变化，重渲染即可
+  // 自然切换到对应的状态展示。竞态守卫见 _lastWxmaintCtx 声明处注释。
   function _refreshWxmaintPanel(ctxAtClick) {
     if (!ctxAtClick || ctxAtClick.token !== _zonePanelToken) return;
     const panel = document.getElementById('zone-panel');
@@ -1172,6 +1333,7 @@ const App = (() => {
     restartTutorial,   // 测试模式 HUD 用
     viewTutorialDetail, // 引导Modal"查看完整详解"按钮用
     redeemWuxingProduct: _redeemWuxingProduct, // wxmaint面板"兑换"按钮 onclick 用
+    instantFixWuxingIssue: _instantFixWuxingIssue, // wxmaint面板"②瞬间调理"按钮 onclick 用
     // AuthUI 内部调用（勿删）
     _getBaziData:  () => _baziData,
     _getBirthInfo: () => _birthInfo,

@@ -52,30 +52,88 @@ const IslandDecorations = (() => {
     crystal_obsidian: { frac:{x:-0.60, z:-0.40, y:0.30, hover:0.15}, type:'crystal', color:0x1a1a2e, size:0.7, glb:'bracelet_obsidian.glb' },
   };
 
-  // ── 五行维护系统占位装饰（第三阶段，2026-08-13）──────────────
-  // js/wuxing-scene.js::attach() 按当次命盘 WuxingIssues.deriveIssues() 算出
-  // 的 {wx, direction} 组合动态决定挂哪几个、挂在哪——世界坐标由调用方通过
-  // 本文件新增的 add(decorId, baziData, overridePos) 第三参数直接给出，这里
-  // 的 frac 字段因此实际上不会被用到（overridePos 总是有值），只是为了防御性
-  // 兜底（万一将来某处误调用不传 overridePos，也不会因为 DECOR_DEFS 里没有
-  // 这个 key 而直接跳过渲染）保留一个占位坐标，不代表真实设计位置。
-  // 本轮只做占位几何体（不等真实GLB，故 glb:null），10个组合（5行×2方向）
-  // 用循环生成而不是手写10条字面量，避免以后调色/改形状要维护10处重复代码。
+  // ── 五行维护系统装饰（第三阶段2026-08-13新增占位 → 第四阶段2026-08-15
+  //    扩展为三档 + 接入首批真实GLB资产）──────────────────────────────
+  // js/wuxing-scene.js::attach()/reflectTier()/markShrined() 按当次命盘
+  // WuxingIssues.deriveIssues() 算出的 {wx, direction} 组合 + 动态"维护档位"
+  // （tier 1安泰/2见微/3亟待，懒计算，见 js/wuxing-maintenance.js）决定挂哪个
+  // decorId、挂在哪——世界坐标由调用方通过本文件的 add(decorId, baziData,
+  // overridePos) 第三参数直接给出，这里的 frac 字段因此实际上不会被用到
+  // （overridePos 总是有值），只是为了防御性兜底（万一将来某处误调用不传
+  // overridePos，也不会因为 DECOR_DEFS 里没有这个 key 而直接跳过渲染）保留
+  // 一个占位坐标，不代表真实设计位置。
+  //
+  // decorId 命名规则：`wxmaint_{wx}_{nourish|restrain}_t{1|2|3}`（三层循环，
+  // 5行×2方向×3档=30条）+ `wxmaint_shrine_{wx}_{direction}`（10条，"请神仙/
+  // 设炉灶"永久巩固后的款式，虽然视觉上全部复用同一个 shrine_generic.glb
+  // 模型文件，但每个 wx+direction 组合各自注册独立的 decorId）。此前（第三
+  // 阶段）decorId 不带 `_t{tier}` 后缀、每个 wx+direction 只有一条占位——
+  // 本轮改为三档后旧的无后缀 key 直接废弃替换（不保留），js/wuxing-scene.js
+  // 相应改为按 tier 选取 decorId。
+  //
+  // 2026-08-16 qa-reviewer CONFIRMED修复："请神仙"decorId此前是单一通用款
+  // `wxmaint_shrine`（不分五行方向）——但 add(decorId,...) 第一行是
+  // `if (_placed[decorId]) return`（同一个decorId只会真正放置一次）。同一张
+  // 命盘如果有多条issue先后被markShrined()，第二条起 add('wxmaint_shrine',
+  // ...) 会因为decorId已存在直接被跳过，但markShrined()自己remove()掉的是
+  // 上一条issue的旧问题态decorId——净效果是"花1000灵气巩固第二条issue，3D
+  // 装饰反而从场景里凭空消失一个，什么也没补上"（qa-reviewer用真实
+  // BaziEngine+真实IslandDecorations实测复现：3条issue全部markShrined后，
+  // 3个CSS2D热点仍在，但3D装饰只剩1个）。修复：decorId 改成
+  // per-issue（`wxmaint_shrine_{wx}_{direction}`），5行×2方向=10条，`glb`
+  // 字段全部继续指向同一个 shrine_generic.glb 文件（视觉上还是同一个模型，
+  // 只是不共享同一个decorId、不会互相顶掉），js/wuxing-scene.js::attach()/
+  // markShrined() 生成decorId的地方同步改成per-issue拼接方式。
+  //
+  // 首批3D美术资产已由离线脚本（island_service/generate_wuxing_assets.py）
+  // 生成，落地在 assets/decorations/wuxing/ 下，文件名用英文（GLB_BASE +
+  // 'wuxing/{wx_en}_{direction}_t{tier}.glb'）——五行中文名→英文文件名前缀
+  // 映射见下方 WX_EN_PREFIX（这是JS端独立维护的一份，风格参考
+  // island_service/bazi_prompt.py 里同类中英映射的写法，但两侧语言不同不复用
+  // 同一份定义）。水行（水→water）6个组合（2方向×3档）因预算原因这批暂缺，
+  // glb 留 null，走 _addPlaceholder() 现成的占位几何体兜底——这是已知且
+  // 用户已接受的状态，不是bug，资产补齐后只需要把对应几条的 glb 字段填上
+  // 文件名，不需要改代码结构。
+  //
   // 视觉隐喻区分方向（与 wuxing-scene.js 里 💧/✂️ 图标呼应，不靠颜色区分
   // 方向）：nourish（喜用神不足，需要"培育/灌溉"）用 tree（幼苗）占位类型；
-  // restrain（忌神过旺，需要"约束/克制"）用 ring（锁环）占位类型。颜色统一
-  // 复用 CONFIG.WUXING_COLORS[wx].hex（不新造配色系统，跨全项目一致）。
+  // restrain（忌神过旺，需要"约束/克制"）用 ring（锁环）占位类型——占位类型
+  // 只在 glb 缺失（水行）时才会真正被渲染，有真实GLB的四行直接走 _loadGLB()
+  // 不受此影响。颜色统一复用 CONFIG.WUXING_COLORS[wx].hex（不新造配色系统，
+  // 跨全项目一致）。shrine 款不分五行，用统一的暖金色（呼应"庄重已巩固"调性）。
+  const WX_EN_PREFIX = { '木': 'wood', '火': 'fire', '土': 'earth', '金': 'metal', '水': 'water' };
   (function _registerWuxingMaintenanceDecors() {
     const WX_LIST = ['木', '火', '土', '金', '水'];
+    const DIRECTIONS = ['nourish', 'restrain'];
     WX_LIST.forEach(wx => {
       const hex = (typeof CONFIG !== 'undefined' && CONFIG.WUXING_COLORS && CONFIG.WUXING_COLORS[wx])
         ? CONFIG.WUXING_COLORS[wx].hex : 0xc9a96e;
-      DECOR_DEFS[`wxmaint_${wx}_nourish`] = {
-        frac: { x: 0.00, z: 0.00, y: 0.30, hover: 0.15 }, type: 'tree', color: hex, size: 0.9, glb: null,
-      };
-      DECOR_DEFS[`wxmaint_${wx}_restrain`] = {
-        frac: { x: 0.00, z: 0.00, y: 0.30, hover: 0.15 }, type: 'ring', color: hex, size: 0.5, glb: null,
-      };
+      const enPrefix = WX_EN_PREFIX[wx];
+      const hasAsset = enPrefix !== 'water';   // 水行资产暂缺（见上方注释）
+      DIRECTIONS.forEach(direction => {
+        [1, 2, 3].forEach(tier => {
+          DECOR_DEFS[`wxmaint_${wx}_${direction}_t${tier}`] = {
+            frac: { x: 0.00, z: 0.00, y: 0.30, hover: 0.15 },
+            type: direction === 'nourish' ? 'tree' : 'ring',
+            color: hex,
+            size: direction === 'nourish' ? 0.9 : 0.5,
+            glb: hasAsset ? `wuxing/${enPrefix}_${direction}_t${tier}.glb` : null,
+          };
+        });
+      });
+    });
+    // "请神仙/设炉灶"永久巩固款——视觉上是同一个通用造型（灵位/香炉意象，
+    // 不分五行），但每个 wx+direction 各自注册一条独立 decorId（见上方
+    // 2026-08-16修复注释），避免共享同一个decorId导致add()的"已存在则
+    // 跳过"逻辑把后续issue的巩固装饰顶掉。
+    WX_LIST.forEach(wx => {
+      DIRECTIONS.forEach(direction => {
+        DECOR_DEFS[`wxmaint_shrine_${wx}_${direction}`] = {
+          frac: { x: 0.00, z: 0.00, y: 0.30, hover: 0.15 },
+          type: 'crystal', color: 0xc9a96e, size: 0.9,
+          glb: 'wuxing/shrine_generic.glb',
+        };
+      });
     });
   })();
 
@@ -87,6 +145,46 @@ const IslandDecorations = (() => {
   const GLB_BASE  = '/assets/decorations/';
   let _scene      = null;
   let _placed     = {};   // decorId → THREE.Object3D
+  // 2026-08-16 qa-reviewer两轮修复迭代到这个最终版本：
+  //
+  // 第一轮问题（PLAUSIBLE）：GLTFLoader是异步的，`_loadGLB()`发出请求到
+  // 成功/失败回调之间有一段真实存在的时间窗口，这段时间里`_placed[decorId]`
+  // 还没被赋值。如果这段窗口内调用方对同一个decorId调了一次remove()
+  // （reflectTier()/markShrined()的"remove旧→add新"两连击最容易撞上），
+  // 旧档位的GLB如果还没加载完，remove()会因为_placed[旧]为空而直接no-op，
+  // 但稍后GLTFLoader的成功回调仍会无条件`_scene.add(model)`，旧档位模型
+  // 就永久残留在场景里、跟新装饰重叠。
+  //
+  // 第一轮的修复方案（用_loading/_pendingRemoved两个Set + add()里
+  // `if(_loading.has(decorId)) return`拦一次并发）引入了第二轮CONFIRMED
+  // 回归：`add(X)→remove(X)（仍在途）→add(X)`这个序列里，第二次add(X)会被
+  // "已经在加载"的守卫直接吞掉、什么也不做，随后X的GLTFLoader回调触发时
+  // 又因为_pendingRemoved标记把模型丢弃——最终这个decorId对应的装饰一个
+  // 都没有。qa-reviewer指出这不是构造出来的边界情况：`wxmaint_*`系列
+  // decorId只由`{wx}_{direction}_t{tier}`决定、不含baziKey，跨命盘会撞
+  // 同一个id；GLB体积大（约1MB/个），移动网络加载窗口是数秒级，用户在这
+  // 几秒内切岛屿/轻量刷新AI深析，新旧两张命盘刚好命中同一个五行方向+档位
+  // 组合时就会真实触发。
+  //
+  // 最终修复（本轮，token机制）：不再用"是否正在加载"这个布尔状态去拦截
+  // 后续add()调用（那正是回归的根源——拦截意味着"忽略"，而忽略了的这次
+  // add()诉求就永远丢了），改为让每次add()都能真正发起一次新的加载请求，
+  // 但给每个decorId维护一个单调递增的"版本号"（_loadToken[decorId]）：
+  // `_loadGLB()`发起时读取+自增当前版本号并记住"这是我的版本号"，GLTFLoader
+  // 的回调触发时只有当自己的版本号仍然等于`_loadToken[decorId]`当前值（即
+  // "我是这个decorId最后一次被请求的那次"）才真正落地`_scene.add()`/写
+  // `_placed`，否则静默丢弃自己这次的加载结果——不管丢弃的是"过期"还是
+  // "被取消"的那次。`remove()`同样只需要把版本号自增一次（不需要真的
+  // 知道"是否正在加载"），后续任何仍在途的旧版本回调天然就不再匹配。
+  // 这样无论中途发生多少次"remove又add"，只有**最后一次add()**捕获到的
+  // placement/内容会真正生效——因为每次add()都会重新计算并闭包捕获当次
+  // 调用传入的placement（见_computePlacement()/_placementFromOverride()
+  // 调用点），不会退回到某次更早请求时的旧坐标。
+  // 代价：remove()后紧跟着add()同一decorId时，前一次尚未完成的网络请求会
+  // 被浪费（继续下载但结果被丢弃），不做真正的HTTP层面取消——GLB文件不大
+  // 且这类"边加载边改主意"的场景本身低频，用少量带宽换正确性是合理取舍，
+  // 不引入 AbortController 这类更复杂的机制。
+  let _loadToken = {};   // decorId → 最新一次_loadGLB()请求的版本号（整数）
 
   // ── 初始化（传入scene引用）───────────────────────────────
   function init(scene) { _scene = scene; }
@@ -110,6 +208,16 @@ const IslandDecorations = (() => {
     if (!_scene) { _placed = {}; return; }
     Object.keys(_placed).forEach(decorId => remove(decorId));
     _placed = {};   // 兜底：remove() 理论上已逐一删除，这里确保万无一失
+    // 换岛屿/清空这一刻仍在异步加载中的装饰（还没进_placed，上面基于
+    // Object.keys(_placed) 的 remove() 循环覆盖不到）也需要让它们的
+    // token失效，否则加载完成后会凭空挂在新场景/新一批装饰之间（见
+    // _loadToken 声明处注释的token机制）。这里没有一份"当前正在加载的
+    // decorId列表"可以精确遍历，改为把 _loadToken 里出现过的每个decorId
+    // 的token都递增一次——已经完成加载的那些（早被上面remove()清过）
+    // 再碰一次token是无副作用的no-op，仍在途的那些则被正确标记为过期。
+    Object.keys(_loadToken).forEach(decorId => {
+      _loadToken[decorId] = (_loadToken[decorId] || 0) + 1;
+    });
   }
 
   // ── 添加单个装饰 ─────────────────────────────────────────
@@ -123,6 +231,14 @@ const IslandDecorations = (() => {
   function add(decorId, baziData, overridePos) {
     if (!_scene) return;
     if (_placed[decorId]) return;   // 已存在
+    // 2026-08-16：此前这里有一道"该decorId已经有一次GLTFLoader请求在途就
+    // 直接return"的守卫，本意是防止并发重复加载，但引入了CONFIRMED回归——
+    // `add(X)→remove(X)（仍在途）→add(X)`序列里第二次add(X)会被这道守卫
+    // 直接吞掉、什么也不做，随后GLTFLoader的回调再因为"已被remove()取消"
+    // 把模型丢弃，最终这个decorId一个装饰都没有。已改为不在这里拦截，让
+    // 每次add()都能真正发起一次新的加载请求，用_loadGLB()内部的token机制
+    // （见_loadToken声明处注释）保证"无论中途发生多少次remove又add，只有
+    // 最后一次的坐标/内容会真正生效"，不会静默丢失这次add()的诉求。
 
     const def = DECOR_DEFS[decorId];
     if (!def) return;
@@ -205,13 +321,29 @@ const IslandDecorations = (() => {
       _scene.remove(_placed[decorId]);
       delete _placed[decorId];
     }
+    // 无论此刻这个decorId是否已经真正放置/是否还有GLTFLoader请求在途，都
+    // 让它的"版本号"自增一次——仍在途的旧请求的回调触发时，token比对会
+    // 发现自己已经不是最新版本，从而静默丢弃这次加载结果，不会把即将被
+    // 移除的旧装饰又添加进场景（见 _loadToken 声明处注释的token机制）。
+    // 对从没add()过的decorId调用remove()，这里只是把它的token从0变成1，
+    // 无副作用、不影响该decorId未来第一次真正的add()。
+    _loadToken[decorId] = (_loadToken[decorId] || 0) + 1;
   }
 
   // ── 加载真实 GLB ─────────────────────────────────────────
   function _loadGLB(decorId, def, placement) {
+    // token机制（见 _loadToken 声明处注释）：每次发起加载都占用一个新的
+    // 版本号并记住"这是我的版本号"（闭包变量 myToken）。回调触发时只有
+    // 自己的版本号仍然等于 _loadToken[decorId] 当前值（即"我是这个decorId
+    // 最后一次被请求的那次"）才真正落地，否则说明中途发生过remove()/新的
+    // add()，静默丢弃——不管是被"取消"还是被"更新的请求"取代，处理方式
+    // 相同：只有最后一次赢。
+    const myToken = (_loadToken[decorId] || 0) + 1;
+    _loadToken[decorId] = myToken;
     new THREE.GLTFLoader().load(
       GLB_BASE + def.glb,
       (gltf) => {
+        if (_loadToken[decorId] !== myToken) return;   // 已被后续remove()/add()淘汰，丢弃这次结果，不进场景
         const model = gltf.scene;
         model.position.set(...placement.pos);
         model.scale.setScalar(placement.size);
@@ -221,7 +353,10 @@ const IslandDecorations = (() => {
         _addEntryAnimation(model);
       },
       undefined,
-      () => _addPlaceholder(decorId, def, placement)   // 加载失败回退占位
+      () => {
+        if (_loadToken[decorId] !== myToken) return;   // 同上：已过期，加载失败也不用回退占位了
+        _addPlaceholder(decorId, def, placement);       // 加载失败回退占位
+      }
     );
   }
 

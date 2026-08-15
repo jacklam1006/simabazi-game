@@ -246,6 +246,33 @@ const I18N = {
     'wxmaint.title_fallback_restrain':'{wx}偏旺，需要适度克制',
     'wxmaint.fallback_nourish':       '命盘中{wx}的力量偏弱，是这张命盘需要补充滋养的方向。',
     'wxmaint.fallback_restrain':      '命盘中{wx}的力量偏旺，是这张命盘需要适度克制的方向。',
+    // 2026-08-15第四阶段"拖拽维护"新增（js/wuxing-drag.js，frontend-3d领域
+    // 跨域顺手补齐——CLAUDE.md强制规则7要求用户可见文案中英key必须同步）：
+    'wxmaint.drag_gained':      '获得 {n} 灵气',
+    'wxmaint.drag_daily_limit': '这条今天已经打理过了，明天再来吧',
+    'wxmaint.drag_fail':        '维护失败，请稍后再试',
+    'wxmaint.drag_not_ready':   '维护系统尚未就绪，请稍后再试',
+    'wxmaint.drag_already_shrined': '这条已经被神仙永久庇护，无需再维护，画面马上刷新',
+    // 2026-08-15第四阶段"四层付费结构"新增（js/main-new.js::_wxmaintRedeemBlockHtml()、
+    // js/products.js::_redeemShrine() 用到）：
+    'wxmaint.shrined_badge':    '已巩固',
+    'wxmaint.good_status':      '状态良好，暂无需打理',
+    'wxmaint.crystal_note':     '水晶庇护中 · 消磁周期已延长',
+    'wxmaint.instant_fix_title':'瞬间调理',
+    'wxmaint.instant_fix_btn':  '花 {n} 灵气立即调理',
+
+    // ── 灵气兑换：④请神仙/设炉灶（纯虚拟购买，不走实体履约）─────
+    'products.success_shrine':  '兑换成功！该五行问题已永久巩固，不再需要打理',
+
+    // ── 任务面板：五行维护动态卡片（第四阶段）───────────────────
+    'tasks.wxmaint_section':        '五行维护',
+    'tasks.wxmaint_verb_nourish':   '滋养',
+    'tasks.wxmaint_verb_restrain':  '克制',
+    'tasks.wxmaint_title':          '今日维护：{action} {target}',
+    'tasks.wxmaint_go_hint':        '前往岛屿拖拽维护 →',
+    'tasks.wxmaint_crystal_note':   '（水晶庇护中）',
+    'tasks.wxmaint_hint_toast':          '已为你定位，请在岛屿上拖拽对应的五行标记进行维护',
+    'tasks.wxmaint_hint_toast_fallback': '请前往岛屿上找到对应的五行标记，拖拽维护',
   },
 
   /* ════════════════════════════════════════════
@@ -479,6 +506,31 @@ const I18N = {
     'wxmaint.title_fallback_restrain':'{wx} is relatively strong, needs restraining',
     'wxmaint.fallback_nourish':       'The {wx} element is relatively weak in this chart — a direction that could use extra nourishment.',
     'wxmaint.fallback_restrain':      'The {wx} element is relatively strong in this chart — a direction that could use some moderation.',
+    'wxmaint.drag_gained':      'Gained {n} Spirit',
+    'wxmaint.drag_daily_limit': 'Already maintained today — come back tomorrow',
+    'wxmaint.drag_fail':        'Maintenance failed, please try again later',
+    'wxmaint.drag_not_ready':   'Maintenance system not ready yet, please try again later',
+    'wxmaint.drag_already_shrined': 'This one is already permanently protected — no maintenance needed. Refreshing now',
+    // 2026-08-15 Phase 4 "four-tier monetization" additions (used by
+    // js/main-new.js::_wxmaintRedeemBlockHtml(), js/products.js::_redeemShrine()):
+    'wxmaint.shrined_badge':    'Secured',
+    'wxmaint.good_status':      'In good standing — no attention needed',
+    'wxmaint.crystal_note':     'Crystal-protected · recharge cycle extended',
+    'wxmaint.instant_fix_title':'Instant Fix',
+    'wxmaint.instant_fix_btn':  'Fix now for {n} Spirit',
+
+    // ── Redeem: ④ Enshrine a Guardian Spirit (pure virtual purchase, no physical fulfillment) ──
+    'products.success_shrine':  'Redeemed! This issue is now permanently secured and needs no further upkeep',
+
+    // ── Task panel: dynamic Five-Element maintenance cards (Phase 4) ──
+    'tasks.wxmaint_section':        'Five-Element Maintenance',
+    'tasks.wxmaint_verb_nourish':   'Nourish',
+    'tasks.wxmaint_verb_restrain':  'Restrain',
+    'tasks.wxmaint_title':          'Today: {action} {target}',
+    'tasks.wxmaint_go_hint':        'Head to the island to maintain →',
+    'tasks.wxmaint_crystal_note':   '(crystal-protected)',
+    'tasks.wxmaint_hint_toast':          'Located it — drag to maintain this element marker on the island',
+    'tasks.wxmaint_hint_toast_fallback': 'Head to the island and drag to maintain this element marker',
   },
 };
 

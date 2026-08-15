@@ -329,10 +329,29 @@
       transition:transform .2s;
     }
     .wx-dot:hover{transform:scale(1.12)}
-    /* severity（命理静态权重，0~2）越高，热点常驻发光越明显——不是动态
-       劣化等级，纯粹用于在多个问题并存时帮用户一眼看出哪条权重更高 */
+    /* 2026-08-15（第四阶段）：wx-sev-{0|1|2} 语义从"命理静态severity"改为
+       "当前动态维护档位tier-1"（1安泰/2见微/3亟待，js/wuxing-scene.js::
+       reflectTier() 切换），越高档位越紧迫、热点常驻发光越明显，帮用户
+       一眼看出哪条问题当前最需要打理。tier1（安泰）刻意不额外加发光——
+       默认 .wx-dot 的基础box-shadow已经够用，跟"这条目前状态良好，不需要
+       特别提醒"的语义一致，不需要专门写一条空规则。 */
     .wx-sev-1 .wx-dot{box-shadow:0 0 8px var(--wx-glow,rgba(201,169,110,.4))}
     .wx-sev-2 .wx-dot{box-shadow:0 0 11px var(--wx-glow,rgba(201,169,110,.5)),0 0 3px var(--wx-color,#c9a96e) inset}
+    /* 2026-08-15新增：④"请神仙/设炉灶"永久巩固后的金色柔光效果——不用
+       wx-sev-*那套"越紧迫越亮"的语言（已巩固的问题已经彻底退出衰减循环，
+       不该再传达"紧迫"），改用稳定、庄重的暖金色常驻柔光，呼应
+       shrine_generic.glb（灵位/香炉造型，per-issue decorId
+       wxmaint_shrine_{wx}_{direction} 全部复用同一个模型文件）的
+       "庄重已巩固"调性。 */
+    .wx-marker.wx-shrined .wx-dot{
+      border-color:#e8c988;
+      box-shadow:0 0 10px rgba(232,201,136,.55),0 0 3px rgba(232,201,136,.8) inset;
+      animation:wx-shrine-glow 3.2s ease-in-out infinite;
+    }
+    @keyframes wx-shrine-glow{
+      0%,100%{box-shadow:0 0 10px rgba(232,201,136,.5),0 0 3px rgba(232,201,136,.75) inset}
+      50%{box-shadow:0 0 16px rgba(232,201,136,.75),0 0 5px rgba(232,201,136,.9) inset}
+    }
     .wx-leader{
       position:absolute;left:28px;top:50%;width:20px;height:1px;
       background:rgba(201,169,110,.35);
@@ -376,6 +395,46 @@
     @keyframes wx-fadeout{
       0%{opacity:1}
       100%{opacity:0}
+    }
+
+    /* ══ 五行拖拽维护交互（第四阶段，2026-08-15新增，js/wuxing-drag.js）══
+       固定定位的"维护工具条"（屏幕底部💧灌溉/✂️修剪图标，水晶态换皮✨消磁）
+       + 拖起时跟随手指的幽灵图标 + 命中热点时的高亮反馈。技术选型 Pointer
+       Events（不用HTML5原生Drag-and-Drop，移动端支持历来不可靠），工具条
+       按钮和幽灵图标都必须 touch-action:none——否则 Pointer Events 不会
+       阻止浏览器原生滚动/下拉刷新手势，这是这类交互最容易漏掉的坑。 */
+    #wx-maint-toolbar{
+      position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));
+      transform:translateX(-50%);
+      display:flex;gap:16px;z-index:350;
+      pointer-events:none;   /* 容器本身不吃事件，子按钮各自开启 */
+    }
+    .wx-maint-tool{
+      pointer-events:auto;touch-action:none;user-select:none;
+      width:52px;height:52px;border-radius:50%;
+      background:rgba(8,8,20,.92);border:1px solid rgba(201,169,110,.4);
+      box-shadow:0 4px 18px rgba(0,0,0,.4);
+      display:flex;align-items:center;justify-content:center;font-size:22px;
+      cursor:grab;transition:transform .15s ease,opacity .15s ease;
+    }
+    .wx-maint-tool:active{cursor:grabbing}
+    .wx-maint-tool.wx-tool-dragging{opacity:.32;transform:scale(.9)}
+    /* 幽灵图标：克隆自被拖起的工具按钮，跟随手指移动，绝不能挡住其它交互
+       （pointer-events:none）——碰撞检测靠JS用getBoundingClientRect()做，
+       不依赖这个元素本身接收事件。left/top固定为0，实际位置全部靠JS写
+       transform:translate(...)（will-change提示浏览器这是高频变化属性）。 */
+    .wx-drag-ghost{
+      position:fixed;top:0;left:0;width:52px;height:52px;border-radius:50%;
+      background:rgba(8,8,20,.92);border:1px solid rgba(201,169,110,.65);
+      box-shadow:0 0 22px rgba(201,169,110,.55);
+      display:flex;align-items:center;justify-content:center;font-size:22px;
+      pointer-events:none;touch-action:none;z-index:900;will-change:transform;
+    }
+    /* 拖拽悬停命中反馈：目标热点放大+加强发光，用户松手前就能确认"就是
+       这个"，跟 .wx-sev-* 那套常驻发光是两回事（这个只在拖拽悬停瞬间生效） */
+    .wx-marker.wx-drop-target-active .wx-dot{
+      transform:scale(1.35);
+      box-shadow:0 0 20px var(--wx-glow,rgba(201,169,110,.85)),0 0 6px var(--wx-color,#c9a96e) inset;
     }
 
     /* 右侧分析面板 */
@@ -1241,10 +1300,21 @@
      和后续wuxing-scene.js（3D挂载，frontend-3d领域）之前加载 -->
 <script src="js/wuxing-issues.js"></script>
 <script src="js/user-state.js"></script>
+<!-- 五行经营机制核心数据模型（第四阶段）：只依赖 UserState（baziKey/addSpirit/
+     useSpirit）+ 可选依赖 AuthManager（多设备同步，typeof防御），需在
+     wuxing-scene.js/wuxing-drag.js（frontend-3d，消费getState/setOwnership/
+     instantFixCost）、products.js/tasks.js（消费getState/maintain/instantFix/
+     setOwnership）之前加载 -->
+<script src="js/wuxing-maintenance.js"></script>
 <script src="js/island-loader.js"></script>
 <script src="js/island-annotate.js"></script>
 <script src="js/island-decorations.js"></script>
 <script src="js/wuxing-scene.js"></script>
+<!-- wuxing-drag.js 依赖 WuxingScene.getActiveMarkers()/reflectTier()，必须
+     在 wuxing-scene.js 之后加载；也会用到下方 main-new.js 暴露的
+     App._getBaziData()，但那只在运行时（用户实际拖拽）才调用，不影响
+     script标签的加载顺序（不需要排在main-new.js之后）。 -->
+<script src="js/wuxing-drag.js"></script>
 <script src="js/products.js"></script>
 <script src="js/bazi-analysis.js"></script>
 <script src="js/analysis.js"></script>

@@ -158,6 +158,125 @@ const Tasks = (() => {
   function getDailyTasks()  { return getAllStatus().filter(t => t.type === 'daily'); }
   function getOnetimeTasks(){ return getAllStatus().filter(t => t.type === 'onetime'); }
 
+  // ── 第四阶段"五行经营机制"：动态维护任务卡片 ──────────────────────
+  // 不进 TASK_DEFS 静态字典——这批卡片数量/内容按当次命盘的五行判定动态
+  // 生成（WuxingIssues.deriveIssues()），跟其它固定任务的"一次性定义"性质
+  // 不同。关键不变式：这类卡片的完成条件只能是真实拖拽维护/瞬间调理
+  // （js/wuxing-maintenance.js::maintain()/instantFix() 内部已经各自发过一次
+  // 灵气），点卡片本身绝不能调用 Tasks.complete()（那会走 UserState.
+  // addSpirit(def.spirit) 再发一次，造成灵气重复发放）——本函数返回的数据
+  // 只用于渲染+"定位到对应3D热点"的引导交互，不接入 complete() 那条流程。
+  function getDynamicWuxingTasks(baziData) {
+    if (!baziData) return [];
+    if (typeof WuxingIssues === 'undefined' || typeof WuxingIssues.deriveIssues !== 'function') return [];
+    if (typeof WuxingMaintenance === 'undefined' || typeof WuxingMaintenance.getState !== 'function') return [];
+
+    let issues = [];
+    try { issues = WuxingIssues.deriveIssues(baziData) || []; } catch (e) { return []; }
+
+    return issues
+      .map(issue => {
+        let state;
+        try { state = WuxingMaintenance.getState(baziData, issue.wx, issue.direction, issue.severity); }
+        catch (e) { return null; }
+        if (!state) return null;
+        // ownershipTier==='shrine' 已彻底退出维护循环（永久档位1），不再需要
+        // "今日维护"提示；tier<=1（安泰）同样没有维护紧迫感，不生成卡片。
+        if (state.ownershipTier === 'shrine' || (state.tier || 1) <= 1) return null;
+        return {
+          wx:            issue.wx,
+          direction:     issue.direction,
+          severity:      issue.severity,
+          tier:          state.tier,
+          ownershipTier: state.ownershipTier,
+        };
+      })
+      .filter(Boolean);
+  }
+
+  // 简易 toast（同款视觉/交互风格见 js/products.js::_toast()，本文件独立实现
+  // 一份而不是跨模块调用——避免给 products.js 增加"被 tasks.js 反向依赖"的
+  // 耦合，两处各自维护同款小组件是本项目既有惯例，见多个 _t()/_toast() 重复
+  // 实现的先例）。
+  function _wxToast(msg) {
+    const existing = document.getElementById('wxtask-toast');
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.id = 'wxtask-toast';
+    toast.style.cssText = `
+      position:fixed;top:80px;left:50%;transform:translateX(-50%) translateY(-20px);
+      background:rgba(8,8,20,.95);border:1px solid rgba(201,169,110,.4);
+      border-radius:12px;padding:12px 20px;z-index:400;
+      max-width:280px;font-size:12px;line-height:1.5;color:#e8e0d0;
+      box-shadow:0 8px 32px rgba(0,0,0,.4);
+      opacity:0;transition:all .3s ease;
+    `;
+    toast.textContent = msg;
+    document.body.appendChild(toast);
+
+    requestAnimationFrame(() => {
+      toast.style.opacity = '1';
+      toast.style.transform = 'translateX(-50%) translateY(0)';
+    });
+
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateX(-50%) translateY(-20px)';
+      setTimeout(() => toast.remove(), 300);
+    }, 3200);
+  }
+
+  // 点击动态维护卡片：只做"定位/高亮"引导，不触发任何完成/发奖流程（见上方
+  // getDynamicWuxingTasks() 注释里的关键不变式）。WuxingScene.getActiveMarkers()
+  // 是 frontend-3d 领域按并行接口契约要实现的只读导出，此处 typeof 防御——
+  // 若对方尚未实现完毕，退化成"只弹toast提示"，不报错也不影响其余任务卡片。
+  //
+  // 2026-08-16 qa-reviewer PLAUSIBLE修复：此前不管是否真的定位到热点，toast
+  // 都统一显示"已为你定位"这类文案——但当时调用的 `m.dotEl.scrollIntoView(...)`
+  // 作用在 CSS2DRenderer 每帧用内联transform绝对定位的覆盖层div上，没有任何
+  // 可滚动的祖先容器，实际什么都不会移动，是一句虚假承诺。改为两处真实动作
+  // 而不是伪装的滚动：① 收起任务抽屉面板（如果当前正打开着——面板从左侧
+  // 滑入会遮挡3D场景，收起后才能真的看到下面的脉冲效果，不是新写一套相机
+  // 转向逻辑那种高成本方案）；② 复用已经真实生效的 UIEffects.labelPulse()
+  // 在目标热点上播放脉冲动画。只有这两步都成功触发时才使用"已为你定位"文案，
+  // 找不到对应热点（比如3D标注尚未挂载完成）时改用不做定位承诺的措辞。
+  function _highlightWuxingTarget(wx, direction) {
+    let handled = false;
+    if (typeof WuxingScene !== 'undefined' && typeof WuxingScene.getActiveMarkers === 'function') {
+      try {
+        const markers = WuxingScene.getActiveMarkers() || [];
+        const m = markers.find(mk => mk && mk.wx === wx && mk.direction === direction);
+        if (m && m.dotEl) {
+          if (typeof UIEffects !== 'undefined' && typeof UIEffects.labelPulse === 'function') {
+            UIEffects.labelPulse(m.dotEl);
+          }
+          // 收起任务抽屉，让用户真的能看见上面这个脉冲效果——通过
+          // App.toggleTaskPanel()（main-new.js里专门同步DOM class与内部
+          // _taskPanelOpen布尔状态的入口）触发，不直接操作
+          // document.getElementById('task-panel').classList：那样会让
+          // main-new.js内部的_taskPanelOpen状态跟DOM实际显示状态错位，
+          // 造成下次用户点任务按钮"看起来该打开却打不开"的错觉bug。
+          // 注：main-new.js::_showScreen() 离开岛屿页面时也会单独对
+          // #task-panel 做 classList.remove('open') 却不重置
+          // _taskPanelOpen——这是本文件改动之前就存在的既有desync（不属于
+          // 本次改动范围，这里不修复那个更早的问题本身），只是提醒
+          // toggleTaskPanel() 并不是"唯一"会触碰这块DOM class的地方，只是
+          // 这里（响应用户点击任务卡片）该走的、最正确的入口。
+          const panelEl = document.getElementById('task-panel');
+          if (panelEl && panelEl.classList.contains('open')
+            && typeof App !== 'undefined' && typeof App.toggleTaskPanel === 'function') {
+            App.toggleTaskPanel();
+          }
+          handled = true;
+        }
+      } catch (e) { /* 防御性：定位失败不影响toast兜底 */ }
+    }
+    const key = handled ? 'tasks.wxmaint_hint_toast' : 'tasks.wxmaint_hint_toast_fallback';
+    const msg = (typeof Lang !== 'undefined') ? Lang.t(key) : '请前往岛屿上找到对应的五行标记，拖拽维护';
+    _wxToast(msg);
+  }
+
   // ── 成就弹窗 ─────────────────────────────────────────────
   function _showToast(def) {
     const existing = document.getElementById('task-toast');
@@ -199,10 +318,12 @@ const Tasks = (() => {
   function renderPanel(container, baziData) {
     if (!container) return;
 
-    const spirit  = UserState.getSpirit();
-    const checkin = UserState.getCheckinInfo();
-    const daily   = getDailyTasks();
-    const onetime = getOnetimeTasks().filter(t => !t.done).slice(0, 5);
+    const spirit   = UserState.getSpirit();
+    const checkin  = UserState.getCheckinInfo();
+    const daily    = getDailyTasks();
+    const onetime  = getOnetimeTasks().filter(t => !t.done).slice(0, 5);
+    const wxTasks  = getDynamicWuxingTasks(baziData);
+    const _tt      = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
 
     container.innerHTML = `
       <!-- 灵气值 -->
@@ -223,6 +344,15 @@ const Tasks = (() => {
         ${daily.map(t => _taskCard(t, baziData)).join('')}
       </div>
 
+      <!-- 五行维护（第四阶段动态生成，插在"每日任务"与"成就"之间，见方案文档
+           要求；卡片本身不接入 complete() 发奖流程，见 getDynamicWuxingTasks()
+           注释里的关键不变式） -->
+      ${wxTasks.length ? `
+      <div style="margin-bottom:14px">
+        <div style="font-size:10px;letter-spacing:2px;color:rgba(201,169,110,.55);margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid rgba(201,169,110,.1)">${_tt('tasks.wxmaint_section')}</div>
+        ${wxTasks.map(_wxTaskCard).join('')}
+      </div>` : ''}
+
       <!-- 进行中成就 -->
       ${onetime.length ? `
       <div>
@@ -231,7 +361,7 @@ const Tasks = (() => {
       </div>` : ''}
     `;
 
-    // 绑定点击
+    // 绑定点击（固定任务：完成+发奖）
     container.querySelectorAll('[data-task]').forEach(btn => {
       btn.addEventListener('click', () => {
         const tid = btn.dataset.task;
@@ -239,6 +369,47 @@ const Tasks = (() => {
         renderPanel(container, baziData);
       });
     });
+
+    // 绑定点击（动态五行维护卡片：只定位/高亮，不发奖——见 _highlightWuxingTarget()）
+    container.querySelectorAll('[data-wxtask]').forEach(el => {
+      el.addEventListener('click', () => {
+        const [wx, direction] = (el.dataset.wxtask || '').split('|');
+        if (wx && direction) _highlightWuxingTarget(wx, direction);
+      });
+    });
+  }
+
+  // 动态五行维护卡片渲染——跟 _taskCard() 同款视觉风格，但右侧展示当前档位
+  // （T2/T3）而不是灵气奖励数字（这类卡片本身不直接发奖，见文件头关键不变式）。
+  function _wxTaskCard(t) {
+    const isZh     = (typeof Lang === 'undefined') || Lang.getLang() === 'zh';
+    const wxSuffix = isZh ? '行' : '';
+    const icon     = t.direction === 'nourish' ? '💧' : '✂️';
+    const _t2      = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
+    const action   = _t2(t.direction === 'nourish' ? 'tasks.wxmaint_verb_nourish' : 'tasks.wxmaint_verb_restrain');
+    const target   = t.wx + wxSuffix;
+    const title    = _t2('tasks.wxmaint_title').replace('{action}', action).replace('{target}', target);
+    const desc     = _t2('tasks.wxmaint_go_hint');
+    const crystalNote = t.ownershipTier === 'crystal'
+      ? `<span style="margin-left:4px;opacity:.6">${_t2('tasks.wxmaint_crystal_note')}</span>`
+      : '';
+
+    return `
+      <div data-wxtask="${t.wx}|${t.direction}" style="
+        display:flex;align-items:center;gap:10px;padding:10px;
+        border-radius:8px;margin-bottom:6px;cursor:pointer;
+        background:rgba(255,255,255,.03);
+        border:1px solid rgba(255,255,255,.08);
+        transition:background .2s;
+      ">
+        <span style="font-size:18px">${icon}</span>
+        <div style="flex:1">
+          <div style="font-size:12px;color:#e8e0d0;letter-spacing:1px">${title}${crystalNote}</div>
+          <div style="font-size:10px;color:rgba(232,224,208,.35);margin-top:2px">${desc}</div>
+        </div>
+        <div style="font-size:10px;text-align:right;color:#c9a96e">T${t.tier}</div>
+      </div>
+    `;
   }
 
   function _taskCard(t, baziData) {
@@ -265,5 +436,5 @@ const Tasks = (() => {
     `;
   }
 
-  return { complete, isDone, getAllStatus, getDailyTasks, getOnetimeTasks, renderPanel };
+  return { complete, isDone, getAllStatus, getDailyTasks, getOnetimeTasks, getDynamicWuxingTasks, renderPanel };
 })();
