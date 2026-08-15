@@ -439,33 +439,88 @@ class BaziEngine {
     const results = [];
     const labels = ['年支','月支','日支','时支'];
     const CHONG = {子:'午',丑:'未',寅:'申',卯:'酉',辰:'戌',巳:'亥',午:'子',未:'丑',申:'寅',酉:'卯',戌:'辰',亥:'巳'};
-    const CHONG_MEANING = {
-      子午:'情绪起伏·感情不稳', 丑未:'事业变动·财务波折',
-      寅申:'驿马奔波·意外多', 卯酉:'是非口舌·婚姻摩擦',
-      辰戌:'刑伤官非·需注意健康', 巳亥:'精神压力·漂泊感',
-    };
-    const HE_LIU = {
-      子丑:'土',寅亥:'木',卯戌:'火',辰酉:'金',巳申:'水',午未:'火土',
-    };
     const HE_SAN = [['申','子','辰','水局'],['寅','午','戌','火局'],['巳','酉','丑','金局'],['亥','卯','未','木局']];
+    // 三会（同一季度相邻三月，气最纯，比跨季度的三合更集中）
+    const HE_HUI = [['寅','卯','辰','东方木'],['巳','午','未','南方火'],['申','酉','戌','西方金'],['亥','子','丑','北方水']];
+    // 三刑：寅巳申/丑戌未需三支皆现；子卯只需两支同现，仍归类"三刑"
+    const XING_SAN = [['寅','巳','申','无恩之刑','恩将仇报、官非诉讼'],['丑','戌','未','恃势之刑','倚势逞强、六亲缘薄']];
+    const XING_LIU_MEANING = '失礼冒犯、家庭不睦';
+    // 自刑：同一地支在四柱中重复出现≥2次
+    const ZI_XING_MEANING = {辰:'自我拉扯·反复纠结', 午:'急躁耗神·情绪反复', 酉:'挑剔纠结·人际内耗', 亥:'多疑纠结·精神内耗'};
+    // pairKey：与下方pairwise查表用的 [a,b].sort().join('') 完全一致的key生成方式，
+    // 避免手写表时按"命理习惯书写顺序"敲错字符顺序导致查表永远miss。
+    // 所有pairwise表（冲/六合/六害/六破/三刑子卯）一律通过pairKey()/buildPairTable()生成key，
+    // 不再手写猜顺序——2026-08-16修复前HE_LIU曾直接手写'子丑'/'寅亥'等书写顺序key，
+    // 与.sort()实际输出不一致导致这两对六合永远无法命中；同日修复CHONG_MEANING同样的坑
+    // （子午→'午子'、辰戌→'戌辰'、巳亥→'亥巳'，三对按书写顺序手写的key与.sort()实际
+    // 输出不一致，永远miss回退到'变动较大'兜底文案），详见已知问题记录。
+    const pairKey = (a,b) => [a,b].sort().join('');
+    const buildPairTable = (entries) => {
+      const t = {};
+      for (const [a,b,meaning] of entries) t[pairKey(a,b)] = meaning;
+      return t;
+    };
+    const CHONG_MEANING = buildPairTable([
+      ['子','午','情绪起伏·感情不稳'], ['丑','未','事业变动·财务波折'],
+      ['寅','申','驿马奔波·意外多'], ['卯','酉','是非口舌·婚姻摩擦'],
+      ['辰','戌','刑伤官非·需注意健康'], ['巳','亥','精神压力·漂泊感'],
+    ]);
+    // 六合（化五行）：entries的a,b书写顺序沿用命理习惯，key一律由pairKey()生成，
+    // 与下方pairwise循环里 key=[a,b].sort().join('') 保持完全一致的排序算法
+    const HE_LIU = buildPairTable([
+      ['子','丑','土'], ['寅','亥','木'], ['卯','戌','火'], ['辰','酉','金'], ['巳','申','水'], ['午','未','火土'],
+    ]);
+    const XING_LIU_KEY = pairKey('子','卯'); // 无礼之刑，走pairwise排序key查表
+    // 六害
+    const HAI = buildPairTable([
+      ['子','未','破财耗神·六亲缘薄'], ['丑','午','怨恨嫉妒·争执不断'], ['寅','巳','计较猜忌·招是惹非'],
+      ['卯','辰','不合难容·暗中妨碍'], ['申','亥','无恩带累·反目成仇'], ['酉','戌','争斗嫉妒·怨怼纠缠'],
+    ]);
+    // 六破（注意：寅亥、巳申与六合表重叠，"既合又破"是真实存在的双重关系，两个判断各自独立成if，不互相跳过）
+    const PO = buildPairTable([
+      ['子','酉','破财损物·计划受阻'], ['丑','辰','根基动摇·反复破败'], ['寅','亥','合中带破·外和内耗'],
+      ['卯','午','虚耗破损·难成之事'], ['巳','申','合中带破·外和内耗'], ['未','戌','破财耗损·根基不稳'],
+    ]);
 
     for (let i=0; i<4; i++) {
       for (let j=i+1; j<4; j++) {
         const a=zhis[i], b=zhis[j];
+        const key=[a,b].sort().join('');
         // 冲
         if (CHONG[a]===b) {
-          const key=[a,b].sort().join('');
           results.push({type:'冲', desc:`${labels[i]}${a} 冲 ${labels[j]}${b}（${CHONG_MEANING[key]||'变动较大'}）`});
         }
         // 六合
-        const heKey=[a,b].sort().join('');
-        if (HE_LIU[heKey]) results.push({type:'合',desc:`${labels[i]}${a} 合 ${labels[j]}${b}（化${HE_LIU[heKey]}）`});
+        if (HE_LIU[key]) results.push({type:'合',desc:`${labels[i]}${a} 合 ${labels[j]}${b}（化${HE_LIU[key]}）`});
+        // 三刑·子卯（无礼之刑，仅需两支同现）
+        if (key===XING_LIU_KEY) results.push({type:'三刑',desc:`${labels[i]}${a} 刑 ${labels[j]}${b}（无礼之刑，${XING_LIU_MEANING}）`});
+        // 六害
+        if (HAI[key]) results.push({type:'害',desc:`${labels[i]}${a} 害 ${labels[j]}${b}（${HAI[key]}）`});
+        // 六破
+        if (PO[key]) results.push({type:'破',desc:`${labels[i]}${a} 破 ${labels[j]}${b}（${PO[key]}）`});
       }
     }
     // 三合
     for (const [a,b,c,name] of HE_SAN) {
       if ([a,b,c].every(z=>zhis.includes(z)))
         results.push({type:'三合',desc:`三合${name}`});
+    }
+    // 三会
+    for (const [a,b,c,name] of HE_HUI) {
+      if ([a,b,c].every(z=>zhis.includes(z)))
+        results.push({type:'三会',desc:`三会${name}局（气最纯，比三合更集中）`});
+    }
+    // 三刑·寅巳申/丑戌未（三支皆现）
+    for (const [a,b,c,name,meaning] of XING_SAN) {
+      if ([a,b,c].every(z=>zhis.includes(z)))
+        results.push({type:'三刑',desc:`三刑${name}（${meaning}）`});
+    }
+    // 自刑：统计同一地支在四柱中出现次数
+    const count = {};
+    for (const z of zhis) count[z] = (count[z]||0) + 1;
+    for (const z of ['辰','午','酉','亥']) {
+      if (count[z] >= 2)
+        results.push({type:'自刑',desc:`${z}${z} 自刑（${ZI_XING_MEANING[z]}）`});
     }
     return results;
   }

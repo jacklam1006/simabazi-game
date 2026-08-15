@@ -243,6 +243,102 @@ SHENSHA_VISUAL = {
     '天官贵人': 'celestial official in imperial robes on elevated platform',
 }
 
+# ── 十神 → 主导倾向视觉修饰（2026-08-16新增）──────────────────
+# 不逐个列出四柱各自对应哪个十神（信息密度对3D视觉没有直接意义），只统计
+# 命盘里十神的"主导类别"（哪一类出现次数最多），给这个主导类别一句视觉
+# 修饰语。5大类，仿 WUXING_VISUAL/NAYIN_MODIFIER/SHENSHA_VISUAL 的字典风格。
+TEN_GOD_CATEGORY = {
+    '正印': '印枭', '偏印': '印枭',
+    '比肩': '比劫', '劫财': '比劫',
+    '食神': '食伤', '伤官': '食伤',
+    '正财': '财星', '偏财': '财星',
+    '正官': '官杀', '七杀': '官杀',
+}
+
+TEN_GOD_VISUAL = {
+    '印枭': 'a weathered stone archway or sheltering shrine niche tucked into the terrain, radiating a quiet protective, nurturing presence',
+    '比劫': 'paired rock spires or twin trees standing shoulder to shoulder near the core, echoing companionship and quiet rivalry',
+    '食伤': 'flowing silk ribbons, swaying wind chimes, or drifting petals scattered across the island, light and expressive in motion',
+    '财星': 'small clusters of glinting treasure — stacked coins, jade ingots, or a modest vault — tucked into a corner of the terrain',
+    '官杀': 'a solemn stone gate flanked by armored guardian statues near the island edge, commanding and disciplined in bearing',
+}
+
+def _ten_god_dominant_line(ten_gods: dict) -> str:
+    """统计四柱十神里出现次数最多的类别，只在存在唯一主导类别时才输出一句
+    视觉修饰（全部不同/平局时不输出，保证确定性——同一八字必得同一结果，
+    不做任意选择）。'日主'（日柱固定值）不在 TEN_GOD_CATEGORY 里，天然被
+    跳过，不需要单独排除。"""
+    if not isinstance(ten_gods, dict) or not ten_gods:
+        return ''
+    counts = {}
+    for k in ['year', 'month', 'day', 'hour']:
+        cat = TEN_GOD_CATEGORY.get(ten_gods.get(k))
+        if cat:
+            counts[cat] = counts.get(cat, 0) + 1
+    if not counts:
+        return ''
+    max_count = max(counts.values())
+    top = [c for c, v in counts.items() if v == max_count]
+    if len(top) != 1 or max_count < 2:
+        return ''  # 平局或没有任何类别重复出现，不做任意选择
+    dominant = top[0]
+    return f"CHART TENDENCY ({dominant}主导): {TEN_GOD_VISUAL[dominant]}."
+
+
+# ── 地支关系 → 地形动态一句话（2026-08-16新增）────────────────
+# 命中的关系类型可能多达8种，不全列，只按优先级挑最有代表性的一类：
+# 三会（气最集中）> 三刑/自刑（内在张力/冲突）> 冲（现有代码此前完全没用
+# 上 interactions 里的冲）。挑到即用一句英文视觉暗示收尾，不逐条展开。
+INTERACTION_VISUAL = {
+    '三会': 'the terrain feels unusually unified and concentrated — a single dominant biome radiates outward with denser, more cohesive detail than a typical scattered island',
+    '三刑': 'faint cracks and knotted, tangled root or rock formations run through part of the terrain, hinting at inner tension and unresolved conflict beneath the surface',
+    '冲': 'a visible fault line or fractured ridge splits across part of the terrain, hinting at two clashing energies pulling against each other',
+}
+
+def _interaction_dynamics_line(interactions: list) -> str:
+    if not interactions:
+        return ''
+    types = {it.get('type') for it in interactions if isinstance(it, dict)}
+    if '三会' in types:
+        key = '三会'
+    elif '三刑' in types or '自刑' in types:
+        key = '三刑'  # 自刑与三刑共用同一句视觉描述（都是"内在张力/纠缠"）
+    elif '冲' in types:
+        key = '冲'
+    else:
+        return ''
+    return f"TERRAIN DYNAMICS: {INTERACTION_VISUAL[key]}."
+
+
+# ── 喜用神 → 整体基调强化（2026-08-16新增）──────────────────
+# favorable 是单字五行字符串（如'木'），不是数组——历史上出现过"应为数组
+# 却被存成字符串"的反向bug，这里做防御性类型处理：字符串直接用，意外传入
+# list/tuple 时取第一个元素，其余类型一律忽略不报错（不影响主提示词生成）。
+WUXING_EN = {'木': 'WOOD', '火': 'FIRE', '土': 'EARTH', '金': 'METAL', '水': 'WATER'}
+
+def _favorable_emphasis_line(favorable) -> str:
+    """喜用神在命理上经常就是命盘里占比最低甚至为0%的那个五行（身弱命局取
+    生我同我两条（印+比劫），中和命局直接取占比最低的一行，见 js/bazi-engine.js::
+    _favorable()）——这不是边界情况而是常态。措辞不能预设"这个元素在上文
+    已经描述得很多、再强调多一点"，那种写法在占比0%时会与FIVE ELEMENTS
+    LANDSCAPE里"completely absent"的描述自相矛盾（2026-08-16修复，同类问题
+    此前也在PROMPT_SYSTEM.md记录过）。改为不预设数量基础的写法：哪怕稀少
+    也要给这一点该元素以不寻常的清澈/光泽感，无论该元素在上文占比多少都
+    成立，不需要按占比设阈值分支。"""
+    if isinstance(favorable, (list, tuple)):
+        favorable = favorable[0] if favorable else None
+    if not isinstance(favorable, str):
+        return ''
+    label = WUXING_EN.get(favorable)
+    if not label:
+        return ''
+    return (f"FAVORABLE ELEMENT EMPHASIS: {label} is this chart's most beneficial element. "
+            f"Even if {label} is sparse or nearly absent elsewhere on the island, let at least "
+            f"one small trace of it — a glint, a droplet, a thread of color — survive somewhere, "
+            f"feeling unusually clear and luminous, like a quiet point of hope rather than an "
+            f"afterthought.")
+
+
 # ── 完整命盘 → TripoAI提示词 ──────────────────────────────────
 def generate_island_prompt(bazi_data: dict) -> str:
     """
@@ -292,6 +388,14 @@ def generate_island_prompt(bazi_data: dict) -> str:
     # 四柱方位标注
     pillar_labels = "Four stone marker pillars labeled: 年柱 (Year), 月柱 (Month), 日柱 (Day), 时柱 (Hour) at four cardinal positions of the island."
 
+    # 十神主导倾向 / 地支关系动态 / 喜用神强调（2026-08-16新增，均为可选的
+    # 画龙点睛一句话，数据不满足条件时返回空字符串，不影响提示词其余部分）
+    ten_god_line = _ten_god_dominant_line(bazi_data.get('tenGods', {}))
+    interaction_line = _interaction_dynamics_line(bazi_data.get('interactions', []))
+    favorable_line = _favorable_emphasis_line(bazi_data.get('favorable'))
+    extra_lines = [l for l in [favorable_line, ten_god_line, interaction_line] if l]
+    extra_block = ('\n' + '\n'.join(extra_lines)) if extra_lines else ''
+
     # 组装提示词
     prompt = f"""Chinese mythology fantasy floating island, dark starry cosmos background, low-poly stylized 3D game art style, sphere-shaped island, isometric view, high quality detailed render.
 
@@ -307,6 +411,7 @@ NAYIN TEXTURE: {'; '.join(nayin_parts) if nayin_parts else 'natural stone textur
 
 SHENSHA OBJECTS ON ISLAND:
 {chr(10).join(shensha_lines) if shensha_lines else '  - ancient stone guardian statue'}
+{extra_block}
 
 {void_note}
 
@@ -367,17 +472,32 @@ if __name__ == '__main__':
             'year': ['禄神', '福星贵人', '国印贵人', '学堂', '亡神'],
             'hour': ['天乙贵人', '金舆', '太极贵人'],
         },
-        'kongwang': {
-            'year': ['申', '酉'],
-            'month': ['辰', '巳'],
-            'day': ['子', '丑'],
-            'hour': ['子', '丑'],
-        },
+        # 空亡在真实 js/bazi-engine.js::_calcKongwang() 里是整盘唯一的一对
+        # 扁平数组（如 ['戌','亥']，取自日柱旬空），不是逐柱各一份的dict——
+        # 此前这里误写成逐柱dict，join()会拼出"year, month, day, hour"这种
+        # 无意义英文而非真实地支，是测试夹具本身的既存小bug，顺手一并修正，
+        # 不影响 generate_island_prompt() 主逻辑（主逻辑一直按数组处理是对的）。
+        'kongwang': ['子', '丑'],
         'pillars': {
             'year':  {'stem': '辛', 'branch': '巳'},
             'month': {'stem': '甲', 'branch': '午'},
             'day':   {'stem': '戊', 'branch': '午'},
             'hour':  {'stem': '己', 'branch': '未'},
         },
+        # 2026-08-16新增：十神/地支关系/喜用神样例，用于验证新增的
+        # _ten_god_dominant_line() / _interaction_dynamics_line() /
+        # _favorable_emphasis_line()。interactions 数组是真实用
+        # js/bazi-engine.js::BaziEngine._interactions(['巳','午','午','未'])
+        # （与上面 pillars 的四支一致）跑出来的结果，不是拍脑袋编的。
+        'tenGods': {'year': '正官', 'month': '七杀', 'day': '日主', 'hour': '正官'},
+        'interactions': [
+            {'type': '合', 'desc': '月支午 合 时支未（化火土）'},
+            {'type': '合', 'desc': '日支午 合 时支未（化火土）'},
+            {'type': '三会', 'desc': '三会南方火局（气最纯，比三合更集中）'},
+            {'type': '自刑', 'desc': '午午 自刑（急躁耗神·情绪反复）'},
+        ],
+        'favorable': '水',
+        'favorable2': '金',
+        'unfavorable': '火',
     }
     print(generate_island_prompt(sample_data))
