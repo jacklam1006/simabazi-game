@@ -41,7 +41,10 @@
  * 公开 API（前四个函数签名已与 frontend-3d/products.js 冻结，不要擅自修改
  * 参数顺序/返回值形状）：
  *   WuxingMaintenance.getState(baziData, wx, direction, severity)
- *     → { tier, ownershipTier, lastMaintainedAt, createdAt }
+ *     → { tier, ownershipTier, lastMaintainedAt, createdAt, healthPercent, daysUntilDecay }
+ *     （2026-08-15新增 healthPercent/daysUntilDecay 两个纯派生字段——不是新的
+ *     冻结契约参数，是对已冻结返回值形状的追加字段，前四个字段行为不变，见
+ *     getState() 定义处注释）
  *   WuxingMaintenance.maintain(baziData, wx, direction, severity)
  *     → { ok:true, spiritEarned, newTier:1 }
  *     | { ok:false, reason:'daily_limit'|'invalid_params'|'already_shrined' }
@@ -141,47 +144,180 @@ const WuxingMaintenance = (() => {
   // 同步），但现在纯粹是跟随lastMaintainedAt的冗余信息，供Supabase
   // wuxing_maintenance_state 表的既有列结构/多设备合并逻辑读写，不再被
   // _computeTier() 读取、不再影响tier计算结果。
+  // 2026-08-15 新增 windowElapsedMs/windowThresholdMs 派生量（供 getState() 算
+  // healthPercent/daysUntilDecay 用，见下方 getState() 注释）：不改变 tier 本身
+  // 的计算结果——tier 相关的三行（`tier<3`判断/`remaining-=thresholdMs`/
+  // `tier+=1`）与修复前逐字节一致，唯一区别是循环条件从 `while (tier < 3)`
+  // 放宽成 `while (true)`，让 tier 封顶到3之后循环依然按同样节奏继续消耗
+  // remaining（只是不再递增tier，靠 `if (tier < 3) tier += 1` 这一行保证），
+  // 从而在 tier===3 时依然能算出"当前这一段窗口还剩多久"——tier<3时，这个
+  // 改动等价于原逻辑（因为原本 break 的条件`remaining < thresholdMs`没变，
+  // 只是从"抛弃remaining/thresholdMs"变成"把它们返回给调用方"）。
   function _computeTier(rec) {
-    if (rec.ownershipTier === 'shrine') return { tier: 1 };
+    if (rec.ownershipTier === 'shrine') {
+      // 已永久巩固：没有"还剩多久会恶化"这回事，windowThresholdMs 留 null，
+      // 由 getState() 据此把 daysUntilDecay 置为 null、healthPercent 钉死100。
+      return { tier: 1, windowElapsedMs: 0, windowThresholdMs: null };
+    }
 
     let tier = rec.lastMaintainedAt ? 1 : rec.baseTier;
     const anchorTime = rec.lastMaintainedAt || rec.createdAt;
     let remaining = Date.now() - anchorTime;
     let cycleFirst = !rec.lastMaintainedAt; // 纯派生：从未维护过 = 永远的"首次周期"
 
-    while (tier < 3) {
+    while (true) {
       const thresholdDays = (rec.ownershipTier === 'crystal') ? 6 : (cycleFirst ? 2 : 3);
       const thresholdMs = thresholdDays * 86400000;
-      if (remaining < thresholdMs) break;
+
+      // 2026-08-16 qa-reviewer第三轮CONFIRMED修复：循环条件从 `while(tier<3)`
+      // 放宽成 `while(true)` 之后，终止性完全依赖 remaining 最终会小于
+      // thresholdMs（一个有限数）——`while(tier<3)`本身自带"最多迭代3次"的
+      // 结构性终止保证，但`while(true)`没有，只靠数值收敛。remaining 一旦是
+      // NaN/Infinity（比如 createdAt 字段缺失、或localStorage被手动改坏存了
+      // 非法值），`remaining < thresholdMs` 恒为false，循环永不退出——这不是
+      // 能catch住的异常，是真正的浏览器主线程死循环，只能强制关闭标签页。
+      // 当前代码库暂时没有会写入非法时间戳的路径（auth.js/
+      // _remoteRowToRecordShape()/_mergeRecord()都有防御），但 getState() 现在
+      // 是3D环每2秒轮询的高频调用点，删掉这个本来免费的终止保证、换来的后果
+      // 是不可恢复的卡死，不应该带着上线——这里补回一道有限性防线：一旦
+      // remaining不是有限数，直接安全返回当前已经算出的tier（不再继续这一轮
+      // 迭代去猜一个同样可能是错的窗口进度），不让循环有机会走到"永不退出"
+      // 的状态。
+      if (!isFinite(remaining)) {
+        return { tier: Math.min(tier, 3), windowElapsedMs: 0, windowThresholdMs: thresholdMs };
+      }
+
+      if (remaining < thresholdMs) {
+        // 当前这段窗口还没走完——remaining/thresholdMs 就是"这一档还剩多久"
+        // 的现成分子分母，tier此时可能还没封顶（正常break语义，跟修复前一致）
+        // 也可能已经封顶在3（本次循环第2轮及以后才会走到这个分支），两种
+        // 情形下 windowElapsedMs/windowThresholdMs 语义相同，调用方不需要
+        // 关心tier是否封顶。
+        //
+        // 2026-08-16 qa-reviewer PLAUSIBLE修复（时钟回拨/多设备时钟偏差）：
+        // remaining 理论上应该恒非负（Date.now() - anchorTime，anchorTime是
+        // 过去的时间戳），但 _mergeRecord() 用 `_maxNullable()` 合并多设备的
+        // lastMaintainedAt 时，如果某台设备时钟偏快，同步来的"未来"时间戳会
+        // 让 anchorTime 落在 Date.now() 之后，remaining 算出负数。这里 clamp
+        // 到不小于0——时钟偏差导致的"未来锚点"按"这一档刚刚重置、还没开始
+        // 消耗"处理，不能让 windowElapsedMs 是负的（会让 getState() 算出的
+        // daysUntilDecay 超出该窗口理论上限，比如3天窗口显示"约4天后恶化"）。
+        return { tier: Math.min(tier, 3), windowElapsedMs: Math.max(0, remaining), windowThresholdMs: thresholdMs };
+      }
       remaining -= thresholdMs;
-      tier += 1;
+      if (tier < 3) tier += 1; // tier本身的计算结果与修复前完全一致：封顶后不再递增
       cycleFirst = false; // 本次计算内只有第一段窗口用2天阈值，之后全部按3天算
     }
-    return { tier };
   }
+
+  // 2026-08-16 qa-reviewer第三轮CONFIRMED修复：healthPercent 此前只用
+  // "当前窗口剩余比例"（跟tier完全无关）算出0-100，导致tier=3（最差档）的
+  // 问题第一次被读取时（窗口刚开始）显示 healthPercent=100——面板/3D环呈现
+  // "满格绿色健康"，紧挨着"花N灵气立即调理"按钮并排出现，直接推翻"一眼看出
+  // 哪条问题快恶化"的设计目标；且tier全程钉死3、什么都没变好时，
+  // healthPercent会每个窗口周期从接近0跳回100一次（因为算的是"这一段窗口
+  // 内部进度"，不是"这条问题总体多健康"）——tier1时两种含义碰巧同向所以
+  // 没暴露，tier>1才会自相矛盾。
+  //
+  // 修复：healthPercent 现在同时编码 tier 本身——每个tier对应一个专属的
+  // 数值区间，档位越差，可能达到的区间上限越低，不管窗口内部进度如何都不会
+  // 越过所在档位的区间：
+  //   tier1（安泰）→ [61,100]
+  //   tier2（见微）→ [31,60]
+  //   tier3（亟待）→ [0,30]
+  // 区间边界故意精确对齐 js/wuxing-scene.js::_updateHealthRing() 里3D环颜色
+  // 判定的既有阈值（`pct>60`绿/`pct>30`黄/否则红，见该文件注释与index.html
+  // 对应CSS注释）——用/3均分成约33%一档看似更"整齐"，但跟前端已经上线的
+  // 60/30阈值对不齐（比如tier2区间的上半段会越过60而被误判成绿色），这里
+  // 特意不用均分，而是让每个tier的区间边界卡在frontend-3d的着色阈值上，
+  // 这样"tier语义修对了"就自动等价于"3D环颜色也对了"，frontend-3d不需要
+  // 跟着改一次颜色判定代码。TIER_HEALTH_FLOOR/WIDTH 与 wuxing-scene.js 的
+  // 60/30阈值是"两处独立数字必须保持一致"的耦合点，同项目里哈希算法/severity
+  // 分档阈值的双实现同步教训——未来若frontend-3d调整3D环的颜色阈值，这里
+  // 也要同步改，本文件头/该常量定义处都留了这句提醒。
+  const TIER_HEALTH_FLOOR = { 1: 61, 2: 31, 3: 0 };
+  const TIER_HEALTH_WIDTH = { 1: 39, 2: 29, 3: 30 };
 
   /**
    * WuxingMaintenance.getState(baziData, wx, direction, severity)
-   * → { tier, ownershipTier, lastMaintainedAt, createdAt }
+   * → { tier, ownershipTier, lastMaintainedAt, createdAt, healthPercent, daysUntilDecay }
    * 不存在记录时懒创建默认记录（baseTier由severity算出）并持久化。
    * 本函数现在是纯读取（不再需要像修复前那样为了"记住已跨越过首次周期"而
    * 写回localStorage——见 _computeTier() 定义处的CONFIRMED修复说明），
    * 唯一的写入只发生在 _getOrCreateRecord() 首次创建记录时。
+   *
+   * healthPercent/daysUntilDecay（2026-08-15新增，与3D热点环形指示器
+   * /面板进度条并行开发，frontend-3d 领域只读这两个字段，不读 tier 计算过程）：
+   *   - 都是从 _computeTier() 新返回的 windowElapsedMs/windowThresholdMs
+   *     （"当前这一段衰减窗口已经过去多久/这一段窗口总长多久"）派生，不
+   *     引入任何新的独立计时状态，因此天然保证跟 tier 同源、不会不同步。
+   *   - healthPercent = 该tier专属区间的floor + 窗口剩余比例×该区间宽度（见
+   *     上方 TIER_HEALTH_FLOOR/WIDTH 定义处注释，2026-08-16修复，区间随tier
+   *     单调下降，tier3永远落在[0,30]、不会再出现"最差档显示满格绿色"）。
+   *   - daysUntilDecay = 当前窗口剩余时长（天，可以是小数）。tier<3时正常
+   *     计算——语义是"距离下一次理论上的衰减节点还有多久"，会在用户拖拽维护
+   *     后归位到"新窗口刚开始"，让用户能感知维护动作的即时反馈。
+   *   - 2026-08-16 用户拍板修复（qa-reviewer第四轮PLAUSIBLE）：tier===3时
+   *     healthPercent/daysUntilDecay 不再跟着窗口周期继续推进——修复前
+   *     `_computeTier()`封顶后仍然继续消耗 windowElapsedMs/windowThresholdMs
+   *     只是不递增tier，这曾经是"让公式统一、逻辑简单"特意保留的副作用，但
+   *     实际表现是：tier已经封顶在最差档、颜色/结论（"亟待"/红色）全程没变
+   *     的情况下，这个百分比数字本身还在每个周期从0诡异跳回30再逐渐掉回0，
+   *     用户什么都没做数值却在莫名其妙抖动。现在tier===3时直接钉死
+   *     healthPercent=0、daysUntilDecay=null，直到用户真的执行维护/瞬间
+   *     调理/水晶购买（tier回到1）为止，不再有任何周期性波动。
+   *     只影响这里的展示值——`_computeTier()`本身的tier计算逻辑、
+   *     windowElapsedMs/windowThresholdMs 的计算完全不变（后续封顶后是否
+   *     该继续推进这两个内部字段，取决于未来是否还有别的消费方需要它们；
+   *     目前唯一消费方就是这里，钉死在展示层做，不去动数据源，改动面更小、
+   *     也不影响下方已经用200000+组fuzz验证过的tier计算本身）。
+   *   - ownershipTier==='shrine'：healthPercent固定100、daysUntilDecay固定
+   *     null——已永久巩固，没有"还剩多久会恶化"这个概念，_computeTier() 对应
+   *     分支的 windowThresholdMs 为 null，这里据此特判而不是用0除以0。
+   *   - 维护动作（免费拖拽 maintain()/瞬间调理 instantFix()/水晶
+   *     setOwnership(...,'crystal',...)）成功后 tier 会变回1（不再是3），下一次
+   *     getState() 调用会自然跳过tier3特判分支、走回正常公式——rec.
+   *     lastMaintainedAt 已经被置为 Date.now()，anchorTime变为"现在"，窗口内
+   *     剩余比例回到100%，healthPercent自然算出tier1区间的上限
+   *     （61+39=100），不需要这两个新字段有任何独立的重置逻辑。
    */
   function getState(baziData, wx, direction, severity) {
     const baziKey = _baziKeyOf(baziData);
     if (!baziKey || !wx || !_validDirection(direction)) {
       // 防御性兜底：调用方传参异常时不抛错，返回一个"安泰"态的空壳，避免UI层
       // 因为一次异常输入直接崩溃——正常调用路径不会走到这里。
-      return { tier: 1, ownershipTier: 'none', lastMaintainedAt: null, createdAt: null };
+      return { tier: 1, ownershipTier: 'none', lastMaintainedAt: null, createdAt: null, healthPercent: 100, daysUntilDecay: null };
     }
     const { rec } = _getOrCreateRecord(baziKey, wx, direction, severity);
-    const { tier } = _computeTier(rec);
+    const { tier, windowElapsedMs, windowThresholdMs } = _computeTier(rec);
+    const isShrine = rec.ownershipTier === 'shrine';
+    // tier===3钉死分支须在shrine分支之后判断吗？不需要——shrine态下
+    // _computeTier()顶部已经把tier短路成1，永远不会是3，两个特判互斥、
+    // 判断顺序不影响结果，这里沿用原有isShrine优先判断的写法保持一致。
+    let healthPercent, daysUntilDecay;
+    if (isShrine) {
+      healthPercent = 100;
+      daysUntilDecay = null;
+    } else if (tier >= 3) {
+      // 2026-08-16 用户拍板修复：见上方 getState() 头部注释——tier封顶后
+      // 不再让这两个值跟着窗口周期抖动，直接钉死。
+      healthPercent = 0;
+      daysUntilDecay = null;
+    } else {
+      const elapsedFraction   = windowThresholdMs > 0 ? Math.max(0, Math.min(1, windowElapsedMs / windowThresholdMs)) : 0;
+      const remainingFraction = 1 - elapsedFraction;
+      const floor = TIER_HEALTH_FLOOR[tier] || 0;
+      const width = TIER_HEALTH_WIDTH[tier] || 0;
+      healthPercent = Math.max(0, Math.min(100, Math.round(floor + remainingFraction * width)));
+      daysUntilDecay = Math.max(0, (windowThresholdMs - windowElapsedMs) / 86400000);
+    }
     return {
       tier,
       ownershipTier:    rec.ownershipTier,
       lastMaintainedAt: rec.lastMaintainedAt,
       createdAt:        rec.createdAt,
+      healthPercent,
+      daysUntilDecay,
     };
   }
 

@@ -327,6 +327,10 @@
       border:1px solid var(--wx-color,#c9a96e);
       box-shadow:0 0 6px var(--wx-glow,rgba(201,169,110,.3));
       transition:transform .2s;
+      /* 2026-08-15新增 position+z-index：让.wx-dot明确盖在下面.wx-health-ring
+         之上——ring是conic-gradient画的实心圆环，dot自身接近不透明的背景
+         正好盖住环的中心区域，只露出外圈那一圈进度色，不需要额外裁切/mask */
+      position:relative;z-index:2;
     }
     .wx-dot:hover{transform:scale(1.12)}
     /* 2026-08-15（第四阶段）：wx-sev-{0|1|2} 语义从"命理静态severity"改为
@@ -356,6 +360,39 @@
       position:absolute;left:28px;top:50%;width:20px;height:1px;
       background:rgba(201,169,110,.35);
       opacity:0;pointer-events:none;transition:opacity .25s ease;
+    }
+    /* 2026-08-15第二轮迭代新增：热点外圈环形健康度指示器
+       （js/wuxing-scene.js::_updateHealthRing()驱动）——用conic-gradient画
+       一个"进度环"叠在.wx-dot外圈：--wx-ring-pct/--wx-ring-color两个自定义
+       属性由JS按WuxingMaintenance.getState().healthPercent实时写入（绿
+       >60% / 黄30-60% / 红<30%），健康度越低颜色越警示，用户不用点开面板
+       就能一眼看出"哪条问题快恶化了"。环本身是绝对定位相对于.wx-marker
+       （因为.wx-marker本身display:flex且只有.wx-dot参与正常流，flex盒子的
+       自身尺寸约等于.wx-dot的28×28，left/top:50%+负margin居中技巧因此正好
+       对齐到dot中心，不需要额外包一层wrapper改动既有DOM结构）。ring比dot
+       稍大（38px vs 28px），.wx-dot靠上面新增的position:relative;z-index:2
+       盖住中心，只露出外圈那一圈——不需要mask/clip-path额外裁切。默认
+       opacity:0隐藏（healthPercent字段缺失/数据源模块未就绪时的降级态），
+       只有JS确认拿到合法百分比后才加.wx-ring-visible。 */
+    .wx-health-ring{
+      position:absolute;left:50%;top:50%;
+      width:38px;height:38px;margin:-19px 0 0 -19px;
+      border-radius:50%;pointer-events:none;z-index:1;
+      background:conic-gradient(var(--wx-ring-color,#6fcf97) var(--wx-ring-pct,100%),
+                  rgba(232,224,208,.16) 0);
+      opacity:0;transition:opacity .3s ease,background .4s ease;
+    }
+    .wx-health-ring.wx-ring-visible{opacity:1}
+    /* 2026-08-15第三轮迭代（qa-reviewer PLAUSIBLE修复）：填充方向保留"满环=
+       健康/空环=快恶化"这套所有游戏HP条都在用的通用直觉，不反转——但
+       reviewer指出这会让"最紧急"的状态（pct<30，圆弧本身很短）反而视觉上
+       最不起眼。不靠"反转填充比例"解决（那会破坏更普遍的"满=好"直觉），
+       改用"动"来抓注意力：红色区间（跟颜色分档同一条30%阈值）额外常驻一个
+       脉冲动画，短弧+脉冲仍然比长弧+静止更容易被余光捕捉到。 */
+    .wx-health-ring.wx-ring-urgent{animation:wx-ring-urgent-pulse 1.1s ease-in-out infinite}
+    @keyframes wx-ring-urgent-pulse{
+      0%,100%{opacity:1;filter:drop-shadow(0 0 0 rgba(235,87,87,0))}
+      50%{opacity:.6;filter:drop-shadow(0 0 6px rgba(235,87,87,.85))}
     }
     /* 同 .trait-card 的 width:max-content 技巧（父级 .wx-marker 因子元素
        全是 absolute 定位，自身不撑宽度，shrink-to-fit 可用宽度恒为负，
@@ -477,6 +514,22 @@
     .trait-redeem-btn{flex-shrink:0;padding:6px 12px;border-radius:16px;border:1px solid rgba(111,207,151,.5);background:rgba(111,207,151,.1);color:#6FCF97;font-size:11px;letter-spacing:1px;cursor:pointer;white-space:nowrap;font-family:inherit}
     .trait-redeem-btn:hover{background:rgba(111,207,151,.2)}
     .trait-redeem-btn.disabled,.trait-redeem-btn:disabled{border-color:rgba(235,87,87,.4);background:rgba(235,87,87,.06);color:rgba(235,87,87,.75);cursor:not-allowed}
+
+    /* ══ wxmaint面板·健康度进度条（2026-08-15新增，js/main-new.js::
+       _wxHealthBarHtml()）══
+       消费 WuxingMaintenance.getState() 新增的 healthPercent/daysUntilDecay
+       两个字段。配色沿用本文件已有的 .badge-good（绿#6FCF97）/.badge-warn
+       （红#EB5757）语义色值，不新造配色系统：健康度高=绿，即将恶化=红，
+       跟 .zone-badge 系列的"绿=良好/红=需要留意"语义保持一致。 */
+    .wxmaint-health-bar{width:100%;height:6px;border-radius:4px;background:rgba(255,255,255,.06);overflow:hidden;margin-top:4px}
+    .wxmaint-health-fill{height:100%;border-radius:4px;transition:width .3s ease}
+    .wxmaint-health-fill.wxmaint-health-good{background:#6FCF97}
+    /* 2026-08-16 qa-reviewer第四轮PLAUSIBLE修复：补上跟3D环
+       wuxing-scene.js::_updateHealthRing() 完全一致的琥珀黄中间档，
+       tier2区间（pct 31-60）不再被误显示成纯红或纯绿 */
+    .wxmaint-health-fill.wxmaint-health-mid{background:#E0B054}
+    .wxmaint-health-fill.wxmaint-health-warn{background:#EB5757}
+    .wxmaint-health-caption{font-size:11px;color:rgba(232,224,208,.55);margin-top:5px;letter-spacing:.3px}
 
     /* 任务面板 */
     #task-panel{position:fixed;top:0;left:0;bottom:0;width:min(320px,88vw);background:rgba(6,6,16,.97);border-right:1px solid rgba(201,169,110,.15);z-index:600;padding:20px 16px;transform:translateX(-100%);transition:transform .3s ease;overflow-y:auto}

@@ -952,6 +952,49 @@ const App = (() => {
     }
     return s;
   }
+  // ── 健康度进度条（2026-08-15新增，与 frontend-3d 领域的3D热点环形指示器
+  //    并行开发，两边独立消费同一份 WuxingMaintenance.getState() 返回值，
+  //    互不依赖对方实现）─────────────────────────────────────────────
+  // 消费 state.healthPercent/state.daysUntilDecay（见 js/wuxing-maintenance.js
+  // ::getState() 头部注释里对这两个字段的定义）。ownershipTier==='shrine'时
+  // 不展示进度条，只显示"已永久巩固"文案——那两个字段此时分别固定
+  // 100/null，没有"还剩多久会恶化"这个概念。
+  //
+  // 2026-08-16 qa-reviewer第三轮CONFIRMED配套修复：
+  //   1) 颜色阈值原本是"50%作为分界"，改成跟 js/wuxing-maintenance.js::
+  //      getState() 里新的tier区间对齐的60%——healthPercent 现在按tier分区间
+  //      （tier1:[61,100]/tier2:[31,60]/tier3:[0,30]，与3D环
+  //      wuxing-scene.js::_updateHealthRing() 的60/30配色阈值精确对齐），
+  //      沿用50%分界会让tier2区间的上半段（50-60）在面板上显示绿色，但3D环
+  //      在同一数值下已经显示黄色——面板和3D环各说各话，还是同一类"颜色跟
+  //      真实状态对不上"的问题。改成60%分界后，面板绿色⟺3D环绿色⟺tier1，
+  //      两处视觉判断永远一致。
+  //   2) tier===3 时不再复用"约N天后进一步恶化"这句话——tier已经封顶，不会
+  //      再恶化，这句话对tier3不成立（`_computeTier()`的`if(tier<3)tier+=1`
+  //      保证tier不会超过3），改用专属的"已达最重档"文案，不提示一个不会
+  //      发生的未来事件。
+  function _wxHealthBarHtml(state) {
+    if (!state || state.ownershipTier === 'shrine') {
+      return `<div class="wxmaint-health-caption">${_wxT('wxmaint.health_secured')}</div>`;
+    }
+    const pct = Math.max(0, Math.min(100, Math.round(Number(state.healthPercent) || 0)));
+    // 2026-08-16 qa-reviewer第四轮PLAUSIBLE修复：原来只有good/warn两档，
+    // pct落在31-60这段tier2区间时会显示纯红——跟3D环（wuxing-scene.js::
+    // _updateHealthRing()）在同一数值下显示的琥珀黄不一致。补上跟3D环三档
+    // 完全对齐的mid档，确保面板颜色⟺3D环颜色在tier2区间也一致，不只是
+    // tier1/tier3两端才对齐。
+    const tone = pct > 60 ? 'good' : (pct > 30 ? 'mid' : 'warn');
+    const caption = (Number(state.tier) === 3)
+      ? _wxT('wxmaint.health_status_worst', { pct: pct })
+      : _wxT('wxmaint.health_status', { pct: pct, days: (() => {
+          const daysRaw = Number(state.daysUntilDecay);
+          return (isFinite(daysRaw) ? Math.max(0, daysRaw) : 0).toFixed(1);
+        })() });
+    return `
+      <div class="wxmaint-health-bar"><div class="wxmaint-health-fill wxmaint-health-${tone}" style="width:${pct}%"></div></div>
+      <div class="wxmaint-health-caption">${caption}</div>`;
+  }
+
   function _wxProductIcon(product) {
     const key = ((product && (product.decorId || product.id)) || '').toLowerCase();
     if (key.includes('amethyst')) return '🔮';
@@ -996,13 +1039,15 @@ const App = (() => {
 
     // ④ 已巩固：彻底退出维护循环，唯一的静态终态，不再展示任何操作按钮
     if (ownershipTier === 'shrine') {
-      return _wxSection(_wxT('wxmaint.progress_label'), _wxBadge(_wxT('wxmaint.shrined_badge') + ' ✅', 'good'));
+      return _wxSection(_wxT('wxmaint.progress_label'), _wxBadge(_wxT('wxmaint.shrined_badge') + ' ✅', 'good') + _wxHealthBarHtml(state));
     }
 
     // tier===1 且非水晶态：没有维护紧迫感，不展示任何兑换/调理入口——避免
-    // 在用户命盘状态本就良好时还硬塞商品卡片制造不必要的消费引导。
+    // 在用户命盘状态本就良好时还硬塞商品卡片制造不必要的消费引导。仍然展示
+    // 健康度进度条（此时应接近满格），让用户能提前感知"还有多久会开始恶化"，
+    // 不用等真的跳档才知道——这正是本轮迭代要解决的"离散跳变缺乏互动感"问题。
     if (tier === 1 && ownershipTier !== 'crystal') {
-      return _wxSection(_wxT('wxmaint.progress_label'), _wxBadge(_wxT('wxmaint.good_status'), 'good'));
+      return _wxSection(_wxT('wxmaint.progress_label'), _wxBadge(_wxT('wxmaint.good_status'), 'good') + _wxHealthBarHtml(state));
     }
 
     const sections = [];
@@ -1010,7 +1055,14 @@ const App = (() => {
     // 水晶庇护中提示——③已购但问题仍会衰减，只是周期拉长到6天、维护动作
     // 换皮成"消磁"（拖拽UI本身由 js/wuxing-drag.js 负责，不在本面板内）。
     if (ownershipTier === 'crystal') {
-      sections.push(_wxSection(_wxT('wxmaint.progress_label'), _wxBadge('💎 ' + _wxT('wxmaint.crystal_note'), 'good')));
+      sections.push(_wxSection(_wxT('wxmaint.progress_label'), _wxBadge('💎 ' + _wxT('wxmaint.crystal_note'), 'good') + _wxHealthBarHtml(state)));
+    } else {
+      // tier>1 且非crystal态：此前完全没有"改善进度"区块，用户只能看到瞬间
+      // 调理/兑换商品卡，看不到量化的健康度/倒计时——这正是本轮迭代要补的
+      // 缺口，单独补一个进度区块（不依赖上面crystal分支复用同一个_wxSection
+      // 调用，因为badge文案不同，没有第三种"状态徽标"适合套在这里，直接
+      // 展示进度条本身）。
+      sections.push(_wxSection(_wxT('wxmaint.progress_label'), _wxHealthBarHtml(state)));
     }
 
     // ② 瞬间调理：仅 tier>1 时显示，价格用 WuxingMaintenance.instantFixCost()

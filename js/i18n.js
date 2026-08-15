@@ -260,6 +260,12 @@ const I18N = {
     'wxmaint.crystal_note':     '水晶庇护中 · 消磁周期已延长',
     'wxmaint.instant_fix_title':'瞬间调理',
     'wxmaint.instant_fix_btn':  '花 {n} 灵气立即调理',
+    // 2026-08-15 新增：健康度进度条文案，见 js/main-new.js::_wxHealthBarHtml()
+    'wxmaint.health_status':    '健康度 {pct}% · 约 {days} 天后进一步恶化',
+    // 2026-08-16新增：tier===3（已封顶最重档）专属文案，不复用上面那句
+    // "约N天后进一步恶化"——tier封顶后不会再恶化，那句话对tier3不成立。
+    'wxmaint.health_status_worst': '健康度 {pct}% · 已达最重档，需要调理',
+    'wxmaint.health_secured':   '已永久巩固，无需关注',
 
     // ── 灵气兑换：④请神仙/设炉灶（纯虚拟购买，不走实体履约）─────
     'products.success_shrine':  '兑换成功！该五行问题已永久巩固，不再需要打理',
@@ -518,6 +524,12 @@ const I18N = {
     'wxmaint.crystal_note':     'Crystal-protected · recharge cycle extended',
     'wxmaint.instant_fix_title':'Instant Fix',
     'wxmaint.instant_fix_btn':  'Fix now for {n} Spirit',
+    // 2026-08-15 added: health bar copy, see js/main-new.js::_wxHealthBarHtml()
+    'wxmaint.health_status':    'Health {pct}% · further decay in about {days} days',
+    // 2026-08-16 addition: tier===3 (capped, worst tier) gets its own caption —
+    // doesn't reuse the line above, since tier is capped and won't decay further.
+    'wxmaint.health_status_worst': 'Health {pct}% · at the worst tier, needs attention',
+    'wxmaint.health_secured':   'Permanently secured — no attention needed',
 
     // ── Redeem: ④ Enshrine a Guardian Spirit (pure virtual purchase, no physical fulfillment) ──
     'products.success_shrine':  'Redeemed! This issue is now permanently secured and needs no further upkeep',

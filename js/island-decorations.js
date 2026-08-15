@@ -330,6 +330,17 @@ const IslandDecorations = (() => {
     _loadToken[decorId] = (_loadToken[decorId] || 0) + 1;
   }
 
+  // ── 只读查询已放置的THREE.Object3D ───────────────────────
+  // 2026-08-15新增，供 js/wuxing-scene.js 做档位切换的"缩小淡出/弹性回弹"
+  // 过渡动画时直接操作真实模型的 scale/材质opacity 用，不额外维护一份
+  // 平行的引用表（复用 _placed 这唯一权威数据源）。找不到时返回
+  // null（尚未放置/仍在异步GLB加载中/已被remove）——调用方必须自行判空
+  // 降级，本函数不假设一定拿得到，也不做任何副作用（不触发加载、不修改
+  // _placed），纯只读查询。
+  function get(decorId) {
+    return _placed[decorId] || null;
+  }
+
   // ── 加载真实 GLB ─────────────────────────────────────────
   function _loadGLB(decorId, def, placement) {
     // token机制（见 _loadToken 声明处注释）：每次发起加载都占用一个新的
@@ -458,5 +469,5 @@ const IslandDecorations = (() => {
     }
   }
 
-  return { init, restoreAll, clearAll, add, remove, applyLiunianEffect };
+  return { init, restoreAll, clearAll, add, remove, get, applyLiunianEffect };
 })();

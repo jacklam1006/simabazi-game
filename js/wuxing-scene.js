@@ -56,6 +56,35 @@
  * 成什么"）：ownershipTier==='shrine' 时直接按已巩固态创建，不再创建"问题
  * 态"装饰；否则按 issue.tier 选择初始档位对应的 decorId（不再固定用某个
  * 默认档位）；未传 tier 时防御性按 t1 处理，不报错。
+ *
+ * 2026-08-15第二轮迭代（用户实测反馈：档位切换"一闪而过"缺乏仪式感 + 想
+ * 在3D场景上直接看出"哪条问题快恶化了"）新增两件事：
+ *   1) reflectTier()/markShrined() 的装饰切换从"remove旧→立即add新"改为
+ *      仪式化过渡（_playTierTransition()）：旧装饰缩小+淡出（~320ms，
+ *      直接操作 IslandDecorations.get() 拿到的真实THREE.Object3D的
+ *      scale/材质opacity，同时复用 js/effects.js::UIEffects.submitBurst()
+ *      在热点图标处放一次现成的粒子爆散陪衬）→ 短暂停顿（~150ms）→
+ *      IslandDecorations.add()按既有"从下方浮现"入场动画创建新装饰，检测
+ *      到真实对象落地后叠加一次easeOutBack缩放弹性回弹（只动scale，跟
+ *      island-decorations.js内部只动position.y的浮现tween互不冲突，不需要
+ *      改动该文件的入场动画本身）。明确不是模型形状插值/morph
+ *      targets——各档GLB是AI各自独立生成，顶点拓扑完全不同，技术上做不到；
+ *      这里做的是缩放/透明度/粒子层面的过渡，退而求其次但足够有仪式感。
+ *      并发安全：每个marker独立维护 _transitionSeq 计数器，每次调用自增，
+ *      过渡过程的每个检查点（tick/setTimeout/poll回调）都会核对
+ *      entry._transitionSeq是否仍等于自己发起时捕获的版本号，一旦被更新的
+ *      调用取代就静默让路（该做的remove()清理仍会执行，只是跳过后续视觉
+ *      步骤）——保证快速连续调用reflectTier()不会在场景里留下重复/悬空的
+ *      3D装饰，也不会互相踩踏报错。
+ *   2) 环形健康度指示器（_updateHealthRing()）：围绕每个热点图标的
+ *      .wx-health-ring（conic-gradient画的进度环，见index.html对应CSS）
+ *      实时反映 WuxingMaintenance.getState().healthPercent（0-100，绿>60/
+ *      黄30-60/红<30）。数据源是user-system领域并行开发的字段，本文件全程
+ *      typeof防御+try/catch，字段缺失/模块未就绪时环直接隐藏（不猜测显示
+ *      默认满格，避免给用户传达错误信息）。已 markShrined() 的问题不显示
+ *      （不再有"即将恶化"的概念）。刷新节奏参照 js/wuxing-drag.js 已有的
+ *      "轮询刷新工具条"模式，2秒一次全量重算（2-3个热点规模下成本可忽略，
+ *      不引入MutationObserver等更重机制）。
  */
 const WuxingScene = (() => {
 
@@ -87,7 +116,7 @@ const WuxingScene = (() => {
     return s;
   }
 
-  // [{ css2d, div, wx, direction, decorId, pos, tier, shrined }]
+  // [{ css2d, div, wx, direction, decorId, pos, tier, shrined, severity, _transitionSeq }]
   // 2026-08-15追加 pos/tier/shrined 三个字段（第四阶段）：
   //   - pos：attach() 时环形布局算出的世界坐标（THREE.Vector3），reflectTier()/
   //     markShrined() 换装饰时直接复用，避免重新查一次包围盒/重算角度。
@@ -95,6 +124,14 @@ const WuxingScene = (() => {
   //     getActiveMarkers() 读取。
   //   - shrined：是否已"请神仙/设炉灶"永久巩固——true 的条目会被
   //     getActiveMarkers() 过滤掉（不再是拖拽维护目标）。
+  // 2026-08-15第二轮追加：
+  //   - severity：issue.severity 原样保留，供健康环轮询时反复调用
+  //     WuxingMaintenance.getState(baziData,wx,direction,severity) 用（该
+  //     函数签名需要这个参数；getActiveMarkers() 对外的公开契约已冻结不
+  //     额外扩展，这里只是marker内部字段，不影响那份契约）。
+  //   - _transitionSeq：档位切换过渡动画的并发保护计数器，见
+  //     _playTierTransition() 声明处注释，初始0，每次真正触发一次
+  //     decorId切换时自增。
   let _markers = [];
   // attach() 时记录的场景引用，供 markResolved() 在没有 scene 参数的调用签名下
   // （见 js/products.js::redeem() 既定调用 WuxingScene.markResolved(wx, direction)
@@ -200,7 +237,14 @@ const WuxingScene = (() => {
       // reflectTier()/markShrined()/getActiveMarkers() 按key查找——不依赖
       // 数组下标（issues顺序理论上稳定，但按语义key查找更稳妥，跟
       // island-annotate.js::markTraitResolved() 按 kind+idx 查找是同一思路）。
-      _markers.push({ css2d, div, wx, direction, decorId, pos: pos.clone(), tier, shrined: isShrined });
+      const entry = {
+        css2d, div, wx, direction, decorId, pos: pos.clone(), tier,
+        shrined: isShrined, severity: issue.severity, _transitionSeq: 0,
+      };
+      _markers.push(entry);
+      // 初始绘一次健康环，不等下一轮2秒轮询——刚进岛就该看到正确状态，不是
+      // 空白/默认满格闪一下再刷新
+      _updateHealthRing(entry);
     });
   }
 
@@ -222,12 +266,35 @@ const WuxingScene = (() => {
    * decorId再调一次remove()不会报错：island-decorations.js::remove() 内部
    * 用 `if (_placed[decorId])` 判空，对不存在的decorId是安全的no-op（已读
    * 该函数源码确认，不是假设），不需要在这里额外加判断跳过。
+   *
+   * 2026-08-15第三轮 qa-reviewer CONFIRMED修复：detach()此前只清理"当下"的
+   * decorId，完全没考虑某个entry可能正有 _playTierTransition()（
+   * reflectTier()/markShrined()触发）在途——过渡内部的_startEnter()/
+   * _pollForBounce()/_bounceScale()各自都会在自己的异步检查点核对
+   * entry._transitionSeq是否仍等于发起时捕获的版本号，但detach()之前从未
+   * 主动让这个版本号失效，导致：①切换/重新生成岛屿（main-new.js::
+   * _onIslandReady()每次都调detach()，THREE.Scene整个会话共用同一个对象）
+   * 恰好撞上某条issue过渡动画还没播完（reflectTier()约470ms窗口/
+   * markShrined()同款），detach()看似清空了_markers，但150ms停顿结束后
+   * _startEnter()依然会调IslandDecorations.add()把新装饰凭空建在已经"清空"
+   * 的场景里；②这个新建的装饰不再被任何_markers条目追踪，此后任何detach()
+   * 都遍历不到它、永久清不掉，且它占着的decorId会挡住未来对同一decorId的
+   * 合法add()（IslandDecorations.add()对已存在的decorId直接return）——是
+   * 上一轮"decorId冲突导致热点和3D物体对不上"那类问题的一个新变种（
+   * qa-reviewer用打桩驱动真实代码复现，见已知问题与修复记录.md对应条目）。
+   * 修复：清空_markers之前先对每个entry做一次_transitionSeq++，让在途过渡
+   * 在下一个检查点发现自己"过期"并静默放弃（该做的IslandDecorations.
+   * remove()清理——针对过渡"当前推进到"的那个decorId——仍会在下面这个循环
+   * 里正常执行，两者不冲突：这里清理的是同步可见的"当前"状态，过渡内部的
+   * seq比对负责拦住之后异步才会发生的创建）。_startEnter()另外补一句
+   * `_markers.indexOf(entry) < 0` 的兜底核实（详见该函数注释），双重保险。
    */
   function detach(scene) {
-    _markers.forEach(({ css2d, decorId }) => {
-      if (scene) scene.remove(css2d);
+    _markers.forEach(entry => {
+      entry._transitionSeq++;
+      if (scene) scene.remove(entry.css2d);
       if (typeof IslandDecorations !== 'undefined' && IslandDecorations.remove) {
-        IslandDecorations.remove(decorId);
+        IslandDecorations.remove(entry.decorId);
       }
     });
     _markers = [];
@@ -330,17 +397,15 @@ const WuxingScene = (() => {
     const newTier    = _clampTier(tier);
     const newDecorId = `wxmaint_${wx}_${direction}_t${newTier}`;
     if (newDecorId !== entry.decorId) {
-      // 全量替换：先移除旧档位装饰，再在同一世界坐标 add() 新档位装饰——
-      // 复用 IslandDecorations 现成的"从下方浮现"入场动画做过渡，不需要
-      // GLB形变（该函数早已支持 overridePos 第三参数，直接复用 entry.pos，
-      // 不重新查一次包围盒）。
-      if (typeof IslandDecorations !== 'undefined' && IslandDecorations.remove) {
-        IslandDecorations.remove(entry.decorId);
-      }
-      if (typeof IslandDecorations !== 'undefined' && IslandDecorations.add) {
-        IslandDecorations.add(newDecorId, _baziData, entry.pos);
-      }
+      // 数据层（哪个decorId才是"当前"）立即更新，不等过渡动画播完——保证
+      // 并发下（快速连续两次tier变化）entry.decorId 随时反映最新真实状态，
+      // getActiveMarkers()/下一次reflectTier()调用不会读到过渡播放中途的
+      // 中间态。视觉切换过程交给 _playTierTransition() 异步播放（旧装饰
+      // 缩小淡出→短暂停顿→新装饰入场+弹性回弹，见该函数声明处注释），
+      // 不再是"remove旧→立即add新"的瞬间跳变。
+      const oldDecorId = entry.decorId;
       entry.decorId = newDecorId;
+      _playTierTransition(entry, oldDecorId, newDecorId, _baziData);
     }
 
     // 热点发光样式同步切换到新档位（.wx-sev-0/1/2 对应 tier 1/2/3），不管
@@ -349,6 +414,9 @@ const WuxingScene = (() => {
     entry.div.classList.remove('wx-sev-0', 'wx-sev-1', 'wx-sev-2');
     entry.div.classList.add(`wx-sev-${newTier - 1}`);
     entry.tier = newTier;
+    // 维护/兑换动作后healthPercent应该马上回升——立即刷新一次环形指示器，
+    // 不等下一轮2秒轮询，让用户能感知到"刚才那个动作确实生效了"。
+    _updateHealthRing(entry);
   }
 
   /**
@@ -375,15 +443,13 @@ const WuxingScene = (() => {
     if (entry.shrined) return;   // 幂等：防止重复触发（网络重试等）造成重复remove/add
 
     const shrineDecorId = _shrineDecorId(wx, direction);
-    if (typeof IslandDecorations !== 'undefined' && IslandDecorations.remove) {
-      IslandDecorations.remove(entry.decorId);
-    }
-    if (typeof IslandDecorations !== 'undefined' && IslandDecorations.add) {
-      IslandDecorations.add(shrineDecorId, _baziData, entry.pos);
-    }
+    const oldDecorId = entry.decorId;
     entry.decorId = shrineDecorId;
     entry.shrined = true;
     entry.tier = 1;
+    // 与 reflectTier() 共用同一套仪式化过渡（旧装饰缩小淡出→停顿→新装饰
+    // 入场+弹性回弹），不再是瞬间remove+add，详见_playTierTransition()。
+    _playTierTransition(entry, oldDecorId, shrineDecorId, _baziData);
 
     const { div } = entry;
     div.classList.remove('wx-sev-0', 'wx-sev-1', 'wx-sev-2');
@@ -393,7 +459,247 @@ const WuxingScene = (() => {
     // 明确区分开，不需要额外文字才能一眼看出这条已经不需要再维护了。
     const dotEl = div.querySelector('.wx-dot');
     if (dotEl) dotEl.textContent = '✨';
+    // 已巩固：彻底退出衰减循环，不再有"即将恶化"的概念，健康环立即隐藏
+    // （entry.shrined已置true，_updateHealthRing()内部的shrined分支会处理）。
+    _updateHealthRing(entry);
   }
+
+  // ── 档位切换仪式化过渡（2026-08-15第二轮迭代，见文件头注释）──────────
+  const TIER_EXIT_MS               = 320;   // 旧装饰缩小+淡出时长
+  const TIER_PAUSE_MS              = 150;   // 旧消失→新出现之间的停顿
+  const TIER_BOUNCE_MS             = 420;   // 新装饰落地后的弹性回弹时长
+  const TIER_BOUNCE_POLL_TIMEOUT_MS = 2500; // 轮询等待新装饰真实对象落地的超时上限（GLB加载慢/失败时放弃回弹特效，不影响装饰本身仍会用现成入场动画正常显示）
+
+  /**
+   * reflectTier()/markShrined() 共用的"旧消失→新出现"仪式化过渡。
+   * @param {object} entry      - _markers 里的条目（需要 div/pos）
+   * @param {string} oldDecorId - 切换前的decorId（即将播放缩小淡出）
+   * @param {string} newDecorId - 切换后的decorId（停顿后创建+弹性回弹）
+   * @param {object} baziData
+   *
+   * 并发保护：调用者（reflectTier()/markShrined()）在调用本函数之前已经把
+   * entry.decorId同步更新为newDecorId——本函数内部每个异步检查点
+   * （rAF/setTimeout/轮询回调）都会核对 entry._transitionSeq 是否仍等于
+   * 自己发起时（本函数开头）捕获的版本号，一旦发现自己已经"过期"（说明
+   * 期间又有更新的调用发生），就静默停止播放剩余视觉步骤——但仍然保证
+   * oldDecorId会被 IslandDecorations.remove() 恰好清理一次（不管是走完
+   * 完整缩小动画后清理，还是被取代时提前清理），不会在场景里留下悬空的
+   * 旧装饰，也不会因为快速连续调用而报错/产生重复装饰。
+   */
+  function _playTierTransition(entry, oldDecorId, newDecorId, baziData) {
+    const mySeq = ++entry._transitionSeq;
+
+    // 陪衬粒子爆散：直接复用 js/effects.js 现成的 UIEffects.submitBurst()，
+    // 锚定在热点图标本身（CSS2DObject已经把这个DOM元素固定在旧装饰所在
+    // 世界坐标对应的屏幕投影位置，不需要本文件自己再做一次3D→2D投影）。
+    const dotEl = entry.div && entry.div.querySelector('.wx-dot');
+    if (dotEl && typeof UIEffects !== 'undefined' && UIEffects.submitBurst) {
+      try { UIEffects.submitBurst(dotEl); } catch (e) { /* 视觉效果失败不影响主流程 */ }
+    }
+
+    let oldObj = null;
+    try {
+      oldObj = (typeof IslandDecorations !== 'undefined' && IslandDecorations.get)
+        ? IslandDecorations.get(oldDecorId) : null;
+    } catch (e) { oldObj = null; }
+
+    const finishExit = () => {
+      if (typeof IslandDecorations !== 'undefined' && IslandDecorations.remove) {
+        IslandDecorations.remove(oldDecorId);
+      }
+      if (entry._transitionSeq !== mySeq) return;   // 已被更新的调用取代，不再继续后续（新装饰由那次调用自己负责创建）
+      setTimeout(() => _startEnter(entry, newDecorId, baziData, mySeq), TIER_PAUSE_MS);
+    };
+
+    if (!oldObj) {
+      // 旧装饰尚未真正加载完成（GLB异步请求仍在途）/根本不存在——没有可
+      // 动画的真实对象，跳过缩小淡出直接进入下一步。IslandDecorations.
+      // remove()内部的token机制本身已经能安全处理"仍在加载中就被remove"
+      // 的情况（见该文件_loadToken声明处注释），不需要在这里额外等待。
+      finishExit();
+      return;
+    }
+
+    // 记录初始scale/各材质初始opacity，rAF ease-in tween到接近0（越到后面
+    // 收缩越快，符合"迅速消散"的观感，跟入场动画的ease-out收尾节奏刻意
+    // 区分开，不是同一条曲线简单复用）。
+    const startScale = oldObj.scale.x || 1;
+    const fadeTargets = [];
+    oldObj.traverse(c => {
+      if (!c.isMesh || !c.material) return;
+      const mats = Array.isArray(c.material) ? c.material : [c.material];
+      mats.forEach(m => {
+        if (typeof m.opacity !== 'number') return;
+        fadeTargets.push({ mat: m, from: m.opacity });
+        m.transparent = true;
+      });
+    });
+
+    const startTime = Date.now();
+    const tick = () => {
+      if (entry._transitionSeq !== mySeq) { finishExit(); return; }   // 被新一轮过渡取代，跳过剩余帧直接收尾清理
+      const t = Math.min((Date.now() - startTime) / TIER_EXIT_MS, 1);
+      const ease = t * t;
+      const scale = Math.max(0.02, startScale * (1 - ease));
+      oldObj.scale.setScalar(scale);
+      fadeTargets.forEach(o => { o.mat.opacity = o.from * (1 - ease); });
+      if (t < 1) requestAnimationFrame(tick);
+      else finishExit();
+    };
+    tick();
+  }
+
+  /** 停顿结束后创建新装饰 + 发起弹性回弹检测轮询。 */
+  function _startEnter(entry, newDecorId, baziData, mySeq) {
+    if (entry._transitionSeq !== mySeq) return;   // 停顿期间又有更新的过渡请求进来，让位给那一轮
+    // 2026-08-15第三轮 qa-reviewer CONFIRMED修复配套的额外防线：正常情况下
+    // detach()已经会让entry._transitionSeq失效（见该函数注释），上面那行
+    // 检查理应已经拦下来了；这里再兜底核实一次entry当前是否仍在活跃marker
+    // 列表里——不在的话说明这条issue已经因换岛屿/重新生成AI深析被整体
+    // detach()拆除，不应该再凭空往（可能已经是全新的）场景里添加装饰，避免
+    // 未来任何忘记同步bump _transitionSeq的代码路径重新引入同一类孤儿装饰。
+    if (_markers.indexOf(entry) < 0) return;
+    if (typeof IslandDecorations !== 'undefined' && IslandDecorations.add) {
+      IslandDecorations.add(newDecorId, baziData, entry.pos);
+    }
+    _pollForBounce(entry, newDecorId, mySeq, Date.now());
+  }
+
+  /** 轮询等待新装饰的真实THREE.Object3D落地（GLB异步加载耗时不确定，
+   *  没有回调可等，用短间隔rAF轮询是最简单可靠的方式——热点数量2-3个规模
+   *  下成本可忽略）。超时放弃：装饰本身仍会通过 island-decorations.js 自带
+   *  的"从下方浮现"入场动画正常显示，只是少一次额外的弹性回弹强化。 */
+  function _pollForBounce(entry, newDecorId, mySeq, startedAt) {
+    if (entry._transitionSeq !== mySeq) return;
+    if (Date.now() - startedAt > TIER_BOUNCE_POLL_TIMEOUT_MS) return;
+    let obj = null;
+    try {
+      obj = (typeof IslandDecorations !== 'undefined' && IslandDecorations.get)
+        ? IslandDecorations.get(newDecorId) : null;
+    } catch (e) { obj = null; }
+    if (!obj) {
+      requestAnimationFrame(() => _pollForBounce(entry, newDecorId, mySeq, startedAt));
+      return;
+    }
+    _bounceScale(entry, obj, mySeq);
+  }
+
+  /** easeOutBack缩放弹性回弹：从目标尺寸的60%起步，越过100%一点再回落
+   *  稳定到目标尺寸——只动 obj.scale，跟 island-decorations.js::
+   *  _addEntryAnimation() 只动 obj.position.y 的浮现tween是两个不同属性，
+   *  同时跑不会互相冲突/覆盖。 */
+  function _bounceScale(entry, obj, mySeq) {
+    const target = obj.scale.x || 1;
+    const start = target * 0.6;
+    const startTime = Date.now();
+    const tick = () => {
+      if (entry._transitionSeq !== mySeq) return;   // 被取代，交给新一轮过渡自己处理它拿到的对象，这里的对象已经不是"当前"了
+      const t = Math.min((Date.now() - startTime) / TIER_BOUNCE_MS, 1);
+      const scale = t >= 1 ? target : start + (target - start) * _easeOutBack(t);
+      obj.scale.setScalar(scale);
+      if (t < 1) requestAnimationFrame(tick);
+    };
+    tick();
+  }
+
+  /** 标准 easeOutBack 缓动曲线（t:0→1，中途会略微超过1再收敛回1），
+   *  常数取自业界通用值，不引入额外动画库。 */
+  function _easeOutBack(t) {
+    const c1 = 1.70158;
+    const c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  }
+
+  // ── 环形健康度指示器（2026-08-15第二轮迭代，见文件头注释）────────────
+  /**
+   * 按 WuxingMaintenance.getState().healthPercent 刷新单个marker的
+   * .wx-health-ring 视觉状态。全程typeof防御+try/catch——数据源模块未就绪
+   * /字段缺失/调用异常时一律隐藏环（不猜测显示默认满格），不会因此报错
+   * 中断调用方（attach()初始绘制/reflectTier()维护后即时刷新/轮询定时器
+   * 三处调用点都不希望因为这里出错而连带失败）。
+   *
+   * 2026-08-15第三轮 qa-reviewer PLAUSIBLE修复×2：
+   *   1) 填充方向：沿用"满环=健康/空环=快恶化"这个health-bar通用语言（跟
+   *      所有游戏HP条同一套直觉，不反转），但reviewer指出的真实问题是
+   *      "最紧急的情况视觉上最不起眼"——低healthPercent时圆弧本身很短，
+   *      容易被忽略。修复方式不是反转填充方向（那会破坏"满=好"这个更普遍
+   *      的直觉），而是给红色区间（pct<30，跟颜色分档阈值保持同一条边界，
+   *      不引入第二套阈值）单独加一个常驻脉冲动画（.wx-ring-urgent，见
+   *      index.html对应CSS）——用"动"而不是"面积"来抓注意力，短弧+脉冲仍然
+   *      比长弧+静止更容易被余光捕捉到。
+   *   2) title tooltip 死代码：ringEl 有 pointer-events:none（环本身不该
+   *      吃指针事件，否则会挡住下面.wx-dot的点击/hover），鼠标永远悬停不到
+   *      它身上，原生title tooltip因此永远不会触发。改挂到.wx-dot本体上
+   *      （它是真正能接收指针事件的元素，且本来就是环的视觉锚点）。
+   */
+  function _updateHealthRing(entry) {
+    if (!entry || !entry.div) return;
+    const ringEl = entry.div.querySelector('.wx-health-ring');
+    const dotEl  = entry.div.querySelector('.wx-dot');
+    if (!ringEl) return;
+
+    // 已巩固：彻底退出衰减循环，没有"即将恶化"这个概念，环永久不显示。
+    if (entry.shrined) {
+      ringEl.classList.remove('wx-ring-visible', 'wx-ring-urgent');
+      if (dotEl) dotEl.removeAttribute('title');
+      return;
+    }
+
+    if (typeof WuxingMaintenance === 'undefined' || typeof WuxingMaintenance.getState !== 'function' || !_baziData) {
+      ringEl.classList.remove('wx-ring-visible', 'wx-ring-urgent');
+      if (dotEl) dotEl.removeAttribute('title');
+      return;
+    }
+
+    let state = null;
+    try {
+      state = WuxingMaintenance.getState(_baziData, entry.wx, entry.direction, entry.severity);
+    } catch (e) {
+      state = null;
+    }
+
+    const raw = state && state.healthPercent;
+    const pct = (typeof raw === 'number' && isFinite(raw)) ? Math.max(0, Math.min(100, raw)) : null;
+    if (pct === null) {
+      // 字段暂时缺失（对方模块尚未上线的窗口期/传参异常兜底分支）——隐藏
+      // 环而不是显示默认满格，避免给用户传达"这条问题很健康"的错误信息。
+      ringEl.classList.remove('wx-ring-visible', 'wx-ring-urgent');
+      if (dotEl) dotEl.removeAttribute('title');
+      return;
+    }
+
+    const urgent = pct <= 30;
+    const color  = pct > 60 ? '#6fcf97' : (pct > 30 ? '#e0b054' : '#eb5757');
+    ringEl.style.setProperty('--wx-ring-pct', pct + '%');
+    ringEl.style.setProperty('--wx-ring-color', color);
+    ringEl.classList.add('wx-ring-visible');
+    ringEl.classList.toggle('wx-ring-urgent', urgent);
+
+    // daysUntilDecay 顺带放进原生title tooltip（挂在真正能接收指针事件的
+    // .wx-dot上，见上方修复说明）——非强制消费的锦上添花，缺失时直接不设
+    // title，不新增i18n key（数字本身跨语言通用，不需要翻译）。
+    const days = state && state.daysUntilDecay;
+    if (dotEl) {
+      if (typeof days === 'number' && isFinite(days)) {
+        dotEl.title = `${Math.max(0, Math.ceil(days))}d`;
+      } else {
+        dotEl.removeAttribute('title');
+      }
+    }
+  }
+
+  /** 轻量轮询刷新所有活跃marker的健康环——跟 js/wuxing-drag.js::_startPolling()
+   *  同一套"没有事件总线，用轮询兜底"模式，2-3个热点规模下成本可忽略，不
+   *  引入MutationObserver等更重的机制。已 markShrined() 的条目交给
+   *  _updateHealthRing() 内部的shrined分支处理（直接隐藏），这里不额外
+   *  过滤，逻辑单一入口，避免两处判断标准不同步。模块级常驻定时器，随页面
+   *  会话持续运行（跟 WuxingDrag 的轮询定时器同一生命周期模式），_markers
+   *  为空时直接短路返回，不影响岛屿未挂载五行维护装饰时的空转成本。 */
+  function _refreshHealthRings() {
+    if (!_markers.length) return;
+    _markers.forEach(entry => _updateHealthRing(entry));
+  }
+  setInterval(_refreshHealthRings, 2000);
 
   /**
    * 供 js/wuxing-drag.js 做拖拽命中检测用的只读列表——不暴露 _markers 的
@@ -446,7 +752,13 @@ const WuxingScene = (() => {
       { wx: wx + wxSuffix }
     );
 
+    // .wx-health-ring 是环形健康度指示器（_updateHealthRing()驱动，见文件
+    // 头2026-08-15第二轮迭代说明）——纯装饰层，位于wx-dot前面
+    // （z-index靠index.html里.wx-dot的position:relative+z-index:2盖住中心，
+    // 只露出外圈那一圈conic-gradient），初始不带.wx-ring-visible，健康度
+    // 数据到位（_updateHealthRing()首次调用）后才决定是否显示。
     div.innerHTML = `
+      <div class="wx-health-ring"></div>
       <span class="wx-dot">${icon}</span>
       <div class="wx-leader"></div>
       <div class="wx-card">${title}</div>
