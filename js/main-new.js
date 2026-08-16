@@ -1412,6 +1412,13 @@ const App = (() => {
     // RLS+user_id过滤已经能防止跨账号误写，且报告只能从会设置这个id的入口打开，
     // 但退出登录后不应再残留上一个账号的岛屿id）
     _resetCurrentIslandId: () => { _currentIslandId = null; _islandGeneration++; },
+    // auth.js::_consumePendingIslandSave() 补写"注册时暂存、真正建立session后
+    // 才补写"的岛屿记录成功后调用，回填岛屿id——与上方266-286行"已登录用户立刻
+    // 保存"路径的 `if (saved && saved.id) _currentIslandId = saved.id;` 是同一
+    // 语义，不新发明写法。不touch `_islandGeneration`：那个路径也没touch，保持
+    // 一致（`_islandGeneration`只在“切换到另一个岛屿会话”时才需要递增，这里是
+    // 首次把占位的null补成真实id，不是切换）。
+    _setCurrentIslandId: (id) => { if (id) _currentIslandId = id; },
   };
 })();
 

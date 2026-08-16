@@ -347,6 +347,10 @@ const AuthManager = (() => {
 ════════════════════════════════════════════════ */
 const AuthUI = (() => {
 
+  // 注册后"待保存岛屿"暂存 key（见 _saveCurrentIsland / _consumePendingIslandSave）。
+  // 命名沿用 js/user-state.js 的 smb_ 前缀习惯。
+  const PENDING_ISLAND_KEY = 'smb_pending_island_save';
+
   // ── 显示登录弹窗 ────────────────────────────────────────
   function showLogin(opts = {}) {
     _showOverlay('auth-modal-overlay');
@@ -379,6 +383,11 @@ const AuthUI = (() => {
     _setVal('reg-name',  opts.name  || '');
     _setVal('reg-email', opts.email || '');
     _clearError('reg-error');
+    // 国家/区号下拉框此前从未被填充过（index.html 里 #reg-country 是空的
+    // <select>，_populateCountrySelect() 写好了却没有任何调用点）——每次打开
+    // 注册弹窗都调用一次，函数内部已有 sel.options.length > 1 的幂等保护，
+    // 重复调用不会重复插入 option。
+    _populateCountrySelect();
   }
 
   // ── 清除字段错误（输入时调用）──────────────────────────
@@ -538,6 +547,7 @@ const AuthUI = (() => {
       _refreshUserInfoDisplay();
       _mergeSpiritBalance();
       _mergeWuxingMaintenanceState();
+      _consumePendingIslandSave(); // 补写注册时因尚无session而暂存本地的岛屿数据（见该函数注释）
     } else {
       loginBtn?.classList.remove('hidden');
       logoutBtn?.classList.add('hidden');
@@ -662,7 +672,28 @@ const AuthUI = (() => {
     }, 600);
   }
 
-  // ── 注册后保存当前岛屿 ──────────────────────────────────
+  // ── 注册后：暂存当前岛屿数据，等真正建立 session 后再补写 ──────────
+  // 为什么不直接调用 AuthManager.saveIsland()：本项目 Supabase 项目开启了
+  // 邮箱验证（见 i18n.js 'reg.success_desc'/'auth_err.unconfirm' 文案），
+  // signUp() 成功返回后在用户点击验证链接之前不会有有效 session——此刻
+  // AuthManager 内部闭包变量 _user 仍是 null，直接调用 saveIsland() 会被它
+  // 内部 `if (!_sb || !_user) return null` 静默拦截，且原先的
+  // `.catch(() => {})` 把这个失败原地吞掉，岛屿数据从此再也没有第二次写入
+  // 的机会——每一个走邮箱注册的新用户都会必现丢失岛屿（不是偶发）。
+  // 改法：先把数据存进 localStorage，真正登录成功（_onAuthChange 拿到非空
+  // user，不管是首次登录、邮箱验证后自动登录、还是任何后续登录）时，由
+  // _consumePendingIslandSave() 补写。doRegister() 调用这里时永远是匿名
+  // 状态（这个弹窗只在未登录时出现），所以不需要再判断"当前是否已登录"这个
+  // 分支——统一走暂存+补写这一条路径即可。
+  // 注意（若某天关闭邮箱验证）：即使 Supabase 项目关闭邮箱验证、signUp()
+  // 立刻建立 session，也不等价于"立即保存"——supabase-js 在 signUp() 内部
+  // 就已经派发完 SIGNED_IN 事件了，而这里（_saveCurrentIsland）要等
+  // registerWithProfile() 里还多一次 profiles.upsert 网络往返之后才真正把
+  // 暂存记录写进 localStorage，消费时机（onAuthStateChange 触发）早于写入
+  // 时机（doRegister 里这一步）——这种配置下会滞留到下一次 auth 事件（比如
+  // 刷新页面）才真正入库，不是"很快自动补上"。对当前生产配置（邮箱验证
+  // 开启，本来就是这次修复的前提）没有影响，仅记录以免误导以后关掉邮箱验证
+  // 时的排查方向。
   function _saveCurrentIsland(displayName) {
     try {
       const bd  = typeof App !== 'undefined' && typeof App._getBaziData === 'function'
@@ -671,17 +702,94 @@ const AuthUI = (() => {
                   ? App._getBirthInfo() : null;
       const url = typeof App !== 'undefined' && typeof App._getLastUrl === 'function'
                   ? App._getLastUrl() : null;
-      if (bd && url) {
-        AuthManager.saveIsland({
-          baziData: bd,
-          modelUrl: url,
-          baziHash: null,
-          birthInfo: bi,
-          name: (displayName || '我') + ' 的命盘',
-        }).catch(() => {});
-      }
+      if (!bd || !url) return;
+      const payload = {
+        baziData:  bd,
+        modelUrl:  url,
+        baziHash:  null,
+        birthInfo: bi,
+        name:      (displayName || '我') + ' 的命盘',
+        // 记录注册时填的邮箱，供 _consumePendingIslandSave() 核对身份，
+        // 防止同一设备上先后用不同账号登录时张冠李戴（见下方注释）。
+        _email:    _getVal('reg-email') || null,
+      };
+      localStorage.setItem(PENDING_ISLAND_KEY, JSON.stringify(payload));
     } catch (e) {
       console.warn('[AuthUI] _saveCurrentIsland:', e);
+    }
+  }
+
+  // ── 消费"待保存岛屿"暂存记录 ─────────────────────────────
+  // 在 _onAuthChange() 里、user 非空（真正建立了有效 session）时调用。
+  //
+  // 先移除、再保存：一进函数就先从 localStorage 里移除这条记录，不等保存
+  // 结果——这样 onAuthStateChange 短时间内连续触发多次（比如 SIGNED_IN 紧跟
+  // 着 TOKEN_REFRESHED）时，不会有两个并发的 saveIsland() 调用同时读到同一条
+  // 记录、重复写库。JS 单线程 + 这里在第一个 await 之前就完成了
+  // removeItem，能保证这一点。
+  //
+  // 但"消费一次"不等于"允许失败后丢失"：AuthManager.saveIsland() 失败时是
+  // `console.error(...); return null`，不 throw（网络抖动/RLS拒绝/PostgREST
+  // 5xx 都走这条路径，不是罕见情况）——如果只在 catch 分支里处理失败，会漏掉
+  // 这整类"正常返回但没真正写进去"的失败。所以下面显式检查 saveIsland() 的
+  // 返回值：只有真正拿到非空结果（insert 确认成功）才算这条暂存记录被消费
+  // 完毕；不管是返回 null 还是抛异常，都把原始 payload 写回
+  // localStorage，留到下一次 _onAuthChange（下次登录/刷新页面重新触发
+  // getSession）再重试——不会因为这一次网络抖动就让已经花掉 Gemini 图片额度+
+  // Tripo 3D额度生成出来的岛屿无声消失。
+  //
+  // 邮箱核对：如果暂存记录里的邮箱和当前登录用户的邮箱对不上（例如 A 注册后
+  // 没有验证邮箱就退出，同一设备上 B 用自己已有账号登录），直接丢弃，不把
+  // A 的命盘数据错误地写进 B 的账号。
+  //
+  // 已知限制（可接受，见任务要求）：如果用户换了设备/清了浏览器缓存再去点
+  // 邮箱验证链接，这条暂存记录不在新设备上，救不回来——比起改动前"100%必
+  // 现丢失"，这个方案至少覆盖了"同一设备继续使用"这个最常见场景。
+  async function _consumePendingIslandSave() {
+    let raw;
+    try { raw = localStorage.getItem(PENDING_ISLAND_KEY); } catch { return; }
+    if (!raw) return;
+    localStorage.removeItem(PENDING_ISLAND_KEY); // 先清除，避免并发触发重复写库；失败时下方会写回
+
+    let payload;
+    try { payload = JSON.parse(raw); } catch { return; }
+    if (!payload) return;
+
+    const user = AuthManager.currentUser();
+    if (payload._email && user?.email && payload._email.toLowerCase() !== user.email.toLowerCase()) {
+      console.warn('[AuthUI] 待保存岛屿记录邮箱与当前登录账号不匹配，已丢弃');
+      return;
+    }
+
+    let saved = null;
+    try {
+      saved = await AuthManager.saveIsland({
+        baziData:  payload.baziData,
+        modelUrl:  payload.modelUrl,
+        baziHash:  payload.baziHash,
+        birthInfo: payload.birthInfo,
+        name:      payload.name,
+      });
+    } catch (e) {
+      console.warn('[AuthUI] 补写待保存岛屿失败:', e);
+    }
+
+    if (saved && saved.id) {
+      // 回填岛屿id给 main-new.js，跟"已登录用户立刻保存"路径同款写法（见
+      // main-new.js:286 附近），否则这条经暂存补写入库的记录，
+      // ai_analysis 字段永远补不上（updateIslandAnalysis() 需要这个id才能
+      // 定位到具体行）。
+      if (typeof App !== 'undefined' && typeof App._setCurrentIslandId === 'function') {
+        App._setCurrentIslandId(saved.id);
+      }
+    } else {
+      // 没拿到非空结果——不管是 saveIsland() 内部捕获错误后返回 null，还是
+      // 这里 catch 到真正抛出的异常，都算没有真正保存成功，把原始 payload
+      // 写回去，留给下一次 _onAuthChange 重试，不能让它就此消失。
+      try { localStorage.setItem(PENDING_ISLAND_KEY, raw); } catch (e) {
+        console.warn('[AuthUI] 补写岛屿失败后写回暂存记录也失败:', e);
+      }
+      console.warn('[AuthUI] 补写岛屿失败，已保留待重试记录');
     }
   }
 
@@ -732,7 +840,7 @@ const AuthUI = (() => {
     showLogin, showForgotPassword, backToLogin,
     showRegister, hideModal, skipReg, showLoginFromReg,
     doLogin, doForgotPassword, doRegister,
-    clearFieldErr, onMainEmailBlur,
+    clearFieldErr, onMainEmailBlur, onCountryChange,
     showMyIslands, _loadIslandByIndex,
     _onAuthChange, _refreshUserInfoDisplay,
   };
