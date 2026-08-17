@@ -529,7 +529,7 @@ class UserJourney {
 
       <!-- 刑冲合 -->
       <div class="report-section">
-        <div class="report-section-head">四、地支刑冲合</div>
+        <div class="report-section-head">四、命局刑冲合害（含天干五合）</div>
         <div class="report-section-body">${interHtml}</div>
       </div>
 

@@ -97,7 +97,24 @@ CACHE_DIR.mkdir(exist_ok=True)
 JOBS_DIR.mkdir(exist_ok=True)
 
 def _cache_key(bazi_data: dict) -> str:
-    return hashlib.md5(json.dumps(bazi_data, sort_keys=True).encode()).hexdigest()
+    # 2026-08-18修复：此前对整个bazi_data payload原样json.dumps取md5——
+    # 意味着前端js/bazi-engine.js只要新增/调整任何字段（哪怕完全不影响最终
+    # 生成内容），缓存键就会变、缓存就被无谓打穿。真实触发案例：interactions
+    # 数组新增pillars字段+新增"天干合"类型，导致约95.5%命盘的缓存键改变，
+    # 但qa-reviewer实测generate_island_prompt()对新旧两种bazi_data的输出
+    # 逐字节相同（_interaction_dynamics_line()根本不读desc/pillars字段，
+    # "天干合"这个新类型也落入else空字符串分支）——也就是说这次缓存失效
+    # 对应的是"实际要生成的内容完全没变"，白白多烧一次Gemini出图+TripoAI
+    # 3D转换的真实API额度。
+    # 改为直接对generate_island_prompt()的输出（即真正决定生成内容的唯一
+    # 输入）取md5，让"缓存是否命中"与"实际会不会生成出不同东西"这个真正
+    # 需要保证的不变量对齐：以后bazi-engine.js再新增任何不影响提示词的字段，
+    # 缓存不会被无谓击穿；反过来只要真的影响了提示词输出，缓存也一定正确
+    # 失效。注意：此key只服务/generate /status端点（岛屿图片+3D模型生成
+    # 去重），与/analyze-bazi（AI深析文字）走的是gemini_analysis.py里完全
+    # 独立的_bazi_hash()/_cache_read()缓存机制，互不影响。
+    prompt = generate_island_prompt(bazi_data)
+    return hashlib.md5(prompt.encode()).hexdigest()
 
 def _read(path): return json.loads(path.read_text()) if path.exists() else None
 def _write(path, data): path.write_text(json.dumps(data, ensure_ascii=False))

@@ -356,8 +356,35 @@ const IslandDecorations = (() => {
       (gltf) => {
         if (_loadToken[decorId] !== myToken) return;   // 已被后续remove()/add()淘汰，丢弃这次结果，不进场景
         const model = gltf.scene;
+        // 2026-08-18：包围盒归一化保护——TripoAI针对不同提示词导出的原始
+        // 模型尺寸不一致（构图占比、模型复杂度都会导致差异），此前直接把
+        // 原始尺寸乘以 placement.size 当缩放倍数会让不同装饰视觉大小参差
+        // 不齐。改用跟 island-loader.js::_loadGLB()（加载主岛屿模型）同款
+        // 的手法：现算真实包围盒，用"最大边长归一化到目标值"反推缩放系数，
+        // 同时把模型中心平移抵消，消除GLB自身pivot不在几何中心导致的偏移。
+        // 语义变化：placement.size 从"原始模型缩放倍数"变成"归一化后的
+        // 目标最大边长"。2026-08-18实测校验：用脚本解析
+        // assets/decorations/wuxing/ 下现有25个真实GLB（五行4行×2方向×3档
+        // +shrine_generic）的POSITION accessor包围盒，maxDim全部≈0.998、
+        // 几何中心全部≈(0,0,0)——TripoAI导出本身已按惯例把模型归一化到单位
+        // 包围盒内，新旧两套语义下最终渲染尺寸差异<0.3%、pivot修正位移
+        // <1cm（岛屿场景尺度~10单位），肉眼不可辨，因此DECOR_DEFS里这25条
+        // 对应的def.size数值未做调整。crystal_water/amethyst/rose/obsidian
+        // 这4个水晶战利品 + sprout_plant/cherry_blossom/moon_shrine/
+        // share_flower 这4个任务解锁装饰，共8个decorId引用的GLB文件
+        // （basin_clear.glb/sprout.glb等）在当前代码库/assets目录下实际
+        // 尚不存在（find遍历确认），加载会404回退占位符，不受本次改动影响，
+        // 待真实文件到位后建议按同样方法核实一次包围盒再决定是否需要调整
+        // size（占位符路径下size是几何体半径语义，跟归一化后的目标最大边长
+        // 语义不同，真实GLB到位前不要直接沿用现有size数值）。
+        const box    = new THREE.Box3().setFromObject(model);
+        const center = box.getCenter(new THREE.Vector3());
+        const size   = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+        const scale  = maxDim > 0 ? placement.size / maxDim : 1;   // 防御maxDim为0（异常空模型）
+        model.scale.setScalar(scale);
         model.position.set(...placement.pos);
-        model.scale.setScalar(placement.size);
+        model.position.sub(center.multiplyScalar(scale));   // 抵消GLB自身pivot偏移，让模型几何中心真正落在placement.pos上
         model.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
         _scene.add(model);
         _placed[decorId] = model;

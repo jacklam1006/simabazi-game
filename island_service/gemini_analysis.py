@@ -831,11 +831,20 @@ def _build_context(bazi_data: dict, gender: str, birth_year: int) -> dict:
     else:
         strength_str = str(strength_raw) or '中和'
 
+    # interactions 数组里混有两类命理层面不同的关系：地支类（冲/合/三合/三会/三刑/
+    # 自刑/害/破，来自 js/bazi-engine.js::_interactions()）和天干类（天干合，来自
+    # 2026-08-18新增的 _ganHe()）。这两类必须分开拼接成独立的字符串——天干合如果被
+    # 混进"地支刑冲合害"这个标签一起喂给AI，AI会把"日主天干甲己合土"这种天干层面
+    # 的事实误当成地支信息说出来，属于命理事实性错误（详见已知问题记录）。
     interactions = bazi_data.get('interactions', []) or []
-    interaction_descs = [
-        i.get('desc', '') for i in interactions
-        if isinstance(i, dict) and i.get('desc')
+    dizhi_interactions = [
+        i for i in interactions if isinstance(i, dict) and i.get('type') != '天干合'
     ]
+    ganhe_interactions = [
+        i for i in interactions if isinstance(i, dict) and i.get('type') == '天干合'
+    ]
+    interaction_descs = [i.get('desc', '') for i in dizhi_interactions if i.get('desc')]
+    ganhe_descs = [i.get('desc', '') for i in ganhe_interactions if i.get('desc')]
     has_chong = any(isinstance(i, dict) and i.get('type') == '冲' for i in interactions)
 
     wuxing = bazi_data.get('wuxing', {}) or {}
@@ -891,6 +900,8 @@ def _build_context(bazi_data: dict, gender: str, birth_year: int) -> dict:
         'ten_gods_str': ten_gods_str,
         'interaction_descs': interaction_descs,
         'interaction_str': '；'.join(interaction_descs) if interaction_descs else '命局地支无明显刑冲合害',
+        'gan_he_descs': ganhe_descs,
+        'gan_he_str': '；'.join(ganhe_descs) if ganhe_descs else '命局天干无相邻五合',
         'has_chong': has_chong,
         'dayun_str': '  '.join(
             f"{r.get('gan','')}{r.get('zhi','')}（{r.get('startAge','')}岁起）" for r in dayuns
@@ -920,6 +931,7 @@ def _shared_chart_block(ctx: dict) -> str:
 喜用神：{fav}（次喜：{fav2}） · 忌神：{unfav}
 神煞：{ss} · 空亡：{kw}
 地支刑冲合害：{ctx['interaction_str']}
+天干五合（仅限相邻两干，如年干与月干、月干与日干、日干与时干）：{ctx['gan_he_str']}
 大运（前四运）：{ctx['dayun_str']} · 当前大运：{ctx['current_dayun_ganzhi'] or '未知'}
 当前年份：{ctx['current_year']}年（{ctx['current_ganzhi']}年）"""
 

@@ -157,8 +157,9 @@ class BaziEngine {
     }
     const shenshe = [...new Set(Object.values(shensha).flat())];
 
-    // ⑩ 刑冲合害
-    const interactions = BaziEngine._interactions(zhis);
+    // ⑩ 刑冲合害 + 天干五合（天干合带紧邻条件，与地支关系判定逻辑不同，见 _ganHe() 注释）
+    const gans = ['year','month','day','hour'].map(k => pillars[k].stem);
+    const interactions = [...BaziEngine._interactions(zhis), ...BaziEngine._ganHe(gans)];
 
     // ⑪ 大运（lunar-javascript 精确计算节气距离）
     const gNum = gender==='男' ? 1 : 0;
@@ -435,9 +436,24 @@ class BaziEngine {
    * 刑冲合害
    * ══════════════════════════════════════════════════════════ */
 
+  // pairKey/buildPairTable 提升为类级共享静态方法（2026-08-18），供 _interactions()
+  // 和新增的 _ganHe() 共用同一份确定性key构造逻辑——避免两处各自手写一份pairKey实现、
+  // 日后改动只同步一处导致排序算法悄悄分叉（同类教训见本文件历史：HE_LIU/CHONG_MEANING
+  // 曾因手写key顺序与.sort()实际输出不一致而永久miss）。
+  static _pairKey(a, b) {
+    return [a, b].sort().join('');
+  }
+
+  static _buildPairTable(entries) {
+    const t = {};
+    for (const [a, b, meaning] of entries) t[BaziEngine._pairKey(a, b)] = meaning;
+    return t;
+  }
+
   static _interactions(zhis) {
     const results = [];
     const labels = ['年支','月支','日支','时支'];
+    const labelsEN = ['year','month','day','hour'];
     const CHONG = {子:'午',丑:'未',寅:'申',卯:'酉',辰:'戌',巳:'亥',午:'子',未:'丑',申:'寅',酉:'卯',戌:'辰',亥:'巳'};
     const HE_SAN = [['申','子','辰','水局'],['寅','午','戌','火局'],['巳','酉','丑','金局'],['亥','卯','未','木局']];
     // 三会（同一季度相邻三月，气最纯，比跨季度的三合更集中）
@@ -454,12 +470,8 @@ class BaziEngine {
     // 与.sort()实际输出不一致导致这两对六合永远无法命中；同日修复CHONG_MEANING同样的坑
     // （子午→'午子'、辰戌→'戌辰'、巳亥→'亥巳'，三对按书写顺序手写的key与.sort()实际
     // 输出不一致，永远miss回退到'变动较大'兜底文案），详见已知问题记录。
-    const pairKey = (a,b) => [a,b].sort().join('');
-    const buildPairTable = (entries) => {
-      const t = {};
-      for (const [a,b,meaning] of entries) t[pairKey(a,b)] = meaning;
-      return t;
-    };
+    const pairKey = BaziEngine._pairKey;
+    const buildPairTable = BaziEngine._buildPairTable;
     const CHONG_MEANING = buildPairTable([
       ['子','午','情绪起伏·感情不稳'], ['丑','未','事业变动·财务波折'],
       ['寅','申','驿马奔波·意外多'], ['卯','酉','是非口舌·婚姻摩擦'],
@@ -485,42 +497,87 @@ class BaziEngine {
     for (let i=0; i<4; i++) {
       for (let j=i+1; j<4; j++) {
         const a=zhis[i], b=zhis[j];
-        const key=[a,b].sort().join('');
+        const key=pairKey(a,b);
         // 冲
         if (CHONG[a]===b) {
-          results.push({type:'冲', desc:`${labels[i]}${a} 冲 ${labels[j]}${b}（${CHONG_MEANING[key]||'变动较大'}）`});
+          results.push({type:'冲', desc:`${labels[i]}${a} 冲 ${labels[j]}${b}（${CHONG_MEANING[key]||'变动较大'}）`, pillars:[labelsEN[i],labelsEN[j]]});
         }
         // 六合
-        if (HE_LIU[key]) results.push({type:'合',desc:`${labels[i]}${a} 合 ${labels[j]}${b}（化${HE_LIU[key]}）`});
+        if (HE_LIU[key]) results.push({type:'合',desc:`${labels[i]}${a} 合 ${labels[j]}${b}（化${HE_LIU[key]}）`, pillars:[labelsEN[i],labelsEN[j]]});
         // 三刑·子卯（无礼之刑，仅需两支同现）
-        if (key===XING_LIU_KEY) results.push({type:'三刑',desc:`${labels[i]}${a} 刑 ${labels[j]}${b}（无礼之刑，${XING_LIU_MEANING}）`});
+        if (key===XING_LIU_KEY) results.push({type:'三刑',desc:`${labels[i]}${a} 刑 ${labels[j]}${b}（无礼之刑，${XING_LIU_MEANING}）`, pillars:[labelsEN[i],labelsEN[j]]});
         // 六害
-        if (HAI[key]) results.push({type:'害',desc:`${labels[i]}${a} 害 ${labels[j]}${b}（${HAI[key]}）`});
+        if (HAI[key]) results.push({type:'害',desc:`${labels[i]}${a} 害 ${labels[j]}${b}（${HAI[key]}）`, pillars:[labelsEN[i],labelsEN[j]]});
         // 六破
-        if (PO[key]) results.push({type:'破',desc:`${labels[i]}${a} 破 ${labels[j]}${b}（${PO[key]}）`});
+        if (PO[key]) results.push({type:'破',desc:`${labels[i]}${a} 破 ${labels[j]}${b}（${PO[key]}）`, pillars:[labelsEN[i],labelsEN[j]]});
       }
     }
+    // triadPillars：给"三支皆现"型关系（三合/三会/三刑三支局）找出实际命中的柱位——
+    // 不能假设固定的3个位置，因为目标三支里某一支可能在四柱中重复出现（此时命中位置
+    // 会多于3个），命中位置本身也随各命例的排盘不同而变化，必须逐柱比对实际取值。
+    const triadPillars = (a,b,c) => {
+      const set = [a,b,c];
+      const hit = [];
+      for (let idx=0; idx<4; idx++) if (set.includes(zhis[idx])) hit.push(labelsEN[idx]);
+      return hit;
+    };
     // 三合
     for (const [a,b,c,name] of HE_SAN) {
       if ([a,b,c].every(z=>zhis.includes(z)))
-        results.push({type:'三合',desc:`三合${name}`});
+        results.push({type:'三合',desc:`三合${name}`, pillars:triadPillars(a,b,c)});
     }
     // 三会
     for (const [a,b,c,name] of HE_HUI) {
       if ([a,b,c].every(z=>zhis.includes(z)))
-        results.push({type:'三会',desc:`三会${name}局（气最纯，比三合更集中）`});
+        results.push({type:'三会',desc:`三会${name}局（气最纯，比三合更集中）`, pillars:triadPillars(a,b,c)});
     }
     // 三刑·寅巳申/丑戌未（三支皆现）
     for (const [a,b,c,name,meaning] of XING_SAN) {
       if ([a,b,c].every(z=>zhis.includes(z)))
-        results.push({type:'三刑',desc:`三刑${name}（${meaning}）`});
+        results.push({type:'三刑',desc:`三刑${name}（${meaning}）`, pillars:triadPillars(a,b,c)});
     }
     // 自刑：统计同一地支在四柱中出现次数
     const count = {};
     for (const z of zhis) count[z] = (count[z]||0) + 1;
     for (const z of ['辰','午','酉','亥']) {
-      if (count[z] >= 2)
-        results.push({type:'自刑',desc:`${z}${z} 自刑（${ZI_XING_MEANING[z]}）`});
+      if (count[z] >= 2) {
+        const hit = [];
+        for (let idx=0; idx<4; idx++) if (zhis[idx]===z) hit.push(labelsEN[idx]);
+        results.push({type:'自刑',desc:`${z}${z} 自刑（${ZI_XING_MEANING[z]}）`, pillars:hit});
+      }
+    }
+    return results;
+  }
+
+  /* ══════════════════════════════════════════════════════════
+   * 天干五合（2026-08-18新增，带紧邻条件）
+   * 甲己合土 / 乙庚合金 / 丙辛合水 / 丁壬合木 / 戊癸合火。
+   * 传统命理里天干合必须相邻才成立（年干+月干、月干+日干、日干+时干这3对相邻
+   * 组合才检查；年干+日干/年干+时干/月干+时干这3对不相邻，不算合），跟地支
+   * 关系"只要四柱里出现过就算"的判定方式不同，这里必须显式限定位置，不能照搬
+   * _interactions() 的pairwise双循环写法（那套是遍历所有C(4,2)=6种组合，会把
+   * 不相邻的也算进去，对天干合而言会产生命理上不成立的假阳性）。
+   * ══════════════════════════════════════════════════════════ */
+
+  static _ganHe(gans) {
+    const results = [];
+    const labelsCN = ['年干','月干','日干','时干'];
+    const labelsEN = ['year','month','day','hour'];
+    const GAN_HE = BaziEngine._buildPairTable([
+      ['甲','己','土'], ['乙','庚','金'], ['丙','辛','水'], ['丁','壬','木'], ['戊','癸','火'],
+    ]);
+    // 只检查3对相邻组合：(0,1)年月、(1,2)月日、(2,3)日时——不检查(0,2)/(0,3)/(1,3)
+    for (let i=0; i<3; i++) {
+      const j = i+1;
+      const a = gans[i], b = gans[j];
+      const key = BaziEngine._pairKey(a,b);
+      if (GAN_HE[key]) {
+        results.push({
+          type: '天干合',
+          desc: `${labelsCN[i]}${a} 合 ${labelsCN[j]}${b}（化${GAN_HE[key]}）`,
+          pillars: [labelsEN[i], labelsEN[j]],
+        });
+      }
     }
     return results;
   }

@@ -490,11 +490,14 @@ if __name__ == '__main__':
         # js/bazi-engine.js::BaziEngine._interactions(['巳','午','午','未'])
         # （与上面 pillars 的四支一致）跑出来的结果，不是拍脑袋编的。
         'tenGods': {'year': '正官', 'month': '七杀', 'day': '日主', 'hour': '正官'},
+        # pillars 字段（2026-08-18补齐）：与真实引擎输出格式一致（每条 interaction
+        # 都带 pillars 数组标注命中的柱位），下面四条已用
+        # `node -e` 实测 BaziEngine._interactions(['巳','午','午','未']) 逐字段核对过。
         'interactions': [
-            {'type': '合', 'desc': '月支午 合 时支未（化火土）'},
-            {'type': '合', 'desc': '日支午 合 时支未（化火土）'},
-            {'type': '三会', 'desc': '三会南方火局（气最纯，比三合更集中）'},
-            {'type': '自刑', 'desc': '午午 自刑（急躁耗神·情绪反复）'},
+            {'type': '合', 'desc': '月支午 合 时支未（化火土）', 'pillars': ['month', 'hour']},
+            {'type': '合', 'desc': '日支午 合 时支未（化火土）', 'pillars': ['day', 'hour']},
+            {'type': '三会', 'desc': '三会南方火局（气最纯，比三合更集中）', 'pillars': ['year', 'month', 'day', 'hour']},
+            {'type': '自刑', 'desc': '午午 自刑（急躁耗神·情绪反复）', 'pillars': ['month', 'day']},
         ],
         'favorable': '水',
         'favorable2': '金',
