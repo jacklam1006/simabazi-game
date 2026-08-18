@@ -639,6 +639,32 @@ const App = (() => {
     // 恢复已解锁装饰
     IslandDecorations.restoreAll(_baziData);
 
+    // 2026-08-18新增，2026-08-18 qa-reviewer浏览器实测CONFIRMED后修复调用顺序：
+    // 十神/神煞/地支关系/天干合共65个3D装饰（bazi-pipeline领域
+    // js/decoration-resolver.js 判定命中 → frontend-3d领域 js/decoration-annotate.js
+    // 按真实柱位摆放+点击交互）。此前这段代码紧跟在 IslandAnnotate.attach() 之后、
+    // 也就是 IslandDecorations.restoreAll() **之前**同步调用——而
+    // IslandDecorations.restoreAll() 内部第一步 clearAll() 会把 `_loadToken`
+    // 里当前存在的**每一个** key（不区分是restoreAll自己管理的商品装饰、还是
+    // DecorationAnnotate.attach() 刚刚发起的65个装饰请求）全部自增作废（见
+    // island-decorations.js::clearAll() 尾部注释），因为两者共享同一个模块级
+    // `_loadToken` 表——`IslandDecorations.add()` 是这65个装饰的GLB也在用的
+    // 同一个底层加载函数。真实浏览器实测复现：GLTFLoader异步回调触发时读到
+    // `_loadToken[placedKey] !== myToken`，被 _loadGLB() 判定为"已过期"，
+    // 结果65个装饰无一例外全部变成"有可点击热点、脚下没有3D模型"（qa-reviewer
+    // t=4s/10s/20s/35s多次采样，15个命中的装饰 models3D 恒为0）。
+    // 修复：把这次调用挪到 restoreAll() 完成之后——restoreAll()->clearAll()
+    // 此时只会作废"上一张命盘遗留、且这一刻仍在_loadToken表里的旧key"，不会
+    // 波及此刻尚未发起的这批新请求（因为它们的placementKey这时还不存在于
+    // `_loadToken`里，clearAll()只遍历Object.keys(_loadToken)现有的键，不会
+    // 凭空创造新条目）。DecorationAnnotate.attach() 内部自己第一行也会先
+    // detach() 清掉上一张命盘挂载的装饰，不依赖这里的调用顺序，所以后移不影响
+    // "换岛屿正确清理"这条既有路径。纯规则判定，不依赖AI异步结果，不需要等待
+    // 下方 BaziAnalysis.getAnalysis()。
+    if (typeof DecorationAnnotate !== 'undefined' && DecorationAnnotate.attach) {
+      DecorationAnnotate.attach(scene, _baziData);
+    }
+
     // 判断新老用户（Tutorial 状态检测）
     _isNewUser = (typeof Tutorial !== 'undefined')
       ? !Tutorial.isDone(_baziData, _gender)
@@ -1242,6 +1268,14 @@ const App = (() => {
     if (zoneKey.startsWith('wxmaint_')) {
       const redeemHtml = _wxmaintRedeemBlockHtml(baziData, extra);
       return Analysis.buildMaintenancePanel(zoneKey, baziData, extra, redeemHtml);
+    }
+    // 2026-08-18新增：十神/神煞/地支关系/天干合共65个3D装饰
+    // （js/decoration-annotate.js 挂载）点击时触发，extra 是创建热点时闭包
+    // 直接携带的 {name, meaning}（来自 js/decoration-catalog.js 静态对照表），
+    // 数据在点击那一刻已经齐全，不需要异步等AI深析结果——跟trait_/wxmaint_
+    // 同款模式。
+    if (zoneKey.startsWith('decor_')) {
+      return Analysis.buildDecorationPanel(zoneKey, baziData, extra);
     }
     return Analysis.buildZonePanel(zoneKey, baziData);
   }

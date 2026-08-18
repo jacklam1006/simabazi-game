@@ -245,6 +245,20 @@
     .ss-neutral{border:1px solid rgba(201,169,110,.3);color:#c9a96e}
     .kongwang-label{background:rgba(8,8,20,.85);border:1px solid rgba(235,87,87,.3);border-radius:6px;padding:4px 10px;font-size:10px;color:rgba(232,224,208,.5);letter-spacing:1px}
 
+    /* 命理装饰热点（十神/神煞/地支关系/天干合共65个，2026-08-18新增，
+       js/decoration-annotate.js）——单击直接打开zone-panel（不像trait/wxmaint
+       那样两步展开卡片，见该文件头部注释的取舍说明），样式沿用 .shensha-label
+       同一套"小圆角药丸"视觉语言但更小/更淡，压低这批数量级明显更大的标注
+       的整体视觉权重，避免跟四柱/神煞常驻标注抢注意力。 */
+    .decor-marker{
+      background:rgba(8,8,20,.75);border:1px solid rgba(201,169,110,.28);
+      border-radius:20px;padding:2px 8px;font-size:9px;
+      color:rgba(201,169,110,.85);white-space:nowrap;
+      pointer-events:auto;cursor:pointer;user-select:none;
+      transition:transform .2s,opacity .2s;opacity:.82;
+    }
+    .decor-marker:hover{transform:scale(1.15);opacity:1}
+
     /* ══ 命盘特点3D标注（优势✅ / 注意事项⚠️）══
        密度控制：默认只有 .trait-dot 小圆点可见可点，.trait-leader/.trait-card
        默认 opacity:0;pointer-events:none；点击圆点加 .expanded 才展开。
@@ -1361,7 +1375,21 @@
 <script src="js/wuxing-maintenance.js"></script>
 <script src="js/island-loader.js"></script>
 <script src="js/island-annotate.js"></script>
+<!-- 命理装饰判定层：decoration-catalog.js 是十神/神煞/地支关系→decorId的静态
+     对照表，decoration-resolver.js 消费 BaziEngine.calculate() 输出+对照表算出
+     "这份命盘命中了哪些装饰"，必须在两者之后、island-decorations.js（frontend-3d
+     消费判定结果去摆放3D模型）之前加载 -->
+<script src="js/decoration-catalog.js"></script>
+<script src="js/decoration-resolver.js"></script>
 <script src="js/island-decorations.js"></script>
+<!-- decoration-annotate.js（frontend-3d）消费 DecorationResolver.resolve() 的
+     判定结果，按真实命盘柱位摆放这65个装饰+挂点击热点，需在 island-annotate.js
+     （提供 getPillarFrac()/getIslandBox()/layoutToWorld()）与 island-decorations.js
+     （提供 add()/remove()）之后加载；main-new.js 在 _onIslandReady() 里调用它，
+     运行时才真正用到，脚本加载顺序只需早于 main-new.js 执行即可，这里放在
+     wuxing-scene.js 之前只是延续本组"命理装饰判定+摆放"相关脚本紧邻放置的
+     既有习惯，非严格依赖顺序。 -->
+<script src="js/decoration-annotate.js"></script>
 <script src="js/wuxing-scene.js"></script>
 <!-- wuxing-drag.js 依赖 WuxingScene.getActiveMarkers()/reflectTier()，必须
      在 wuxing-scene.js 之后加载；也会用到下方 main-new.js 暴露的

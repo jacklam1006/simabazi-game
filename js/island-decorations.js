@@ -50,6 +50,97 @@ const IslandDecorations = (() => {
     crystal_amethyst: { frac:{x: 0.00, z:-0.60, y:0.30, hover:0.15}, type:'crystal', color:0x9b59b6, size:0.8, glb:'pillar_amethyst.glb' },
     crystal_rose    : { frac:{x: 0.60, z:-0.20, y:0.30, hover:0.15}, type:'crystal', color:0xffb7c5, size:0.6, glb:'bracelet_rose.glb' },
     crystal_obsidian: { frac:{x:-0.60, z:-0.40, y:0.30, hover:0.15}, type:'crystal', color:0x1a1a2e, size:0.7, glb:'bracelet_obsidian.glb' },
+
+    // ── 十神/神煞/地支关系/天干合 共65个（2026-08-18新增，
+    // js/decoration-resolver.js 判定命中 → js/decoration-annotate.js 摆放）──
+    // 下面每一条的 `frac` 都只是防御性占位（跟第三阶段 wxmaint_* 系列同一
+    // 惯例，见本文件顶部2026-08-13注释）：这65个decorId全部只会通过
+    // `add(decorId, baziData, overridePos)` 第三参数拿到
+    // decoration-annotate.js 按命盘真实柱位算出的世界坐标，不会走
+    // `_computePlacement()` 查这里的 frac。`type:'crystal'`/`color:0xc9a96e`
+    // 同理只是GLB加载失败时的占位符兜底外观，正常路径下65个GLB都已就位
+    // （见 assets/decorations/tenGods|shensha|interactions/，与
+    // decoration-catalog.js 逐条核对过文件名一致），理论上不会触发。
+    // `size:0.6` 是初始起点，实际显示密度已用真实浏览器验证过（见本次改动
+    // 附带的验证记录），如未来实测发现某类资产偏大/偏小可单独调整，不需要
+    // 整批统一改。
+
+    // ── 十神（10个，year/month/hour三柱可能命中，摆放于对应柱位附近，见 decoration-annotate.js::_computeFrac） ──
+    tg_bijian           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'tenGods/tg_bijian.glb' },
+    tg_jiecai           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'tenGods/tg_jiecai.glb' },
+    tg_shishen          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'tenGods/tg_shishen.glb' },
+    tg_shangguan        : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'tenGods/tg_shangguan.glb' },
+    tg_zhengcai         : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'tenGods/tg_zhengcai.glb' },
+    tg_piancai          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'tenGods/tg_piancai.glb' },
+    tg_zhengguan        : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'tenGods/tg_zhengguan.glb' },
+    tg_qisha            : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'tenGods/tg_qisha.glb' },
+    tg_zhengyin         : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'tenGods/tg_zhengyin.glb' },
+    tg_pianyin          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'tenGods/tg_pianyin.glb' },
+
+    // ── 神煞（34个，四柱各自可能命中，同柱多神煞由 decoration-annotate.js 做局部散开） ──
+    ss_tianyi_noble     : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_tianyi_noble.glb' },
+    ss_wenchang         : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_wenchang.glb' },
+    ss_lushen           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_lushen.glb' },
+    ss_yangren          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_yangren.glb' },
+    ss_hongyan          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_hongyan.glb' },
+    ss_yima             : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_yima.glb' },
+    ss_taohua           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_taohua.glb' },
+    ss_huagai           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_huagai.glb' },
+    ss_jiangxing        : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_jiangxing.glb' },
+    ss_tiande           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_tiande.glb' },
+    ss_yuede            : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_yuede.glb' },
+    ss_taiji            : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_taiji.glb' },
+    ss_kuigang          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_kuigang.glb' },
+    ss_jiesha           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_jiesha.glb' },
+    ss_wangshen         : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_wangshen.glb' },
+    ss_guchen           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_guchen.glb' },
+    ss_guasu            : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_guasu.glb' },
+    ss_tianxi           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_tianxi.glb' },
+    ss_hongluan         : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_hongluan.glb' },
+    ss_feiren           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_feiren.glb' },
+    ss_jinyu            : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_jinyu.glb' },
+    ss_fuxing           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_fuxing.glb' },
+    ss_xuetang          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_xuetang.glb' },
+    ss_jielukongwang    : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_jielukongwang.glb' },
+    ss_tianyi_healer    : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_tianyi_healer.glb' },
+    ss_tiandehe         : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_tiandehe.glb' },
+    ss_yuedehe          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_yuedehe.glb' },
+    ss_zaisha           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_zaisha.glb' },
+    ss_tianluo          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_tianluo.glb' },
+    ss_diwang           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_diwang.glb' },
+    ss_suipo            : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_suipo.glb' },
+    ss_xianchi          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_xianchi.glb' },
+    ss_guoyin           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_guoyin.glb' },
+    ss_dexiu            : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'shensha/ss_dexiu.glb' },
+
+    // ── 地支六冲（6个，二柱关系，摆放在两柱几何重心） ──
+    chong_zi_wu         : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/chong_zi_wu.glb' },
+    chong_chou_wei      : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/chong_chou_wei.glb' },
+    chong_yin_shen      : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/chong_yin_shen.glb' },
+    chong_mao_you       : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/chong_mao_you.glb' },
+    chong_chen_xu       : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/chong_chen_xu.glb' },
+    chong_si_hai        : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/chong_si_hai.glb' },
+
+    // ── 地支六合（6个，二柱关系，摆放在两柱几何重心） ──
+    he_zi_chou          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/he_zi_chou.glb' },
+    he_yin_hai          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/he_yin_hai.glb' },
+    he_mao_xu           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/he_mao_xu.glb' },
+    he_chen_you         : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/he_chen_you.glb' },
+    he_si_shen          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/he_si_shen.glb' },
+    he_wu_wei           : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/he_wu_wei.glb' },
+
+    // ── 地支三合（4个，按结果五行，三柱及以上关系，摆放在命中柱几何重心） ──
+    sanhe_water         : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/sanhe_water.glb' },
+    sanhe_fire          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/sanhe_fire.glb' },
+    sanhe_metal         : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/sanhe_metal.glb' },
+    sanhe_wood          : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/sanhe_wood.glb' },
+
+    // ── 天干五合（5个，二柱关系，摆放在两柱几何重心） ──
+    ganhe_jia_ji        : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/ganhe_jia_ji.glb' },
+    ganhe_yi_geng       : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/ganhe_yi_geng.glb' },
+    ganhe_bing_xin      : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/ganhe_bing_xin.glb' },
+    ganhe_ding_ren      : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/ganhe_ding_ren.glb' },
+    ganhe_wu_gui        : { frac:{x:0,z:0,y:0.5,hover:0.2}, type:'crystal', color:0xc9a96e, size:0.6, glb:'interactions/ganhe_wu_gui.glb' },
   };
 
   // ── 五行维护系统装饰（第三阶段2026-08-13新增占位 → 第四阶段2026-08-15
@@ -228,9 +319,28 @@ const IslandDecorations = (() => {
   // 那一步；不传（undefined）时行为与改动前完全一致——全部既有调用方
   // （本文件 restoreAll()、tasks.js:139、products.js:198）都只传两个参数，
   // 不受此次改动影响（已逐一核实，见本次改动的验证记录）。
-  function add(decorId, baziData, overridePos) {
+  //
+  // 2026-08-18：新增可选第四参数 placementKey——js/decoration-annotate.js
+  // 消费 DecorationResolver.resolve() 的输出时发现一个真实bug（真实脚本
+  // + 真实BaziEngine命例实测复现，不是构造场景）：十神/神煞类decorId是按
+  // "命理概念本身"分配的（比如"天乙贵人"永远是 ss_tianyi_noble），但同一个
+  // 神煞完全可能同时命中两根、三根柱子（比如天乙贵人落在年柱又落在时柱），
+  // resolve() 会为每个命中柱位各输出一条独立记录（decorId相同、pillars不同，
+  // 这是有意设计，因为这是两个独立的视觉锚点）。但本函数原先"同一decorId
+  // 只会真正放置一次"（`if (_placed[decorId]) return`）的假设，对 wxmaint_*
+  // 系列（decorId已经把wx+direction+tier编码进去，天然一对一）成立，对这批
+  // 新增装饰不成立——会导致同一命盘里第二、三个命中该decorId的柱位处，
+  // 点击热点能弹出面板，但脚下没有3D模型（被第一个柱位的add()占用的
+  // `_placed[decorId]`挡住）。
+  // 修复：`_placed`/`_loadToken` 的追踪键改用 `placementKey`（不传时默认退化
+  // 为 decorId 本身，保证全部既有调用方——本文件 restoreAll()、tasks.js、
+  // products.js、wuxing-scene.js——行为完全不变，已逐一核实）；`DECOR_DEFS`
+  // 查找/GLB路径仍然按真实的 decorId 走（多个占用不同placementKey的实例
+  // 可以共享同一份GLB定义，各自独立追踪加载/移除状态，互不覆盖）。
+  function add(decorId, baziData, overridePos, placementKey) {
     if (!_scene) return;
-    if (_placed[decorId]) return;   // 已存在
+    const pKey = placementKey || decorId;
+    if (_placed[pKey]) return;   // 已存在
     // 2026-08-16：此前这里有一道"该decorId已经有一次GLTFLoader请求在途就
     // 直接return"的守卫，本意是防止并发重复加载，但引入了CONFIRMED回归——
     // `add(X)→remove(X)（仍在途）→add(X)`序列里第二次add(X)会被这道守卫
@@ -247,11 +357,13 @@ const IslandDecorations = (() => {
     // 不能复用上一次或其他装饰算出的结果（overridePos 有值时跳过这步）
     const placement = overridePos ? _placementFromOverride(overridePos, def) : _computePlacement(def);
 
-    // 有GLB文件优先加载，否则用几何占位
+    // 有GLB文件优先加载，否则用几何占位——追踪/回调用 pKey（保证同一
+    // decorId的多个实例各自独立追踪），实际GLB路径仍来自 def.glb（同一份
+    // 定义，多个实例共享同一个模型文件是预期行为）。
     if (def.glb && typeof THREE.GLTFLoader !== 'undefined') {
-      _loadGLB(decorId, def, placement);
+      _loadGLB(pKey, def, placement);
     } else {
-      _addPlaceholder(decorId, def, placement);
+      _addPlaceholder(pKey, def, placement);
     }
   }
 
@@ -316,18 +428,23 @@ const IslandDecorations = (() => {
   }
 
   // ── 移除装饰 ─────────────────────────────────────────────
-  function remove(decorId) {
-    if (_placed[decorId]) {
-      _scene.remove(_placed[decorId]);
-      delete _placed[decorId];
+  // 2026-08-18：新增可选第二参数 placementKey，语义与 add() 第四参数
+  // 完全对应（同一decorId的多个独立实例场景，见 add() 声明处注释）——不传
+  // 时退化为 decorId 本身，全部既有调用方（clearAll()/wuxing-scene.js等）
+  // 行为不变。
+  function remove(decorId, placementKey) {
+    const pKey = placementKey || decorId;
+    if (_placed[pKey]) {
+      _scene.remove(_placed[pKey]);
+      delete _placed[pKey];
     }
-    // 无论此刻这个decorId是否已经真正放置/是否还有GLTFLoader请求在途，都
+    // 无论此刻这个pKey是否已经真正放置/是否还有GLTFLoader请求在途，都
     // 让它的"版本号"自增一次——仍在途的旧请求的回调触发时，token比对会
     // 发现自己已经不是最新版本，从而静默丢弃这次加载结果，不会把即将被
     // 移除的旧装饰又添加进场景（见 _loadToken 声明处注释的token机制）。
-    // 对从没add()过的decorId调用remove()，这里只是把它的token从0变成1，
-    // 无副作用、不影响该decorId未来第一次真正的add()。
-    _loadToken[decorId] = (_loadToken[decorId] || 0) + 1;
+    // 对从没add()过的pKey调用remove()，这里只是把它的token从0变成1，
+    // 无副作用、不影响该pKey未来第一次真正的add()。
+    _loadToken[pKey] = (_loadToken[pKey] || 0) + 1;
   }
 
   // ── 只读查询已放置的THREE.Object3D ───────────────────────
@@ -336,25 +453,30 @@ const IslandDecorations = (() => {
   // 平行的引用表（复用 _placed 这唯一权威数据源）。找不到时返回
   // null（尚未放置/仍在异步GLB加载中/已被remove）——调用方必须自行判空
   // 降级，本函数不假设一定拿得到，也不做任何副作用（不触发加载、不修改
-  // _placed），纯只读查询。
-  function get(decorId) {
-    return _placed[decorId] || null;
+  // _placed），纯只读查询。2026-08-18新增可选第二参数placementKey，语义
+  // 同 add()/remove()。
+  function get(decorId, placementKey) {
+    return _placed[placementKey || decorId] || null;
   }
 
   // ── 加载真实 GLB ─────────────────────────────────────────
-  function _loadGLB(decorId, def, placement) {
+  // 2026-08-18：第一个参数改名为 placedKey（原名 decorId）——调用方
+  // （add()）现在传入的是"追踪键"（可能是 placementKey，也可能就是
+  // decorId本身，见 add() 声明处注释），不再假设它一定等于 DECOR_DEFS 的
+  // key；真实的GLB路径始终来自 def.glb，不受影响。
+  function _loadGLB(placedKey, def, placement) {
     // token机制（见 _loadToken 声明处注释）：每次发起加载都占用一个新的
     // 版本号并记住"这是我的版本号"（闭包变量 myToken）。回调触发时只有
-    // 自己的版本号仍然等于 _loadToken[decorId] 当前值（即"我是这个decorId
-    // 最后一次被请求的那次"）才真正落地，否则说明中途发生过remove()/新的
-    // add()，静默丢弃——不管是被"取消"还是被"更新的请求"取代，处理方式
-    // 相同：只有最后一次赢。
-    const myToken = (_loadToken[decorId] || 0) + 1;
-    _loadToken[decorId] = myToken;
+    // 自己的版本号仍然等于 _loadToken[placedKey] 当前值（即"我是这个
+    // placedKey最后一次被请求的那次"）才真正落地，否则说明中途发生过
+    // remove()/新的add()，静默丢弃——不管是被"取消"还是被"更新的请求"
+    // 取代，处理方式相同：只有最后一次赢。
+    const myToken = (_loadToken[placedKey] || 0) + 1;
+    _loadToken[placedKey] = myToken;
     new THREE.GLTFLoader().load(
       GLB_BASE + def.glb,
       (gltf) => {
-        if (_loadToken[decorId] !== myToken) return;   // 已被后续remove()/add()淘汰，丢弃这次结果，不进场景
+        if (_loadToken[placedKey] !== myToken) return;   // 已被后续remove()/add()淘汰，丢弃这次结果，不进场景
         const model = gltf.scene;
         // 2026-08-18：包围盒归一化保护——TripoAI针对不同提示词导出的原始
         // 模型尺寸不一致（构图占比、模型复杂度都会导致差异），此前直接把
@@ -387,19 +509,20 @@ const IslandDecorations = (() => {
         model.position.sub(center.multiplyScalar(scale));   // 抵消GLB自身pivot偏移，让模型几何中心真正落在placement.pos上
         model.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
         _scene.add(model);
-        _placed[decorId] = model;
+        _placed[placedKey] = model;
         _addEntryAnimation(model);
       },
       undefined,
       () => {
-        if (_loadToken[decorId] !== myToken) return;   // 同上：已过期，加载失败也不用回退占位了
-        _addPlaceholder(decorId, def, placement);       // 加载失败回退占位
+        if (_loadToken[placedKey] !== myToken) return;   // 同上：已过期，加载失败也不用回退占位了
+        _addPlaceholder(placedKey, def, placement);       // 加载失败回退占位
       }
     );
   }
 
   // ── 几何占位符（GLB未就绪时）────────────────────────────
-  function _addPlaceholder(decorId, def, placement) {
+  // 2026-08-18：第一个参数同 _loadGLB() 改名为 placedKey，语义同上。
+  function _addPlaceholder(placedKey, def, placement) {
     let mesh;
     const size = placement.size;
     const mat = new THREE.MeshStandardMaterial({
@@ -456,7 +579,7 @@ const IslandDecorations = (() => {
 
     mesh.position.set(...placement.pos);
     _scene.add(mesh);
-    _placed[decorId] = mesh;
+    _placed[placedKey] = mesh;
     _addEntryAnimation(mesh);
   }
 

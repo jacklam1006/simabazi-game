@@ -4,7 +4,7 @@
  * 网络失败时才回退到缓存，确保每次部署后用户拿到最新代码
  */
 
-const CACHE_NAME = 'smb-v6';
+const CACHE_NAME = 'smb-v7';
 
 // 只缓存这些不常变的 CDN 资源作为离线兜底
 const CDN_HOSTS = ['cdn.jsdelivr.net', 'cdnjs.cloudflare.com'];

@@ -705,9 +705,22 @@ const IslandAnnotate = (() => {
   function getIslandBox() { return _getIslandBox(); }
   function layoutToWorld(frac, box, group) { return _layoutToWorld(frac, box, group); }
 
+  // 2026-08-18：供 js/decoration-annotate.js（十神/神煞/地支关系/天干合 65个
+  // 3D装饰的摆放层，frontend-3d领域）复用——它需要"单柱"装饰（十神/神煞）以
+  // PILLAR_LAYOUT 的柱位锚点为中心做局部散开，"多柱"装饰（地支关系/天干合）
+  // 需要取几根柱子锚点的几何重心。PILLAR_LAYOUT 是本文件的私有权威定义，不
+  // 应该在别的文件里重新手写一份四个锚点的magic number（历史上已经因为"写死
+  // 坐标/重复实现"踩过两次坑，见本文件顶部注释），因此新增这个只读查询导出，
+  // 而不是导出整个 PILLAR_LAYOUT 常量本身（防止调用方意外修改原始对象——
+  // 这里返回的是浅拷贝）。col 非法/未知时返回 null，调用方需自行判空。
+  function getPillarFrac(col) {
+    const f = PILLAR_LAYOUT[col];
+    return f ? { x: f.x, z: f.z, y: f.y, hover: f.hover } : null;
+  }
+
   return {
     attach, detach, highlightLabel, clearHighlight, getLabelPositions, getLabelElement,
-    getIslandBox, layoutToWorld,
+    getIslandBox, layoutToWorld, getPillarFrac,
     attachTraits, detachTraits, markTraitResolved,
   };
 })();

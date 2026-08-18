@@ -1665,5 +1665,31 @@ const Analysis = (() => {
     return body;
   }
 
-  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildTraitPanel, buildMaintenancePanel, buildReport, refreshAiAnalysis, showAiRefreshing, clearAiRefreshing, refreshStrengthGauge, redeemTraitProduct };
+  // ── 命理装饰面板（十神/神煞/地支关系/天干合共65个3D装饰）─────────
+  // 2026-08-18新增，供3D岛屿上新增的65个装饰热点（js/decoration-annotate.js
+  // 挂载）点击后展示，复用既有 zone-panel 机制（跟 buildPillarPanel/
+  // buildShenshaPanel/buildTraitPanel 同一套面板容器，由调用方 _openZonePanel
+  // 负责挂载）。extra 参数形状：{ name: string, meaning: string }——数据在
+  // decoration-annotate.js 创建热点时就已经从 js/decoration-catalog.js 静态
+  // 对照表拿到手，不需要异步等AI深析结果，跟 buildTraitPanel/
+  // buildMaintenancePanel 同一取舍。这批装饰纯粹是"命盘要素的具象化展示"，
+  // 不含好坏判定/兑换逻辑，因此不需要 badge() 的吉/凶/中性分类，也不需要像
+  // buildShenshaPanel 那样区分AI详解/静态兜底两套内容——按用户明确要求，先
+  // 只做"标题+一行含义文字"的最简展示，不需要复杂样式。
+  function buildDecorationPanel(zoneKey, baziData, extra) {
+    _zonePanelGen++; // 见 _zonePanelGen 声明处说明：每次渲染zone-panel内容都自增一次
+    extra = extra || {};
+    const name    = extra.name    || '';
+    const meaning = extra.meaning || '';
+
+    let body = `
+      <div>${badge(_t('decor.badge'), 'neutral')}</div>
+      <div class="zone-title">${name}</div>
+      <div class="zone-subtitle">${_t('decor.subtitle')}</div>
+    `;
+    if (meaning) body += section(_t('decor.section_title'), insight(meaning, 'neutral'));
+    return body;
+  }
+
+  return { buildZonePanel, buildPillarPanel, buildShenshaPanel, buildTraitPanel, buildMaintenancePanel, buildDecorationPanel, buildReport, refreshAiAnalysis, showAiRefreshing, clearAiRefreshing, refreshStrengthGauge, redeemTraitProduct };
 })();

@@ -252,6 +252,11 @@ const I18N = {
     'wxmaint.drag_daily_limit': '这条今天已经打理过了，明天再来吧',
     'wxmaint.drag_fail':        '维护失败，请稍后再试',
     'wxmaint.drag_not_ready':   '维护系统尚未就绪，请稍后再试',
+
+    // ── 命理装饰面板（十神/神煞/地支关系/天干合，2026-08-18新增）────────
+    'decor.badge':         '◈ 命盘要素',
+    'decor.subtitle':      '3D装饰 · 命盘要素',
+    'decor.section_title': '含义',
     'wxmaint.drag_already_shrined': '这条已经被神仙永久庇护，无需再维护，画面马上刷新',
     // 2026-08-15第四阶段"四层付费结构"新增（js/main-new.js::_wxmaintRedeemBlockHtml()、
     // js/products.js::_redeemShrine() 用到）：
@@ -530,6 +535,11 @@ const I18N = {
     // doesn't reuse the line above, since tier is capped and won't decay further.
     'wxmaint.health_status_worst': 'Health {pct}% · at the worst tier, needs attention',
     'wxmaint.health_secured':   'Permanently secured — no attention needed',
+
+    // ── Chart Element Decorations (Ten Gods / Shensha / Branch Relations / Stem Combos, added 2026-08-18) ──
+    'decor.badge':         '◈ Chart Element',
+    'decor.subtitle':      '3D Decoration · Chart Element',
+    'decor.section_title': 'Meaning',
 
     // ── Redeem: ④ Enshrine a Guardian Spirit (pure virtual purchase, no physical fulfillment) ──
     'products.success_shrine':  'Redeemed! This issue is now permanently secured and needs no further upkeep',
