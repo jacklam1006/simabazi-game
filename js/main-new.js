@@ -289,7 +289,17 @@ const App = (() => {
                 name:       displayName + ' 的命盘',
                 aiAnalysis: null, // 占位，AI深析完成后由补写机制自动填上
               });
-              if (saved && saved.id) _currentIslandId = saved.id;
+              if (saved && saved.id) {
+                _currentIslandId = saved.id;
+                // 裂变邀请：岛屿真正保存成功后 fire-and-forget 触发"我是不是被
+                // 邀请人"的激活检测（activate_my_referral() 是幂等的——不管调用
+                // 多少次，只有真正存在待激活邀请记录的那一次会有实际效果，不需要
+                // 在这里判断"是不是第一次生成岛屿"，见 js/auth.js::activateMyReferral()
+                // 注释）。不 await，失败不影响岛屿保存这条主流程。
+                if (typeof AuthManager !== 'undefined' && typeof AuthManager.activateMyReferral === 'function') {
+                  AuthManager.activateMyReferral();
+                }
+              }
             } catch (e) {}
           }).catch(() => {});
         }

@@ -212,11 +212,35 @@ const AuthManager = (() => {
   // 灵气值实际从未写入云端，换设备/清缓存登录后会读到0，导致本地灵气被
   // max(0, 0) 覆盖为0，攒的灵气无声消失。upsert 只对 payload 里出现的列做
   // ON CONFLICT DO UPDATE，不会清空 display_name/phone 等既有字段。
+  // 返回底层 upsert 的 Promise（而不是像大多数 fire-and-forget 函数一样返回
+  // undefined）：绝大多数调用方仍然照旧不 await、纯粹fire-and-forget，行为不受
+  // 影响；但 _mergeSpiritBalance() 的"本地>远端"分支需要确保这次绝对值推送真的
+  // 落地之后，才能安全地让"消费待插入邀请关系"（可能触发云端+50这类可加操作）
+  // 开始执行——否则两者仍可能并发，推送延迟较高时反而会把刚入账的+50覆盖掉
+  // （见 _mergeSpiritBalance() 调用处注释）。
   function syncSpiritBalance(balance) {
-    if (!_sb || !_user) return;
-    _sb.from('profiles').upsert({ id: _user.id, spirit_balance: balance })
+    if (!_sb || !_user) return Promise.resolve();
+    return _sb.from('profiles').upsert({ id: _user.id, spirit_balance: balance })
       .then(({ error }) => { if (error) console.warn('[Auth] 灵气值同步失败:', error.message); })
       .catch(e => console.warn('[Auth] 灵气值同步失败:', e));
+  }
+
+  // ── 灵气值增量同步（RPC，配合裂变奖励等"服务端单方面发钱"场景）─────────
+  // 与上面 syncSpiritBalance() 的"推绝对值覆盖云端"语义不同：这个函数调用
+  // 数据库函数 adjust_spirit_balance(p_delta)，服务端按增量 UPDATE
+  // spirit_balance = spirit_balance + p_delta，不会覆盖掉期间内服务端自己
+  // 发放的奖励（比如裂变邀请欢迎奖励+50、激活奖励150/80）——这两种奖励是数据库
+  // 触发器/SECURITY DEFINER函数单方面写入的，客户端完全不知情，如果客户端后续
+  // 用"本地旧值+这次变动"当绝对值推上去（syncSpiritBalance），会把服务端刚发
+  // 的钱覆盖抹掉。凡是 js/user-state.js 的 addSpirit()/useSpirit() 这类日常
+  // 增减场景，都应该改用这个函数同步，而不是 syncSpiritBalance()。
+  // fire-and-forget，同 syncSpiritBalance() 一样的取舍：不阻断本地灵气值的
+  // 即时可用性，失败只打警告。
+  function syncSpiritDelta(delta) {
+    if (!_sb || !_user || !delta) return;
+    _sb.rpc('adjust_spirit_balance', { p_delta: delta })
+      .then(({ error }) => { if (error) console.warn('[Auth] 灵气值增量同步失败:', error.message); })
+      .catch(e => console.warn('[Auth] 灵气值增量同步失败:', e));
   }
 
   async function getSpiritBalance() {
@@ -314,6 +338,73 @@ const AuthManager = (() => {
     }
   }
 
+  // ── 裂变邀请：解析邀请码 → 邀请人 user id ────────────────
+  // 对应数据库函数 resolve_referral_code(p_code TEXT) RETURNS UUID，anon 和
+  // authenticated 角色都可调用（用户可能在还没登录/注册的匿名阶段就带着
+  // ?ref=CODE 链接访问）。找不到对应用户时数据库函数返回 null。
+  async function resolveReferralCode(code) {
+    if (!_sb || !code) return null;
+    try {
+      const { data, error } = await _sb.rpc('resolve_referral_code', { p_code: code });
+      if (error) { console.warn('[Auth] resolveReferralCode失败:', error.message); return null; }
+      return data || null;
+    } catch (e) {
+      console.warn('[Auth] resolveReferralCode异常:', e);
+      return null;
+    }
+  }
+
+  // ── 裂变邀请：插入一行 referrals 记录（referrer_id 邀请人 / invitee_id 被
+  //    邀请人自己）──────────────────────────────────────────
+  // RLS 只允许 INSERT invitee_id=当前登录用户自己的一行，所以这个调用必须在
+  // 真正建立 session 之后才能成功（调用方 AuthUI._consumePendingReferralInsert()
+  // 负责保证这个时机，见该函数注释）。插入成功后，被邀请人的欢迎奖励由数据库
+  // 触发器自动、仅一次发放（+50灵气），这里不需要额外调用任何东西去发奖。
+  async function insertReferral(referrerId, inviteeId) {
+    if (!_sb || !referrerId || !inviteeId || referrerId === inviteeId) return false;
+    try {
+      const { error } = await _sb.from('referrals').insert({
+        referrer_id: referrerId,
+        invitee_id:  inviteeId,
+      });
+      if (error) { console.warn('[Auth] insertReferral失败:', error.message); return false; }
+      return true;
+    } catch (e) {
+      console.warn('[Auth] insertReferral异常:', e);
+      return false;
+    }
+  }
+
+  // ── 裂变邀请：被邀请人成功生成/保存岛屿后调用，标记自己这条待激活的邀请
+  //    记录为已激活、触发给邀请人的奖励 ──────────────────────
+  // 对应数据库函数 activate_my_referral()（无参数，内部按当前登录用户身份
+  // 判断"我是不是有一条待激活的被邀请记录"）。这个函数是幂等的——不管调用
+  // 多少次，只有真正存在待激活记录的那一次调用会有实际效果，所以调用方不需要
+  // 自己判断"这是不是第一次生成岛屿"，每次成功生成/保存岛屿后都可以直接调用。
+  // fire-and-forget：不返回 Promise 给调用方 await，失败只打警告，不阻断/不
+  // 影响岛屿保存本身这条主流程（同 syncSpiritBalance() 的设计取舍）。
+  function activateMyReferral() {
+    if (!_sb || !_user) return;
+    _sb.rpc('activate_my_referral')
+      .then(({ error }) => { if (error) console.warn('[Auth] activate_my_referral失败:', error.message); })
+      .catch(e => console.warn('[Auth] activate_my_referral异常:', e));
+  }
+
+  // ── 裂变邀请：我邀请过的人（供任务面板展示邀请进度）──────
+  // RLS 只允许 SELECT referrer_id=自己的行，能看到自己邀请出去的全部记录
+  // （包含尚未激活的），调用方按 activated_at 是否非空自行过滤统计。
+  async function getMyReferrals() {
+    if (!_sb || !_user) return [];
+    try {
+      const { data, error } = await _sb.from('referrals').select('*').eq('referrer_id', _user.id);
+      if (error) { console.warn('[Auth] 读取邀请记录失败:', error.message); return []; }
+      return data || [];
+    } catch (e) {
+      console.warn('[Auth] 读取邀请记录失败:', e);
+      return [];
+    }
+  }
+
   // ── 检查邮箱是否已注册 ──────────────────────────────────
   async function checkEmailExists(email) {
     try {
@@ -334,8 +425,9 @@ const AuthManager = (() => {
     init, login, register, registerWithProfile,
     logout, sendPasswordReset, getProfile, updateProfile,
     saveIsland, updateIslandAnalysis, updateIslandBaziData, getMyIslands, checkEmailExists,
-    syncSpiritBalance, getSpiritBalance, createRedemptionRequest,
+    syncSpiritBalance, syncSpiritDelta, getSpiritBalance, createRedemptionRequest,
     syncWuxingMaintenanceState, getWuxingMaintenanceStates,
+    resolveReferralCode, insertReferral, activateMyReferral, getMyReferrals,
     isLoggedIn: () => !!_user,
     currentUser: () => _user,
   };
@@ -350,6 +442,28 @@ const AuthUI = (() => {
   // 注册后"待保存岛屿"暂存 key（见 _saveCurrentIsland / _consumePendingIslandSave）。
   // 命名沿用 js/user-state.js 的 smb_ 前缀习惯。
   const PENDING_ISLAND_KEY = 'smb_pending_island_save';
+
+  // ── 裂变邀请：两个暂存 key（见 _captureReferralFromUrl / _registerPendingReferral /
+  //    _consumePendingReferralInsert）───────────────────────────────────
+  // PENDING_REFERRAL_KEY：页面加载时从 URL ?ref=CODE 捕获的原始邀请码字符串，
+  // 在用户真正决定注册前可能要存活很久（填表→生成岛屿→注册，中间可能跨越
+  // 分钟级时间），注册尝试那一刻才会被消费/清除。
+  // PENDING_REFERRAL_INSERT_KEY：注册成功、resolve_referral_code() 解析出
+  // referrer_id 之后，真正写入 referrals 表前的中间态暂存——之所以要有这第二
+  // 段暂存，是因为 referrals 表的 INSERT 需要 auth.uid()=invitee_id 通过 RLS，
+  // 而 registerWithProfile() 成功返回的那一刻（本项目 Supabase 开启了邮箱验证）
+  // 通常还没有真正的 session，此刻直接 insert 会被 RLS 拒绝——跟
+  // claude-docs/已知问题与修复记录.md 2026-08-16"邮箱注册后岛屿必现丢失"是
+  // 同一类时序陷阱，这里复用同一套"本地暂存+真正建立session后再补写"模式
+  // （见 _saveCurrentIsland / _consumePendingIslandSave）。
+  const PENDING_REFERRAL_KEY        = 'smb_pending_referral_code';
+  const PENDING_REFERRAL_INSERT_KEY = 'smb_pending_referral_insert';
+
+  // 页面一加载（AuthUI 这个IIFE被解析执行的这一刻）就尝试捕获 URL 里的
+  // ?ref=CODE——不依赖 DOMContentLoaded，纯读 location.search + 写
+  // localStorage，不碰 DOM，可以在脚本解析阶段立刻安全执行。函数声明在下方，
+  // 但 function 声明会被提升到当前作用域顶部，这里调用时已可用。
+  _captureReferralFromUrl();
 
   // ── 显示登录弹窗 ────────────────────────────────────────
   function showLogin(opts = {}) {
@@ -484,9 +598,14 @@ const AuthUI = (() => {
     const btn = document.getElementById('reg-submit-btn');
     _setLoading(btn, true, _t('reg.creating'));
     try {
-      await AuthManager.registerWithProfile({ email, password, displayName: name, country, phoneCode, phone });
+      const regResult = await AuthManager.registerWithProfile({ email, password, displayName: name, country, phoneCode, phone });
       _clearError('reg-error');
       _saveCurrentIsland(name);
+      // 裂变邀请：若本地存着待处理的邀请码，解析出邀请人id并暂存，等真正建立
+      // session后由 _consumePendingReferralInsert() 补写进 referrals 表（同
+      // _saveCurrentIsland 一样的"注册这一刻不一定有session"陷阱，见该函数注释）。
+      // signUp() 响应里 user.id 不需要 session 就能拿到，可以在这里直接读。
+      _registerPendingReferral(regResult?.user?.id, email);
       _showRegSuccess(email);
     } catch (e) {
       _setError('reg-error', _friendlyError(e));
@@ -545,9 +664,26 @@ const AuthUI = (() => {
       myIslandsBtn?.classList.remove('hidden');
       settingsBtn?.classList.remove('hidden');
       _refreshUserInfoDisplay();
-      _mergeSpiritBalance();
       _mergeWuxingMaintenanceState();
       _consumePendingIslandSave(); // 补写注册时因尚无session而暂存本地的岛屿数据（见该函数注释）
+      // 顺序很重要：必须先跑完一次灵气值合并（建立基线——如果本地余额比云端
+      // 大，把本地这个更大的值确实推上云端），再消费"待插入邀请关系"暂存记录
+      // （可能触发数据库端欢迎奖励+50灵气入账）——不能反过来。
+      // 原因：referrals行插入触发的欢迎奖励是数据库端"cloud.spirit_balance +=
+      // 50"这类可加操作，天然不怕在谁之后执行；但 _mergeSpiritBalance() 的
+      // "本地>远端"分支会把本地值当作新的权威值*绝对*推回云端（这是校准/对齐
+      // 操作，不在这次delta化改造范围内，见该函数顶部注释）——如果这次绝对值
+      // 推送发生在+50入账*之后*，会把刚到账的+50直接覆盖抹掉（本地170 vs
+      // 插入后云端0+50=50，取max若在+50入账后才推送，170>50，直接用170覆盖
+      // 云端，50灵气凭空消失）。反过来，先合并（此时云端还是0，本地170>0，
+      // 推送后云端=170）、再插入邀请关系（触发器在170基础上+50=220，天然正确
+      // ）——顺序对了，"取max绝对值覆盖"这条既有逻辑本身完全不用改。
+      // _consumePendingReferralInsert() 成功后内部本来就会再触发一次
+      // _mergeSpiritBalance()（见该函数内部注释），把这笔+50同步拉回本地余额，
+      // 这里不需要再手动追加一次。用 .finally() 而不是 .then()：不管这次登录
+      // 本地灵气是否比云端大、要不要真的推送，都要在合并跑完（无论成功失败）
+      // 之后再继续消费邀请关系，保证顺序而不是纯粹并发触发。
+      _mergeSpiritBalance().finally(() => _consumePendingReferralInsert());
     } else {
       loginBtn?.classList.remove('hidden');
       logoutBtn?.classList.add('hidden');
@@ -559,20 +695,40 @@ const AuthUI = (() => {
 
   // ── 登录时灵气值合并：本地(localStorage) vs 云端(profiles.spirit_balance)
   //    取较大值，避免换设备/重新登录时余额突然变少。不是强一致性同步——灵气
-  //    不是真实货币，多设备并发误差可接受。用现有 UserState.addSpirit(diff)
-  //    补到目标值即可，不新增"直接赋值"接口。────────────────────────────
+  //    不是真实货币，多设备并发误差可接受。────────────────────────────────
+  // 2026-08-18 更新：remote > local 分支改用 UserState.setSpiritLocalOnly()
+  // 而不是 UserState.addSpirit(diff)——自从 addSpirit() 的云端同步从"推绝对值"
+  // 改造成"推增量"（配合裂变奖励等服务端单方面发钱场景，见 syncSpiritDelta()
+  // 注释）之后，这里如果继续借用 addSpirit()，会把"本地追平云端已有权威值"
+  // 误当成一次真实本地新增，把云端余额从 remote 又推高成 remote+(remote-local)，
+  // 凭空多出一笔灵气。这个分支的本意只是把本地存储追平远端，远端数值本身没有
+  // 变化，不需要（也不应该）再往云端推送任何东西——用不碰云端的
+  // setSpiritLocalOnly() 才是正确语义，取max/reconcile的合并逻辑本身不变。
   async function _mergeSpiritBalance() {
     if (typeof UserState === 'undefined') return;
     try {
       const remote = await AuthManager.getSpiritBalance();
       const local  = UserState.getSpirit();
       if (remote > local) {
-        UserState.addSpirit(remote - local); // 补到远端更大的值（会顺带把合并后的值再同步回云端，幂等无害）
+        UserState.setSpiritLocalOnly(remote); // 本地追平远端权威值，远端未变化，不回推云端
       } else if (local > remote) {
         // 本地是较大值（例如登录前匿名试用已攒了灵气）——立即推送云端，不用
         // 等到下一次 addSpirit/useSpirit 触发才同步，避免合并后云端数值仍
         // 落后本地的窗口期。
-        AuthManager.syncSpiritBalance(local);
+        //
+        // await（而不是像其它 fire-and-forget 调用一样丢在一边不管）：
+        // _onAuthChange() 依赖 _mergeSpiritBalance() 这个 Promise 真正 resolve
+        // 时，这次绝对值推送已经落地到云端，才会继续消费"待插入邀请关系"暂存
+        // 记录（那一步可能触发数据库端"云端+=50"这类可加操作，见调用处注释）。
+        // 如果这里不 await，_mergeSpiritBalance() 的 Promise 会在 upsert 请求
+        // 真正完成之前就提前 resolve，_onAuthChange() 那边的顺序保证就形同虚设
+        // ——插入邀请关系仍可能在这次推送真正落地之前抢先完成，云端+50 落在
+        // 推送前的旧值上，随后这次迟到的绝对值推送反而会把 +50 覆盖掉。
+        // 只在这一个分支加 await，不影响函数其它地方——如果调用方本身不关心
+        // 这个时序（比如未来别的地方也调用 _mergeSpiritBalance() 但不需要严格
+        // 顺序），await 与否对函数最终产生的效果（本地/云端各自的值）完全一致，
+        // 只是让"完成"这件事对外部可观察。
+        await AuthManager.syncSpiritBalance(local);
       }
     } catch (e) {
       console.warn('[AuthUI] 灵气值合并失败:', e);
@@ -782,6 +938,11 @@ const AuthUI = (() => {
       if (typeof App !== 'undefined' && typeof App._setCurrentIslandId === 'function') {
         App._setCurrentIslandId(saved.id);
       }
+      // 裂变邀请：这条路径正是最常见的"被邀请人首次生成岛屿"场景——先生成后
+      // 注册的新用户，岛屿在这里补写入库才算真正保存成功。fire-and-forget
+      // 触发激活检测，理由同 main-new.js:284 附近那处调用点的注释
+      // （activate_my_referral() 幂等，不需要判断是否首次）。
+      AuthManager.activateMyReferral();
     } else {
       // 没拿到非空结果——不管是 saveIsland() 内部捕获错误后返回 null，还是
       // 这里 catch 到真正抛出的异常，都算没有真正保存成功，把原始 payload
@@ -790,6 +951,215 @@ const AuthUI = (() => {
         console.warn('[AuthUI] 补写岛屿失败后写回暂存记录也失败:', e);
       }
       console.warn('[AuthUI] 补写岛屿失败，已保留待重试记录');
+    }
+  }
+
+  // ── 裂变邀请：页面加载时捕获 URL 里的 ?ref=CODE ──────────────
+  // 只在 URL 真的带 ref 参数时写入/覆盖暂存值；没带这个参数的普通页面加载
+  // （比如用户从表单页跳到岛屿页、刷新页面）不应该清空已经存在的暂存邀请码——
+  // 用户可能是先点了邀请链接、填完表单生成岛屿、过了一会儿才决定注册，这段
+  // 时间内页面可能已经被刷新过、URL 参数早已不在地址栏里了。
+  function _captureReferralFromUrl() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const ref = params.get('ref');
+      if (ref && ref.trim()) {
+        localStorage.setItem(PENDING_REFERRAL_KEY, ref.trim());
+      }
+    } catch (e) {
+      // URLSearchParams 理论上现代浏览器都支持，防御性 try/catch 避免极端环境报错
+      console.warn('[AuthUI] _captureReferralFromUrl:', e);
+    }
+  }
+
+  // ── 裂变邀请：注册成功后，解析暂存邀请码 → 暂存"待插入邀请关系" ──────
+  // 在 doRegister() 里 registerWithProfile() 成功返回后调用，此时已经拿到
+  // 新用户的 id（data.user.id，signUp() 响应里直接带，不需要 session）。
+  // 不 await 这个函数——resolve_referral_code() 是一次额外的网络往返，没必要
+  // 让用户在"注册成功"提示出现前多等这一步；解析结果通过 fire-and-forget
+  // 的方式异步写入 localStorage，真正的 DB 写入（insertReferral）留给
+  // _consumePendingReferralInsert() 在真正建立 session 后执行。
+  function _registerPendingReferral(inviteeId, inviteeEmail) {
+    try {
+      if (!inviteeId) return;
+      const code = localStorage.getItem(PENDING_REFERRAL_KEY);
+      if (!code) return;
+      if (typeof AuthManager === 'undefined' || typeof AuthManager.resolveReferralCode !== 'function') return;
+
+      AuthManager.resolveReferralCode(code).then(referrerId => {
+        // 不管解析成功与否，这个原始邀请码这次都算"处理完毕"——避免同一个
+        // 暂存邀请码在用户后续退出重新登录、或换设备登录等操作中被误重复
+        // 消费/绑定到别的账号上。
+        try { localStorage.removeItem(PENDING_REFERRAL_KEY); } catch (e) {}
+
+        if (!referrerId) return; // 邀请码无效/查无此人，静默放弃
+        if (referrerId === inviteeId) return; // 用户拿自己的邀请链接注册自己，低成本防御，静默放弃
+
+        try {
+          localStorage.setItem(PENDING_REFERRAL_INSERT_KEY, JSON.stringify({
+            referrerId,
+            inviteeId,
+            _email: inviteeEmail || null, // 供 _consumePendingReferralInsert() 核对身份，防止张冠李戴
+          }));
+          // 主动补一次消费尝试，不完全依赖被动的下一次 _onAuthChange：如果本项目
+          // 生产配置某天关闭了邮箱验证，signUp() 内部会在 resolveReferralCode()
+          // 这次网络请求完成前就已经派发过 SIGNED_IN 事件了（_onAuthChange 早于
+          // 这里写完 localStorage 的时机），错过那次被动触发窗口，要等到下一次
+          // auth 事件（刷新页面等）才会重试。_consumePendingReferralInsert() 本身
+          // 有"先移除再处理"的防重复保护，这里重复调用是安全的。当前生产配置
+          // （邮箱验证开启）下这一步是无害的空跑（此刻还没有 session，函数内部
+          // AuthManager.currentUser() 校验会直接短路返回）。
+          if (typeof _consumePendingReferralInsert === 'function') _consumePendingReferralInsert();
+        } catch (e) {
+          console.warn('[AuthUI] 暂存待插入邀请关系失败:', e);
+        }
+      }).catch(e => {
+        console.warn('[AuthUI] resolveReferralCode 失败:', e);
+        try { localStorage.removeItem(PENDING_REFERRAL_KEY); } catch (e2) {}
+      });
+    } catch (e) {
+      console.warn('[AuthUI] _registerPendingReferral:', e);
+    }
+  }
+
+  // ── 裂变邀请：消费"待插入邀请关系"暂存记录，真正写入 referrals 表 ──────
+  // 在 _onAuthChange() 里、user 非空（真正建立了有效 session）时调用，跟
+  // _consumePendingIslandSave() 同一个触发时机、同一套"先移除再处理"的并发
+  // 保护手法（避免 SIGNED_IN 紧跟 TOKEN_REFRESHED 短时间内触发两次插入）。
+  //
+  // 插入失败时写回重试（跟 _consumePendingIslandSave() 同一套模式，不再是
+  // "失败就永久放弃"）：这一行 referrals 记录是两笔奖励（被邀请人+50欢迎奖励、
+  // 邀请人+150/80激活奖励）的唯一凭据，插不进去等于两边都拿不到奖励，产品里
+  // 又没有任何补救入口——网络抖动/RLS拒绝/PostgREST 5xx 都不是罕见情况，值得
+  // 留到下一次 _onAuthChange（下次登录/刷新页面重新触发 getSession）再重试，
+  // 而不是这一次失败就永久丢弃。
+  async function _consumePendingReferralInsert() {
+    let raw;
+    try { raw = localStorage.getItem(PENDING_REFERRAL_INSERT_KEY); } catch { return; }
+    if (!raw) return;
+    localStorage.removeItem(PENDING_REFERRAL_INSERT_KEY); // 先清除，避免并发触发重复插入；失败时下方会写回
+
+    let payload;
+    try { payload = JSON.parse(raw); } catch { return; }
+    if (!payload || !payload.referrerId || !payload.inviteeId) return;
+
+    const user = AuthManager.currentUser();
+    if (!user || user.id !== payload.inviteeId) {
+      // 当前登录用户跟暂存时的被邀请人对不上（同设备先后用不同账号登录），丢弃
+      return;
+    }
+    if (payload._email && user.email && payload._email.toLowerCase() !== user.email.toLowerCase()) {
+      return;
+    }
+
+    let ok = false;
+    try {
+      ok = await AuthManager.insertReferral(payload.referrerId, payload.inviteeId);
+    } catch (e) {
+      console.warn('[AuthUI] 插入邀请关系失败:', e);
+    }
+
+    if (ok) {
+      // 插入成功 = 数据库触发器已经给被邀请人（自己）的 spirit_balance 加了
+      // 50 灵气欢迎奖励（见接口约定，不需要额外调用任何东西去发这个奖），
+      // 立刻重新合并一次云端灵气值，让 UI 尽快反映这笔奖励，而不是等到
+      // 下次登录才看到余额变化。
+      if (typeof _mergeSpiritBalance === 'function') _mergeSpiritBalance();
+      _toast((typeof Lang !== 'undefined') ? Lang.t('tasks.referral_welcome_toast') : '🎉 邀请码生效！你已获得灵气欢迎奖励');
+    } else {
+      // insertReferral() 内部已经区分了"referrals 表 UNIQUE(invitee_id) 冲突"
+      // （同一被邀请人已经插入过一行，属于正常的重复消费保护，不该重试）跟
+      // "网络/RLS/5xx 等真失败"吗？——没有，insertReferral() 目前对所有失败
+      // 都统一返回 false，无法在这里区分。但写回重试是安全的：即便是 UNIQUE
+      // 冲突导致的失败，下一次重试时 insertReferral() 会再次失败（依然是
+      // false），只是多一次无害的网络请求，不会产生副作用或重复发奖——数据库
+      // 一侧 INSERT 失败就是失败，不会插入半行。所以统一写回重试不需要先做
+      // 这个区分。
+      try { localStorage.setItem(PENDING_REFERRAL_INSERT_KEY, raw); } catch (e) {
+        console.warn('[AuthUI] 插入邀请关系失败后写回暂存记录也失败:', e);
+      }
+      console.warn('[AuthUI] 插入邀请关系失败，已保留待重试记录');
+    }
+  }
+
+  // ── 轻量 toast（跟 js/tasks.js::_wxToast() 同款视觉风格，本文件独立实现
+  //    一份而不是跨模块调用——理由同 tasks.js 里那份注释：避免给
+  //    auth.js/tasks.js 增加不必要的相互依赖，两处各自维护同款小组件是本
+  //    项目既有惯例）──────────────────────────────────────────
+  function _toast(msg) {
+    const existing = document.getElementById('auth-toast');
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.id = 'auth-toast';
+    toast.style.cssText = `
+      position:fixed;top:80px;left:50%;transform:translateX(-50%) translateY(-20px);
+      background:rgba(8,8,20,.95);border:1px solid rgba(201,169,110,.4);
+      border-radius:12px;padding:12px 20px;z-index:9500;
+      max-width:280px;font-size:12px;line-height:1.5;color:#e8e0d0;
+      box-shadow:0 8px 32px rgba(0,0,0,.4);
+      opacity:0;transition:all .3s ease;
+    `;
+    toast.textContent = msg;
+    document.body.appendChild(toast);
+
+    requestAnimationFrame(() => {
+      toast.style.opacity = '1';
+      toast.style.transform = 'translateX(-50%) translateY(0)';
+    });
+
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateX(-50%) translateY(-20px)';
+      setTimeout(() => toast.remove(), 300);
+    }, 3200);
+  }
+
+  // ── 裂变邀请：拼出当前登录用户的完整分享链接（供设置面板展示/复制）────
+  // 只在已登录时有意义——referral_code 是 profiles 表列，未登录用户没有
+  // AuthManager._user，getProfile() 内部本身也会因 !_user 直接返回 null。
+  async function getReferralLink() {
+    if (typeof AuthManager === 'undefined' || !AuthManager.isLoggedIn()) return null;
+    try {
+      const profile = await AuthManager.getProfile();
+      const code = profile?.referral_code;
+      if (!code) return null;
+      return window.location.origin + '/?ref=' + encodeURIComponent(code);
+    } catch (e) {
+      console.warn('[AuthUI] getReferralLink:', e);
+      return null;
+    }
+  }
+
+  // ── 裂变邀请：复制邀请链接到剪贴板，带降级兜底 ───────────────
+  // 不是所有环境都支持 navigator.clipboard（非安全上下文/极老浏览器/部分
+  // webview），降级用传统的 execCommand('copy')（临时插入一个 textarea，
+  // 选中后执行复制指令，再移除）。两种方式都失败时返回 false，调用方（
+  // js/settings.js）自行决定展示什么提示。
+  async function copyReferralLink(link) {
+    if (!link) return false;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(link);
+        return true;
+      } catch (e) {
+        // 继续走降级方案，不直接返回失败
+      }
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = link;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return !!ok;
+    } catch (e) {
+      console.warn('[AuthUI] copyReferralLink 降级方案也失败:', e);
+      return false;
     }
   }
 
@@ -843,5 +1213,6 @@ const AuthUI = (() => {
     clearFieldErr, onMainEmailBlur, onCountryChange,
     showMyIslands, _loadIslandByIndex,
     _onAuthChange, _refreshUserInfoDisplay,
+    getReferralLink, copyReferralLink,
   };
 })();

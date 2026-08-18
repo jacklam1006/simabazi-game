@@ -67,7 +67,7 @@ const UserState = (() => {
     const cur = getSpirit();
     set('spirit', cur + amount);
     _emit('spiritChanged', cur + amount);
-    _syncSpiritToCloud(cur + amount);
+    _syncSpiritDeltaToCloud(amount);
     return cur + amount;
   }
 
@@ -76,17 +76,44 @@ const UserState = (() => {
     if (cur < amount) return false;
     set('spirit', cur - amount);
     _emit('spiritChanged', cur - amount);
-    _syncSpiritToCloud(cur - amount);
+    _syncSpiritDeltaToCloud(-amount);
     return true;
   }
 
   // 登录用户：灵气值变化后 fire-and-forget 同步回 Supabase profiles 表，方便
-  // 换设备/重新登录时能取回余额（合并逻辑见 auth.js::_onAuthChange，取较大值，
-  // 灵气不是真实货币，多设备并发误差可接受，不追求强一致性）。
-  function _syncSpiritToCloud(balance) {
+  // 换设备/重新登录时能取回余额。
+  //
+  // 用增量（delta）而不是绝对值：这里同步的是"这一次变化了多少"，服务端用
+  // adjust_spirit_balance() RPC 做 spirit_balance += delta——跟旧版
+  // syncSpiritBalance(绝对值) 的"推整个余额覆盖云端"语义不同。旧版会在裂变
+  // 邀请奖励（欢迎奖励+50、激活奖励150/80）这类"服务端单方面发钱"的场景下
+  // 把服务端刚发的奖励覆盖抹掉——奖励在云端入账那一刻，本地完全不知情，之后
+  // 任何一次本地"本地旧值+这次变动"当绝对值推上去，都会把云端余额直接覆盖，
+  // 取 max 也救不回来（本地余额本来就可能比服务端刚发的新值大）。增量式同步
+  // 天然不会覆盖期间内服务端自己写入的任何值。
+  // 注意：登录时的多设备合并（auth.js::_mergeSpiritBalance()）是另一种场景——
+  // 那里是"读取远端真实值、跟本地取max、reconcile后的结果视为新的权威绝对值
+  // 再写回"，本质是校准/对齐操作，继续用 syncSpiritBalance(绝对值) 是对的，
+  // 不在这个函数的改动范围内。
+  function _syncSpiritDeltaToCloud(delta) {
     if (typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn && AuthManager.isLoggedIn()) {
-      try { AuthManager.syncSpiritBalance(balance); } catch (e) { /* fire-and-forget，不阻断本地操作 */ }
+      try { AuthManager.syncSpiritDelta(delta); } catch (e) { /* fire-and-forget，不阻断本地操作 */ }
     }
+  }
+
+  // ── 本地余额直接赋值，不触发云端增量同步 ─────────────────────────────
+  // 专供 auth.js::_mergeSpiritBalance() 的"远端 > 本地"分支使用：那个场景是把
+  // 本地余额追平云端已经存在的权威值，云端数值本身没有任何变化，不应该再往
+  // 云端推送任何增量。如果借用 addSpirit(remote-local) 走一遍上面的云端delta
+  // 同步，会把"追平本地"误当成一次真实的本地新增，把云端余额从 remote 推高到
+  // remote+(remote-local)，凭空多出一笔灵气——这是把 addSpirit() 从"推绝对值"
+  // 改造成"推增量"之后才会暴露的坑（旧实现里 addSpirit 推的是绝对值 remote，
+  // 覆盖回云端本来就等于 remote，天然幂等无害；新实现下必须用这个不碰云端的
+  // 版本，避免混淆"本地追平远端"和"本地产生了新的真实变化"这两种场景）。
+  function setSpiritLocalOnly(value) {
+    set('spirit', value);
+    _emit('spiritChanged', value);
+    return value;
   }
 
   // ── 签到 ──────────────────────────────────────────────────
@@ -239,7 +266,7 @@ const UserState = (() => {
     saveProfile, getProfile, hasSavedProfile,
     baziKey,
     saveIslandUrl, getIslandUrl,
-    getSpirit, addSpirit, useSpirit,
+    getSpirit, addSpirit, useSpirit, setSpiritLocalOnly,
     getCheckinInfo, doCheckin,
     getCompletedTasks, completeTask, isTaskDone,
     getDecorations, unlockDecoration, hasDecoration,

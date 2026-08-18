@@ -1,7 +1,7 @@
 /**
  * 司马八字 · 设置面板 settings.js
  *
- * SettingsUI — 编辑账号昵称 / 轻量刷新AI深析 / 完全重新生成岛屿 / 修改出生信息重新生成
+ * SettingsUI — 编辑账号昵称 / 轻量刷新AI深析 / 完全重新生成岛屿 / 修改出生信息重新生成 / 邀请好友链接
  *
  * 只编排调用其他领域已暴露好的函数，不重新实现任何底层逻辑：
  *   - AuthManager.updateProfile() / getProfile()          （js/auth.js）
@@ -9,6 +9,7 @@
  *   - Analysis.refreshAiAnalysis(analysis)                  （js/analysis.js，只渲染不请求）
  *   - App.regenerateCurrentIsland() / _getBaziData() / _getBirthInfo() / _showScreen()
  *     / _applyAiAnalysis() / getIslandGeneration() / getCurrentIslandId()（js/main-new.js）
+ *   - AuthUI.getReferralLink() / copyReferralLink()         （js/auth.js，裂变邀请系统）
  */
 const SettingsUI = (() => {
 
@@ -49,7 +50,55 @@ const SettingsUI = (() => {
       }).catch(() => {});
     }
 
+    _refreshReferralLink();
+
     panel.classList.remove('hidden');
+  }
+
+  // ── 邀请好友：预填专属邀请链接（供复制分享）─────────────
+  // AuthUI.getReferralLink() 内部会自行核对登录态、拉取 profiles.referral_code
+  // 拼出完整链接；这里只负责把结果写进输入框，找不到时（比如 referral_code
+  // 这个后端新增列还没来得及在这条账号上生成、或网络失败）展示友好提示而不是
+  // 留一个空白输入框。
+  function _refreshReferralLink() {
+    const linkEl = document.getElementById('settings-referral-link');
+    const msgEl  = document.getElementById('settings-referral-msg');
+    if (!linkEl) return;
+    linkEl.value = '';
+    if (msgEl) { msgEl.textContent = ''; msgEl.style.color = ''; }
+
+    if (typeof AuthUI === 'undefined' || typeof AuthUI.getReferralLink !== 'function') return;
+    AuthUI.getReferralLink().then(link => {
+      if (link) {
+        linkEl.value = link;
+      } else if (msgEl) {
+        msgEl.textContent = _t('settings.referral_unavailable');
+        msgEl.style.color = 'rgba(232,224,208,.5)';
+      }
+    }).catch(() => {
+      if (msgEl) { msgEl.textContent = _t('settings.referral_unavailable'); msgEl.style.color = 'rgba(232,224,208,.5)'; }
+    });
+  }
+
+  // ── 邀请好友：复制当前输入框里的链接 ─────────────────────
+  async function copyReferralLink() {
+    const linkEl = document.getElementById('settings-referral-link');
+    const msgEl  = document.getElementById('settings-referral-msg');
+    const link   = linkEl?.value || '';
+    if (!link) return;
+
+    const ok = (typeof AuthUI !== 'undefined' && typeof AuthUI.copyReferralLink === 'function')
+      ? await AuthUI.copyReferralLink(link)
+      : false;
+
+    if (!msgEl) return;
+    if (ok) {
+      msgEl.textContent = _t('settings.referral_copied');
+      msgEl.style.color = '#6FCF97';
+    } else {
+      msgEl.textContent = _t('settings.referral_copy_fail');
+      msgEl.style.color = '#ff6b6b';
+    }
   }
 
   function hide() {
@@ -267,5 +316,5 @@ const SettingsUI = (() => {
     // 不自动提交，用户确认或修改后自己点提交按钮
   }
 
-  return { show, hide, saveProfile, refreshAiOnly, confirmFullRegen, editBirthInfo };
+  return { show, hide, saveProfile, refreshAiOnly, confirmFullRegen, editBirthInfo, copyReferralLink };
 })();

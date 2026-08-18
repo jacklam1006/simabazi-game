@@ -168,6 +168,15 @@ const I18N = {
     'settings.edit_birth_btn': '修改出生信息后重新生成',
     'settings.close':          '关 闭',
 
+    // ── 邀请好友（裂变系统）──────────────────
+    'settings.referral_title':      '邀请好友',
+    'settings.referral_desc':       '把专属邀请链接分享给朋友，朋友注册并生成命盘岛屿后，你们都能获得灵气奖励。',
+    'settings.referral_link_label': '你的专属邀请链接',
+    'settings.referral_copy_btn':   '复制链接',
+    'settings.referral_copied':     '✓ 已复制',
+    'settings.referral_copy_fail':  '复制失败，请手动选中链接复制',
+    'settings.referral_unavailable':'邀请码生成中，请稍后重新打开设置面板',
+
     // ── 八字表 ────────────────────────────────
     'bazi.year':           '年柱',
     'bazi.month':          '月柱',
@@ -284,6 +293,15 @@ const I18N = {
     'tasks.wxmaint_crystal_note':   '（水晶庇护中）',
     'tasks.wxmaint_hint_toast':          '已为你定位，请在岛屿上拖拽对应的五行标记进行维护',
     'tasks.wxmaint_hint_toast_fallback': '请前往岛屿上找到对应的五行标记，拖拽维护',
+
+    // ── 邀君同游（裂变系统，任务面板真实进度展示）──────
+    'tasks.invite_section':        '邀君同游',
+    'tasks.invite_progress':       '已成功邀请 {n} 位朋友 · 岛屿已扩大',
+    'tasks.invite_progress_zero':  '前往设置面板复制专属邀请链接，邀请朋友解锁岛屿扩大',
+    'tasks.invite_login_hint':     '登录后查看邀请进度',
+    'tasks.invite_bonus_toast':    '再次邀请成功！你获得了额外灵气奖励',
+    'tasks.invite_first_toast':    '邀请成功！灵气奖励已到账',
+    'tasks.referral_welcome_toast':'🎉 邀请码生效！你已获得灵气欢迎奖励',
   },
 
   /* ════════════════════════════════════════════
@@ -440,6 +458,15 @@ const I18N = {
     'settings.edit_birth_btn': 'Edit Birth Info & Regenerate',
     'settings.close':          'Close',
 
+    // ── Referral (viral invite system) ────────
+    'settings.referral_title':      'Invite Friends',
+    'settings.referral_desc':       'Share your personal invite link — once a friend registers and generates their island, you both earn spirit rewards.',
+    'settings.referral_link_label': 'Your invite link',
+    'settings.referral_copy_btn':   'Copy Link',
+    'settings.referral_copied':     '✓ Copied',
+    'settings.referral_copy_fail':  'Copy failed, please select and copy the link manually',
+    'settings.referral_unavailable':'Generating your invite code — reopen Settings shortly',
+
     // ── BaZi Table ────────────────────────────
     'bazi.year':           'Year',
     'bazi.month':          'Month',
@@ -553,6 +580,15 @@ const I18N = {
     'tasks.wxmaint_crystal_note':   '(crystal-protected)',
     'tasks.wxmaint_hint_toast':          'Located it — drag to maintain this element marker on the island',
     'tasks.wxmaint_hint_toast_fallback': 'Head to the island and drag to maintain this element marker',
+
+    // ── Invite Friends (viral system, real-progress task card) ──
+    'tasks.invite_section':        'Invite Friends',
+    'tasks.invite_progress':       '{n} friend(s) successfully invited · Island expanded',
+    'tasks.invite_progress_zero':  'Copy your invite link in Settings to invite friends and unlock island expansion',
+    'tasks.invite_login_hint':     'Sign in to see your invite progress',
+    'tasks.invite_bonus_toast':    'Another successful invite! You earned a bonus spirit reward',
+    'tasks.invite_first_toast':    'Invite successful! Spirit reward received',
+    'tasks.referral_welcome_toast':'🎉 Invite code applied! You received a welcome spirit bonus',
   },
 };
 
