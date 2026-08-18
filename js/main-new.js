@@ -260,7 +260,13 @@ const App = (() => {
         const _t2 = (typeof Lang !== 'undefined') ? (k => Lang.t(k)) : (k => k);
         _setStageText(_t2('stage.done.t'), _t2('stage.done.s'));
 
-        AudioManager.playSfx('island_ready');
+        // 注意：'island_ready'这个"宏大揭幕"SFX不在这里播放——此时用户还盯着
+        // loading屏（进度条刚跳到100%），画面真正的揭晓时刻在下方800ms后的
+        // _showScreen('screen-island') + IslandLoader.playRevealFlight() 那里，
+        // SFX必须挪到那里跟画面同步触发（见 _revealIsland() 定义处）。BGM场景
+        // 切换是背景氛围音、不是强调焦点的音效，稍微提前到这里问题不大——
+        // AudioManager.setScene() 内部本身有1.4s淡出+1.5s切换的过渡节奏，
+        // 提前触发反而能让新BGM恰好在800ms后画面揭晓前后完成过渡。
         AudioManager.setScene('screen-island');
 
         // 已登录用户：立刻保存岛屿记录（3D模型是真金白银花Gemini图片额度+TripoAI
@@ -290,17 +296,7 @@ const App = (() => {
 
         setTimeout(() => {
           _showScreen('screen-island');
-          _onIslandReady();
-
-          // 未登录用户：延迟2秒弹出注册提示
-          if (typeof AuthManager !== 'undefined' && !AuthManager.isLoggedIn()) {
-            setTimeout(() => {
-              AuthUI.showRegister({
-                name:  document.getElementById('inp-name')?.value?.trim()  || '',
-                email: document.getElementById('inp-email')?.value?.trim() || '',
-              });
-            }, 2000);
-          }
+          _revealIsland();
         }, 800);
       },
       onError(err) {
@@ -310,6 +306,70 @@ const App = (() => {
         _showLoadingError(_t3('loading.fail_title') + '：' + (err || _t3('loading.fail_sub')));
       }
     });
+  }
+
+  // ── 首次生成岛屿的"揭晓时刻"编排 ────────────────────────
+  // 只服务于 _startGenerate() 的首次生成路径（画面从screen-island真正切入的
+  // 那一刻）——不要从 loadSavedIsland() 调用本函数：老用户每天打开自己已有的
+  // 岛屿存档不需要每次都重播一遍完整仪式感揭幕（相机运镜+音效+confetti），
+  // 那会让日常高频使用变慢变烦。这个"哇"时刻按设计只在第一次真正看到自己
+  // 命盘岛屿时出现一次，loadSavedIsland() 本来就不调用 island_ready 音效，
+  // 这里保持同样的范围边界。
+  //
+  // 时序关键点：'island_ready' 这个强调性SFX必须跟画面真正开始揭晓（本函数
+  // 被调用的这一刻，画面已经从loading切到screen-island）同步播放，不能像
+  // 改动前那样在上面 onComplete() 里提前放完。
+  //
+  // _onIslandReady() 里的 IslandAnnotate.attach()/DecorationAnnotate.attach()
+  // 都会现算一次模型的真实包围盒（见 island-annotate.js::_getIslandBox()，
+  // decoration-annotate.js::attach() 复用同一个函数）来定位标签/装饰锚点——
+  // 这是"调用那一刻"的一次性快照，不会随后续模型缩放变化自动重算。如果在
+  // playRevealFlight() 揭幕动画播放期间（模型仍处于缩小/半透明的中间状态）
+  // 就调用 _onIslandReady()，算出来的锚点会基于错误（缩小）的包围盒，标签会
+  // 错位。因此 _onIslandReady() 必须放进 playRevealFlight() 的 onComplete
+  // 回调里，等模型真正放大/淡入到最终形态之后再跑。
+  function _revealIsland() {
+    AudioManager.playSfx('island_ready');
+
+    const _afterReveal = () => {
+      _onIslandReady();
+
+      // 收尾庆祝效果：动画真正结束那一刻，而不是画面刚切入时——避免在相机
+      // 还在飞、岛屿还在放大时就撒花，遮挡揭幕过程本身。
+      UIEffects.confetti(24);
+      UIEffects.badgePop();
+
+      // 未登录用户：延迟弹出注册提示，起点从这个"揭晓真正完成"的时刻算起，
+      // 而不是改动前那个固定的800ms节点——避免注册弹窗在揭幕动画还没播完、
+      // 用户还没来得及好好看一眼岛屿时就跳出来打断体验。
+      // 2000ms（不是1500ms）：新用户报告会在 _onIslandReady() 之后1秒自动弹出
+      // （见约779行），_onIslandReady()正是本函数上面这一行同步触发的，两者
+      // 起点相同——如果这里用1500ms，注册弹窗会在报告刚打开500ms时就跳出来
+      // 打断阅读，改动前（旧的固定800ms节点方案）两者间隔约1000ms，这里延长
+      // 到2000ms是为了保住同样约1000ms的报告阅读缓冲窗口，不是随手改的数字。
+      if (typeof AuthManager !== 'undefined' && !AuthManager.isLoggedIn()) {
+        setTimeout(() => {
+          AuthUI.showRegister({
+            name:  document.getElementById('inp-name')?.value?.trim()  || '',
+            email: document.getElementById('inp-email')?.value?.trim() || '',
+          });
+        }, 2000);
+      }
+    };
+
+    // 兜底：frontend-3d 的揭幕运镜API若不可用/尚未加载/内部抛错，直接跳过
+    // 动画环节、立即完成剩余初始化——不引入无兜底的等待（呼应 tutorial.js
+    // 标签点击"5秒自动兜底"的既有模式，新增交互不应该让用户卡在半成品画面）。
+    if (typeof IslandLoader !== 'undefined' && typeof IslandLoader.playRevealFlight === 'function') {
+      try {
+        IslandLoader.playRevealFlight(_afterReveal);
+      } catch (e) {
+        console.warn('[App] playRevealFlight 执行异常，跳过揭幕动画:', e);
+        _afterReveal();
+      }
+    } else {
+      _afterReveal();
+    }
   }
 
   function retryGenerate() {
