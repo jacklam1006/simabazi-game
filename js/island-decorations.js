@@ -181,17 +181,22 @@ const IslandDecorations = (() => {
   // 'wuxing/{wx_en}_{direction}_t{tier}.glb'）——五行中文名→英文文件名前缀
   // 映射见下方 WX_EN_PREFIX（这是JS端独立维护的一份，风格参考
   // island_service/bazi_prompt.py 里同类中英映射的写法，但两侧语言不同不复用
-  // 同一份定义）。水行（水→water）6个组合（2方向×3档）因预算原因这批暂缺，
-  // glb 留 null，走 _addPlaceholder() 现成的占位几何体兜底——这是已知且
-  // 用户已接受的状态，不是bug，资产补齐后只需要把对应几条的 glb 字段填上
-  // 文件名，不需要改代码结构。
+  // 同一份定义）。2026-08-22：水行（水→water）6个组合（2方向×3档）此前因
+  // 预算原因暂缺，用户已用TripoAI Studio手动生成补齐，原始导出是未压缩高模
+  // （单文件最大57.8MB，是同目录其余24个文件的15-60倍），已用与本项目此前
+  // 65个装饰物同款的gltf-transform管线离线压缩（weld+simplify网格简化到约
+  // 1.0-1.6万顶点+resize到1024x1024+webp贴图压缩，全程不使用Draco/meshopt，
+  // 三档GLTFLoader无对应decoder会加载报错），压缩后单文件约0.6-0.75MB，与
+  // 其余四行同一量级——五行资产已全部到位，`hasAsset` 常量恒为true，不再有
+  // "某行缺资产走占位兜底"的例外分支，占位几何体路径只在GLB本身加载失败/
+  // GLTFLoader不可用等异常情况才会触发。
   //
   // 视觉隐喻区分方向（与 wuxing-scene.js 里 💧/✂️ 图标呼应，不靠颜色区分
   // 方向）：nourish（喜用神不足，需要"培育/灌溉"）用 tree（幼苗）占位类型；
   // restrain（忌神过旺，需要"约束/克制"）用 ring（锁环）占位类型——占位类型
-  // 只在 glb 缺失（水行）时才会真正被渲染，有真实GLB的四行直接走 _loadGLB()
-  // 不受此影响。颜色统一复用 CONFIG.WUXING_COLORS[wx].hex（不新造配色系统，
-  // 跨全项目一致）。shrine 款不分五行，用统一的暖金色（呼应"庄重已巩固"调性）。
+  // 仅作为 _loadGLB() 异常路径的兜底显示，正常情况下五行全部走真实GLB模型。
+  // 颜色统一复用 CONFIG.WUXING_COLORS[wx].hex（不新造配色系统，跨全项目
+  // 一致）。shrine 款不分五行，用统一的暖金色（呼应"庄重已巩固"调性）。
   const WX_EN_PREFIX = { '木': 'wood', '火': 'fire', '土': 'earth', '金': 'metal', '水': 'water' };
   (function _registerWuxingMaintenanceDecors() {
     const WX_LIST = ['木', '火', '土', '金', '水'];
@@ -200,7 +205,7 @@ const IslandDecorations = (() => {
       const hex = (typeof CONFIG !== 'undefined' && CONFIG.WUXING_COLORS && CONFIG.WUXING_COLORS[wx])
         ? CONFIG.WUXING_COLORS[wx].hex : 0xc9a96e;
       const enPrefix = WX_EN_PREFIX[wx];
-      const hasAsset = enPrefix !== 'water';   // 水行资产暂缺（见上方注释）
+      const hasAsset = true;   // 2026-08-22：五行（含水行）3D资产已全部补齐到位
       DIRECTIONS.forEach(direction => {
         [1, 2, 3].forEach(tier => {
           DECOR_DEFS[`wxmaint_${wx}_${direction}_t${tier}`] = {
