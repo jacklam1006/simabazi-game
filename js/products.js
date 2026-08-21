@@ -17,9 +17,12 @@
  * 模型，见 js/wuxing-maintenance.js 文件头注释）。
  *
  * 依赖：
- *   AuthManager（js/auth.js）        — 登录态判断 + 创建兑换请求
- *   UserState（js/user-state.js）    — 灵气值增减
- *   WuxingMaintenance（js/wuxing-maintenance.js） — setOwnership()
+ *   AuthManager（js/auth.js）        — 登录态判断 + redeemWuxingProduct()
+ *     原子兑换RPC（服务端权威扣款+记录归属，2026-08-21第四轮重构取代原来
+ *     "spendSpirit()扣钱 + createRedemptionRequest()建记录"两步分开调用）
+ *   UserState（js/user-state.js）    — 灵气本地展示同步（setSpiritLocalOnly）
+ *   WuxingMaintenance（js/wuxing-maintenance.js） — setOwnership()（本地状态写入，
+ *     云端归属已由 redeemWuxingProduct() 原子完成）
  *   IslandDecorations.add(decorId, baziData)（js/island-decorations.js，frontend-3d 领域）
  *   WuxingScene.reflectTier(wx,direction,tier) / markShrined(wx,direction)（js/wuxing-scene.js，frontend-3d 领域）
  *   App.getCurrentIslandId()（js/main-new.js）
@@ -33,8 +36,16 @@ const Products = (() => {
   // ['木','火','土','金','水'])`）把 wx 映射成 0-4 整数复用同一列，而不是
   // 改数据库结构——trait_kind 列同理复用来存 direction（'nourish'/'restrain'，
   // 跟旧值'strength'/'caution'同样是字符串，列类型天然兼容，不需要迁移）。
-  // 只有 ③水晶（走实体履约、写 redemption_requests）需要这个映射，④神龛
-  // 纯虚拟购买完全跳过这张表，不需要 wxIndex。
+  //
+  // 2026-08-21 灵气服务端权威记账重构第四轮：这份映射目前在本文件内没有
+  // 任何调用点——_redeemCrystal() 不再自己往 redemption_requests 表写行
+  // （AuthManager.createRedemptionRequest() 已被 AuthManager.
+  // redeemWuxingProduct() 原子RPC取代，wx 到 trait_index 的映射改由服务端
+  // 内部完成，RPC 的 p_wx 参数直接接受 '木'/'火'等中文字符串）。这里保留
+  // 这份代码而不是删除，是因为 AuthManager.createRedemptionRequest() 函数
+  // 本身还没有被删除（本轮改造未涉及、不确定是否有历史数据/未来功能仍需要
+  // 它），留着这份映射工具函数以防万一，如果确认 createRedemptionRequest()
+  // 也彻底没有调用点了，可以两者一起清理。
   const WX_ORDER = ['木', '火', '土', '金', '水'];
   function _wxToIndex(wx) {
     const i = WX_ORDER.indexOf(wx);
@@ -162,17 +173,15 @@ const Products = (() => {
   // setOwnership() 内部持久化 ownershipTier:'crystal'，_computeTier() 懒计算
   // 时会读到这个字段自动改用6天节奏），且维护动作换皮成"消磁"（拖拽交互本身
   // 由 js/wuxing-drag.js 负责，本文件不涉及）。
+  //
+  // 2026-08-21 灵气服务端权威记账重构第四轮：整段"扣灵气→建redemption_
+  // requests→通知业务方→本地解锁装饰→setOwnership→3D视觉刷新"里，"扣灵气"
+  // 与"建redemption_requests"两步合并成一次 AuthManager.redeemWuxingProduct()
+  // 原子RPC调用（服务端同一事务内完成，价格由服务端商品表决定，不再信任
+  // 客户端传的 product.spiritCost/product.name——这两个字段仅用于本地价格
+  // 展示，不再参与真正扣款）。原来"写库失败退灵气"这个兜底分支不再需要——
+  // 原子RPC要么整体成功要么整体失败，不存在"扣了钱但没建成记录"这种中间态。
   async function _redeemCrystal(product, { wx, direction, summary, baziData }) {
-    // wx 必须能映射到 redemption_requests.trait_index（INTEGER列）能接受的
-    // 0-4 整数——提前校验、失败即中止，不能等到扣完灵气/写库失败才发现，
-    // 那样会退灵气但用户体验很差（见下方 record 为空时的退灵气兜底同理）。
-    const wxIndex = _wxToIndex(wx);
-    if (wxIndex === null) {
-      console.error('[Products] 无效的wx:', wx);
-      _toast(_t('products.fail'), true);
-      return false;
-    }
-
     const islandId = (typeof App !== 'undefined' && typeof App.getCurrentIslandId === 'function')
       ? App.getCurrentIslandId() : null;
 
@@ -185,56 +194,72 @@ const Products = (() => {
       return false;
     }
 
-    if (typeof UserState === 'undefined' || !UserState.useSpirit(product.spiritCost)) {
-      const cur   = (typeof UserState !== 'undefined') ? UserState.getSpirit() : 0;
-      const short = Math.max(product.spiritCost - cur, 0);
-      _toast(_t('products.insufficient', { n: short }), true);
+    if (typeof AuthManager === 'undefined' || !AuthManager.isLoggedIn || !AuthManager.isLoggedIn()) {
+      // 正常调用路径下不会走到这里——redeem() 上层已经做过登录态前置校验，
+      // 这里是防御性兜底，跟随既有代码风格。
+      _toast(_t('products.need_login'), true);
       return false;
+    }
+
+    // baseTier：五行问题创建时按severity算出、不再变化的命理静态属性，供
+    // 服务端 redeem_wuxing_product() RPC 正确初始化/记录 wuxing_maintenance_
+    // state 行。不传severity——此刻这条issue必然已经在渲染面板时被
+    // WuxingMaintenance.getState() 命中创建过record，这里只是读取已持久化
+    // 的baseTier，不需要（也没有）severity可传，同 setOwnership() 定义处
+    // 同款既有取舍。
+    const baseTier = (typeof WuxingMaintenance !== 'undefined' && typeof WuxingMaintenance.getState === 'function')
+      ? (WuxingMaintenance.getState(baziData, wx, direction).baseTier || 1) : 1;
+
+    const redeemResult = await AuthManager.redeemWuxingProduct({
+      productId: product.id, baziKey: (typeof UserState !== 'undefined' && typeof UserState.baziKey === 'function') ? UserState.baziKey(baziData) : null,
+      wx, direction, baseTier, islandId, traitSummary: summary,
+    });
+    if (redeemResult.error) {
+      // 服务端 RAISE EXCEPTION 目前只有两种可能消息：'灵气不足'（正常业务
+      // 场景，映射到既有的余额不足提示）与'未知商品'/'无效的wx'（理论上不
+      // 该在正常UI流程发生——PRODUCT_DEFS与服务端商品表约定同步一致，见
+      // 文件头注释——按字符串包含匹配来判断具体是哪一种，避免把"未知商品"
+      // 这种真正的配置不一致错误误报成"余额不足"，误导用户以为多凑点灵气
+      // 就能解决）。
+      if (String(redeemResult.error).includes('灵气不足')) {
+        const cur   = (typeof UserState !== 'undefined') ? UserState.getSpirit() : 0;
+        const short = Math.max(product.spiritCost - cur, 0);
+        _toast(_t('products.insufficient', { n: short }), true);
+      } else {
+        console.error('[Products] redeemWuxingProduct失败:', redeemResult.error);
+        _toast(_t('products.fail'), true);
+      }
+      return false;
+    }
+    if (typeof UserState !== 'undefined' && redeemResult.data) {
+      UserState.setSpiritLocalOnly(redeemResult.data.new_balance);
     }
 
     const productName = _isZh() ? product.name.zh : product.name.en;
 
-    let record = null;
-    try {
-      record = await AuthManager.createRedemptionRequest({
-        productId:   product.id,
-        productName: product.name.zh, // 数据库记录统一存中文名，方便业务方线下处理
-        spiritCost:  product.spiritCost,
-        islandId,
-        // trait_kind/trait_index 两列（表结构不变）现在存五行维护系统的语义：
-        // trait_kind 存 direction 字符串（'nourish'/'restrain'，跟旧值
-        // 'strength'/'caution'一样是TEXT列，天然兼容）；trait_index 存 wx
-        // 映射出的0-4整数（见上方 WX_ORDER/_wxToIndex 定义处注释，INTEGER列
-        // 存不了'木'这种字符串，所以先映射成固定顺序下标）。
-        kind: direction, idx: wxIndex, summary,
-      });
-    } catch (e) {
-      console.error('[Products] 创建兑换请求异常:', e);
-    }
-
-    if (!record) {
-      // 写入失败：不能让用户"扣了灵气但没有真实兑换记录"，把已扣的灵气退回去
-      UserState.addSpirit(product.spiritCost);
-      _toast(_t('products.fail'), true);
-      return false;
-    }
-
-    // fire-and-forget 通知业务方，失败不影响用户侧兑换成功的判定
+    // fire-and-forget 通知业务方，失败不影响用户侧兑换成功的判定。
+    // contact_phone 不再从 createRedemptionRequest() 的返回值里取（那个函数
+    // 已被 redeemWuxingProduct() 取代，RPC 只返回 {new_balance, redemption_id}
+    // 不含联系方式）——这一步不涉及灵气/安全，为了拿手机号单独查一次
+    // getProfile()，比为了这一个非安全关键的通知步骤改RPC返回值形状更简单。
     const apiBase = (typeof CONFIG !== 'undefined' && CONFIG.ISLAND_API_BASE) || 'https://simabazi-island.onrender.com';
     const userEmail = (typeof AuthManager !== 'undefined' && typeof AuthManager.currentUser === 'function')
       ? (AuthManager.currentUser()?.email || null) : null;
-    fetch(apiBase + '/notify-redemption', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        product_name:  productName,
-        trait_summary: summary,
-        // 后端 NotifyRedemptionRequest 把这些字段声明为 str = ''——默认值只在
-        // 字段缺失时生效，显式传 null 会触发 pydantic 校验失败返回422，
-        // 静默被下面的 .catch(()=>{}) 吞掉，业务方收不到通知邮件。兜底成空串。
-        contact_phone: record.contact_phone || '',
-        user_email:    userEmail || '',
-      }),
+    AuthManager.getProfile().then(profile => {
+      const contactPhone = ((profile?.phone_code || '') + (profile?.phone || '')).trim() || '';
+      fetch(apiBase + '/notify-redemption', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          product_name:  productName,
+          trait_summary: summary,
+          // 后端 NotifyRedemptionRequest 把这些字段声明为 str = ''——默认值只在
+          // 字段缺失时生效，显式传 null 会触发 pydantic 校验失败返回422，
+          // 静默被下面的 .catch(()=>{}) 吞掉，业务方收不到通知邮件。兜底成空串。
+          contact_phone: contactPhone,
+          user_email:    userEmail || '',
+        }),
+      }).catch(() => {});
     }).catch(() => {});
 
     // 装饰持久化解锁（js/user-state.js）：必须先于 IslandDecorations.add() 调用——
@@ -254,12 +279,14 @@ const Products = (() => {
     // 第四阶段核心改造：不再调用 WuxingScene.markResolved(wx,direction)——
     // 那个函数的设计意图是"翻牌+彻底删除热点"，继续调用会把仍然存活的issue
     // 热点错误地永久删除（该issue以后还是会衰减，热点不该消失）。改为：
-    //   1) WuxingMaintenance.setOwnership() 持久化 ownershipTier:'crystal'，
-    //      往后 getState()/computeTier() 懒计算会自动改用6天衰减周期；
+    //   1) WuxingMaintenance.setOwnership() 持久化 ownershipTier:'crystal'
+    //      到本地（云端归属已经由上面 redeemWuxingProduct() 原子写完，这个
+    //      函数现在只做本地状态写入，见该函数定义处2026-08-21第四轮改造
+    //      说明），往后 getState()/computeTier() 懒计算会自动改用6天衰减周期；
     //   2) WuxingScene.reflectTier(wx,direction,1) 立即把3D视觉切到档位1
     //      （良好态占位/发光），呼应用户刚花灵气买水晶那一刻应有的即时反馈。
     if (typeof WuxingMaintenance !== 'undefined' && typeof WuxingMaintenance.setOwnership === 'function' && baziData) {
-      WuxingMaintenance.setOwnership(baziData, wx, direction, 'crystal', product.id);
+      await WuxingMaintenance.setOwnership(baziData, wx, direction, 'crystal', product.id);
     }
     if (typeof WuxingScene !== 'undefined' && typeof WuxingScene.reflectTier === 'function') {
       WuxingScene.reflectTier(wx, direction, 1);
@@ -278,15 +305,46 @@ const Products = (() => {
   // setOwnership(...,'shrine',...) → _computeTier() 顶部直接 `if
   // (ownershipTier==='shrine') return 1`，不再进入衰减while循环）。
   async function _redeemShrine(product, { wx, direction, baziData }) {
-    if (typeof UserState === 'undefined' || !UserState.useSpirit(product.spiritCost)) {
-      const cur   = (typeof UserState !== 'undefined') ? UserState.getSpirit() : 0;
-      const short = Math.max(product.spiritCost - cur, 0);
-      _toast(_t('products.insufficient', { n: short }), true);
+    // 2026-08-21 灵气服务端权威记账重构第四轮：同 _redeemCrystal()，改为
+    // 一次原子 AuthManager.redeemWuxingProduct() 调用（服务端商品表判定这是
+    // shrine类型，同一事务内只扣款、不插入 redemption_requests，见该函数
+    // 定义处注释）。正常调用路径下必然已登录（redeem() 上层已做前置校验），
+    // 这里的 typeof/isLoggedIn 判断只是防御性兜底。
+    if (typeof AuthManager === 'undefined' || !AuthManager.isLoggedIn || !AuthManager.isLoggedIn()) {
+      _toast(_t('products.need_login'), true);
       return false;
     }
 
+    const baseTier = (typeof WuxingMaintenance !== 'undefined' && typeof WuxingMaintenance.getState === 'function')
+      ? (WuxingMaintenance.getState(baziData, wx, direction).baseTier || 1) : 1;
+    const islandId = (typeof App !== 'undefined' && typeof App.getCurrentIslandId === 'function')
+      ? App.getCurrentIslandId() : null;
+
+    const redeemResult = await AuthManager.redeemWuxingProduct({
+      productId: product.id, baziKey: (typeof UserState !== 'undefined' && typeof UserState.baziKey === 'function') ? UserState.baziKey(baziData) : null,
+      wx, direction, baseTier, islandId, traitSummary: null, // 纯虚拟购买，不写redemption_requests，不需要trait摘要
+    });
+    if (redeemResult.error) {
+      // 同 _redeemCrystal()：只有真正的"灵气不足"才映射到余额不足提示，
+      // 其它（理论上不该发生的）服务端校验失败走通用失败提示，见该处注释。
+      if (String(redeemResult.error).includes('灵气不足')) {
+        const cur   = (typeof UserState !== 'undefined') ? UserState.getSpirit() : 0;
+        const short = Math.max(product.spiritCost - cur, 0);
+        _toast(_t('products.insufficient', { n: short }), true);
+      } else {
+        console.error('[Products] redeemWuxingProduct失败:', redeemResult.error);
+        _toast(_t('products.fail'), true);
+      }
+      return false;
+    }
+    if (typeof UserState !== 'undefined' && redeemResult.data) {
+      UserState.setSpiritLocalOnly(redeemResult.data.new_balance);
+    }
+
+    // 云端归属已由上面的原子RPC写完，这里只做本地状态写入（见
+    // WuxingMaintenance.setOwnership() 定义处2026-08-21第四轮改造说明）。
     if (typeof WuxingMaintenance !== 'undefined' && typeof WuxingMaintenance.setOwnership === 'function' && baziData) {
-      WuxingMaintenance.setOwnership(baziData, wx, direction, 'shrine', product.id);
+      await WuxingMaintenance.setOwnership(baziData, wx, direction, 'shrine', product.id);
     }
     // markShrined()（跟 reflectTier() 不同）——不删除热点DOM，永久保留可点击
     // 查看"已巩固"叙事，只把该issue的3D装饰换成"已巩固"造型。真实decorId不

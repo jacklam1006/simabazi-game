@@ -41,18 +41,22 @@
  * 公开 API（前四个函数签名已与 frontend-3d/products.js 冻结，不要擅自修改
  * 参数顺序/返回值形状）：
  *   WuxingMaintenance.getState(baziData, wx, direction, severity)
- *     → { tier, ownershipTier, lastMaintainedAt, createdAt, healthPercent, daysUntilDecay }
- *     （2026-08-15新增 healthPercent/daysUntilDecay 两个纯派生字段——不是新的
- *     冻结契约参数，是对已冻结返回值形状的追加字段，前四个字段行为不变，见
- *     getState() 定义处注释）
+ *     → { tier, baseTier, ownershipTier, lastMaintainedAt, createdAt, healthPercent, daysUntilDecay }
+ *     （2026-08-15新增 healthPercent/daysUntilDecay、2026-08-21新增 baseTier
+ *     ——均为纯追加字段，不是新的冻结契约参数，是对已冻结返回值形状的追加
+ *     字段，前四个字段行为不变，见 getState() 定义处注释）
  *   WuxingMaintenance.maintain(baziData, wx, direction, severity)
- *     → { ok:true, spiritEarned, newTier:1 }
- *     | { ok:false, reason:'daily_limit'|'invalid_params'|'already_shrined' }
+ *     → Promise<{ ok:true, spiritEarned, newTier:1 }
+ *     | { ok:false, reason:'daily_limit'|'invalid_params'|'already_shrined'|'server_error' }>
+ *     （2026-08-21起为 async 函数——登录用户走服务端权威RPC，见函数定义处
+ *     注释；返回值形状本身未变，只是包了一层Promise，调用方 js/wuxing-drag.js
+ *     本来就已双重兼容同步/Promise两种返回）
  *   WuxingMaintenance.instantFix(baziData, wx, direction, severity)
- *     → { ok:true, spiritCost, newTier:1 }
- *     | { ok:false, reason:'insufficient_spirit'|'invalid_params'|'already_shrined' }
+ *     → Promise<{ ok:true, spiritCost, newTier:1 }
+ *     | { ok:false, reason:'insufficient_spirit'|'invalid_params'|'already_shrined'|'server_error' }>
+ *     （2026-08-21起为 async 函数，同上）
  *   WuxingMaintenance.setOwnership(baziData, wx, direction, ownershipTier, productId)
- *     → void
+ *     → Promise<void>（2026-08-21起为 async 函数，调用方需要 await）
  *
  * 另外新增两个纯函数（不在冻结签名之列，供UI提前算价/算奖励用，不产生副作用）：
  *   WuxingMaintenance.instantFixCost(tier, severity) → number
@@ -240,11 +244,17 @@ const WuxingMaintenance = (() => {
 
   /**
    * WuxingMaintenance.getState(baziData, wx, direction, severity)
-   * → { tier, ownershipTier, lastMaintainedAt, createdAt, healthPercent, daysUntilDecay }
+   * → { tier, baseTier, ownershipTier, lastMaintainedAt, createdAt, healthPercent, daysUntilDecay }
    * 不存在记录时懒创建默认记录（baseTier由severity算出）并持久化。
    * 本函数现在是纯读取（不再需要像修复前那样为了"记住已跨越过首次周期"而
    * 写回localStorage——见 _computeTier() 定义处的CONFIRMED修复说明），
    * 唯一的写入只发生在 _getOrCreateRecord() 首次创建记录时。
+   *
+   * baseTier（2026-08-21新增，纯追加字段，不影响既有 tier/ownershipTier等
+   * 冻结契约字段的行为）：命理静态属性，issue创建时按severity算出后不再变，
+   * 供 js/products.js 兑换编排时传给服务端 redeem_wuxing_product() RPC 的
+   * p_base_tier 参数（该RPC需要这个值来正确记录/初始化服务端
+   * wuxing_maintenance_state 行，见 js/auth.js::redeemWuxingProduct()）。
    *
    * healthPercent/daysUntilDecay（2026-08-15新增，与3D热点环形指示器
    * /面板进度条并行开发，frontend-3d 领域只读这两个字段，不读 tier 计算过程）：
@@ -286,7 +296,7 @@ const WuxingMaintenance = (() => {
     if (!baziKey || !wx || !_validDirection(direction)) {
       // 防御性兜底：调用方传参异常时不抛错，返回一个"安泰"态的空壳，避免UI层
       // 因为一次异常输入直接崩溃——正常调用路径不会走到这里。
-      return { tier: 1, ownershipTier: 'none', lastMaintainedAt: null, createdAt: null, healthPercent: 100, daysUntilDecay: null };
+      return { tier: 1, baseTier: 1, ownershipTier: 'none', lastMaintainedAt: null, createdAt: null, healthPercent: 100, daysUntilDecay: null };
     }
     const { rec } = _getOrCreateRecord(baziKey, wx, direction, severity);
     const { tier, windowElapsedMs, windowThresholdMs } = _computeTier(rec);
@@ -313,6 +323,7 @@ const WuxingMaintenance = (() => {
     }
     return {
       tier,
+      baseTier:         rec.baseTier,
       ownershipTier:    rec.ownershipTier,
       lastMaintainedAt: rec.lastMaintainedAt,
       createdAt:        rec.createdAt,
@@ -354,8 +365,18 @@ const WuxingMaintenance = (() => {
    *     被绕过守卫继续刷灵气/被当作还需要维护——这里在数据层兜底一道，不
    *     依赖UI层过滤是唯一防线）
    * 免费拖拽维护成功后调用。每条issue每UTC自然日限一次。
+   *
+   * 2026-08-21 服务端权威记账重构：登录用户改走服务端权威 RPC
+   * wuxing_free_maintain()（灵气奖励金额由服务端独立计算并记账，不再信任
+   * 客户端算出的 spiritEarned/直接调用 UserState.addSpirit()）——本地这份
+   * `_computeTier()`/`maintainReward()` 算出的 oldTier/spiritEarned 在登录
+   * 分支下只用于"today本地校验能否发起这次尝试请求"的乐观预判，真正生效的
+   * 奖励数字以服务端返回为准。未登录（匿名试用）用户完全不受影响，继续走
+   * 原有纯本地记账。函数本身从同步变为 async——调用方（js/wuxing-drag.js）
+   * 本来就已经用 `result && typeof result.then === 'function'` 做了双重兼容
+   * 处理，不需要改。
    */
-  function maintain(baziData, wx, direction, severity) {
+  async function maintain(baziData, wx, direction, severity) {
     const baziKey = _baziKeyOf(baziData);
     if (!baziKey || !wx || !_validDirection(direction)) return { ok: false, reason: 'invalid_params' };
 
@@ -367,20 +388,87 @@ const WuxingMaintenance = (() => {
     // 用维护前（本次动作生效前）的tier算奖励——"问题放置越久赚得越多"应该反映
     // 维护之前的糟糕程度，不是维护后已经归1的状态。
     const { tier: oldTier } = _computeTier(rec);
-    const spiritEarned = maintainReward(oldTier, severity);
 
+    const isLoggedIn = typeof AuthManager !== 'undefined' && typeof AuthManager.isLoggedIn === 'function' && AuthManager.isLoggedIn();
+    let spiritEarned;
+
+    if (isLoggedIn) {
+      // 2026-08-21 顺带修复：补传 rec.baseTier 作为服务端 wuxing_free_maintain()
+      // 的 p_base_tier 参数——该RPC在服务端对应行不存在时会自己INSERT一行
+      // （C2死锁修复的一部分，见supabase_setup.sql该函数定义处注释），此前
+      // 前端调用没有传这个参数，会一律使用RPC默认值1创建行，导致该issue在
+      // 服务端的base_tier被错误地钉死成1（即便真实severity更高），使
+      // severity=2问题应有的奖励加成永久缺失。本地已存在的record.baseTier
+      // 是本地已经算好且持久化的正确命理静态属性，直接传给服务端即可。
+      const result = await AuthManager.wuxingFreeMaintain(baziKey, wx, direction, oldTier, rec.baseTier);
+      if (result.error) return { ok: false, reason: _mapServerError(result.error) };
+      // 2026-08-21 顺带修复（PLAUSIBLE防御）：result.data 理论上不该为
+      // null（error为空时RPC应该总有返回行），但如果发生（比如PostgREST
+      // 返回形状异常），直接访问 .spirit_awarded 会抛 TypeError 中断整个
+      // 拖拽维护流程而不是优雅降级——这里改成按失败处理。
+      if (!result.data) return { ok: false, reason: 'server_error' };
+      spiritEarned = result.data.spirit_awarded;
+      if (typeof UserState !== 'undefined' && typeof UserState.setSpiritLocalOnly === 'function') {
+        UserState.setSpiritLocalOnly(result.data.new_balance);
+      }
+    } else {
+      spiritEarned = maintainReward(oldTier, severity);
+      if (typeof UserState !== 'undefined' && typeof UserState.addSpirit === 'function') {
+        UserState.addSpirit(spiritEarned);
+      }
+    }
+
+    // 这几个本地字段（lastMaintainedAt/firstCycleConsumed/lastFreeMaintainUTCDate）
+    // 继续走原有本地逻辑 + _syncToCloud()——本次改造没有把这些字段的写入权
+    // 收回服务端，服务端 wuxing_maintenance_state 表仍由本地这份 upsert 同步
+    // 维持，只有"灵气怎么发"这一小块权威来源变了。
     rec.lastMaintainedAt        = Date.now();
     rec.firstCycleConsumed      = true; // 维护一次即视为"首次紧凑周期"已消耗，此后转入正常节奏
     rec.lastFreeMaintainUTCDate = today;
     all[key] = rec;
     _writeAll(all);
 
-    if (typeof UserState !== 'undefined' && typeof UserState.addSpirit === 'function') {
-      UserState.addSpirit(spiritEarned);
-    }
     _syncToCloud(baziKey, wx, direction, rec);
 
     return { ok: true, spiritEarned, newTier: 1 };
+  }
+
+  // ── 服务端错误消息 → 前端既有 reason 字符串映射（服务端权威记账重构新增）──
+  // wuxing_free_maintain()/wuxing_instant_fix() 失败时 RAISE EXCEPTION 抛出的
+  // 是人类可读消息，不是稳定的错误码——这里按已知的几种消息内容做字符串包含
+  // 匹配，尽量映射回前端既有的 reason 取值，让 UI 层（js/wuxing-drag.js/
+  // js/main-new.js）不需要感知"这次失败到底是本地判定的还是服务端判定的"。
+  function _mapServerError(message) {
+    const msg = String(message || '');
+    if (msg.includes('已经维护过')) return 'daily_limit';
+    // 2026-08-22 qa-reviewer第六轮CONFIRMED-2修复：服务端这轮新增了两道硬顶
+    // 校验（wuxing_free_maintain() 里"这张命盘今日免费维护次数≥3"+"本用户
+    // 今日免费维护总次数≥30"，跟上面'已经维护过'——针对单条issue是否当天
+    // 已维护过——是三条不同的校验），语义上都是"今天不能再免费维护、明天再
+    // 来"，js/wuxing-drag.js 现有 daily_limit 分支弹出的 wxmaint.
+    // drag_daily_limit 文案已经能准确传达这一点，不需要为了区分三种细节差异
+    // 而新增reason值/新增i18n key——直接复用同一个reason，避免过度设计。
+    // 用'次数已达上限'做子串匹配（不锁死"今日免费维护"这个前缀）：backend-
+    // service那轮把具体文案从'今日免费维护次数已达上限'拆成了'今日这张命盘的
+    // 免费维护次数已达上限'/'今日免费维护总次数已达上限'两条，如果这里继续
+    // 按原来那个完整短语做包含匹配，两条新文案都不含这个完整子串、会双双
+    // 漏判落回兜底的server_error——这正是本条CONFIRMED-2要修的问题，因为
+    // 两个并行子agent各自持有的错误文案字符串没有同步导致被重新引入了一次。
+    // 用更短、更稳定的核心短语兜底，以后SQL侧再怎么调整"今日/这张命盘/总"这
+    // 几个修饰语，只要不改"次数已达上限"这个核心措辞就不会再次漏判。
+    if (msg.includes('次数已达上限')) return 'daily_limit';
+    if (msg.includes('已永久巩固')) return 'already_shrined';
+    if (msg.includes('未找到'))     return 'invalid_params';
+    // 2026-08-22 同轮修复：'无效的命盘标识'/'无效的五行'是这轮新增的防御性
+    // 参数校验（wuxing_free_maintain()/wuxing_instant_fix() 内部对
+    // p_bazi_key归属、p_wx枚举值的校验），正常UI操作路径不会触发——只有绕过
+    // 前端直接调用RPC才可能命中——跟原有'未找到'（找不到维护状态记录）性质
+    // 相同，都属于"参数不合法"，统一映射到已有的 invalid_params，不需要
+    // 专属提示。
+    if (msg.includes('无效的命盘标识')) return 'invalid_params';
+    if (msg.includes('无效的五行'))     return 'invalid_params';
+    if (msg.includes('灵气不足'))   return 'insufficient_spirit';
+    return 'server_error';
   }
 
   /**
@@ -392,20 +480,42 @@ const WuxingMaintenance = (() => {
    *   | { ok:false, reason:'already_shrined' }（同 maintain() 的CONFIRMED配套
    *     修复——已彻底退出维护循环的issue不允许再花灵气"调理"，检查须发生在
    *     实际调用 UserState.useSpirit() 扣款之前，不能等扣完钱才发现）
-   * 花灵气跳过拖拽直接回1档。灵气不足时不修改任何状态（UserState.useSpirit()
-   * 内部灵气不够会返回false且不扣款，这里据此直接短路返回失败）。
+   * 花灵气跳过拖拽直接回1档。灵气不足时不修改任何状态（登录用户由服务端
+   * wuxing_instant_fix() RAISE EXCEPTION 短路；未登录用户 UserState.
+   * useSpirit() 内部灵气不够会返回false且不扣款，这里据此直接短路返回失败）。
+   *
+   * 2026-08-21 服务端权威记账重构：登录用户改走服务端权威 RPC
+   * wuxing_instant_fix()（扣费金额由服务端独立计算并扣款，不再信任客户端
+   * 算出的 cost/直接调用 UserState.useSpirit()）——本地 instantFixCost()
+   * 算出的 cost 在登录分支下只用于 UI 层提前算价展示，真正扣费以服务端为准。
+   * 未登录用户完全不受影响。函数从同步变为 async。
    */
-  function instantFix(baziData, wx, direction, severity) {
+  async function instantFix(baziData, wx, direction, severity) {
     const baziKey = _baziKeyOf(baziData);
     if (!baziKey || !wx || !_validDirection(direction)) return { ok: false, reason: 'invalid_params' };
 
     const { all, key, rec } = _getOrCreateRecord(baziKey, wx, direction, severity);
     if (rec.ownershipTier === 'shrine') return { ok: false, reason: 'already_shrined' };
     const { tier: curTier } = _computeTier(rec);
-    const cost = instantFixCost(curTier, severity);
 
-    if (typeof UserState === 'undefined' || typeof UserState.useSpirit !== 'function' || !UserState.useSpirit(cost)) {
-      return { ok: false, reason: 'insufficient_spirit' };
+    const isLoggedIn = typeof AuthManager !== 'undefined' && typeof AuthManager.isLoggedIn === 'function' && AuthManager.isLoggedIn();
+    let spiritCost;
+
+    if (isLoggedIn) {
+      // 同 maintain() 的顺带修复：补传 rec.baseTier，理由同上方注释。
+      const result = await AuthManager.wuxingInstantFix(baziKey, wx, direction, curTier, rec.baseTier);
+      if (result.error) return { ok: false, reason: _mapServerError(result.error) };
+      // 同 maintain() 的PLAUSIBLE防御修复：result.data 理论上不该为null，加一道兜底。
+      if (!result.data) return { ok: false, reason: 'server_error' };
+      spiritCost = result.data.spirit_cost;
+      if (typeof UserState !== 'undefined' && typeof UserState.setSpiritLocalOnly === 'function') {
+        UserState.setSpiritLocalOnly(result.data.new_balance);
+      }
+    } else {
+      spiritCost = instantFixCost(curTier, severity);
+      if (typeof UserState === 'undefined' || typeof UserState.useSpirit !== 'function' || !UserState.useSpirit(spiritCost)) {
+        return { ok: false, reason: 'insufficient_spirit' };
+      }
     }
 
     rec.lastMaintainedAt   = Date.now();
@@ -414,7 +524,7 @@ const WuxingMaintenance = (() => {
     _writeAll(all);
     _syncToCloud(baziKey, wx, direction, rec);
 
-    return { ok: true, spiritCost: cost, newTier: 1 };
+    return { ok: true, spiritCost, newTier: 1 };
   }
 
   /**
@@ -436,8 +546,21 @@ const WuxingMaintenance = (() => {
    * 一致，显式推进 lastMaintainedAt/firstCycleConsumed。shrine分支不需要这么
    * 做——_computeTier() 顶部已经对 ownershipTier==='shrine' 做了"永远返回1"
    * 的特判，不依赖 lastMaintainedAt。
+   *
+   * 2026-08-21 服务端权威记账重构第四轮：这个函数不再单独调用云端 RPC。
+   * 上一轮（第三轮）曾经是"本地写入 + 登录用户额外调用 set_wuxing_ownership()
+   * RPC 把归属记到服务端"两步；这一轮起，"扣灵气+记归属"已经合并进
+   * js/products.js 调用的 redeem_wuxing_product() 原子 RPC（同一个数据库
+   * 事务里一次性完成，取代了原来可以被分步绕过的"先扣钱、再改状态"设计，
+   * 见 js/auth.js::redeemWuxingProduct() 定义处注释）——云端归属这一步已经
+   * 在那次原子调用里由服务端做完了，这里不需要（也不应该）再单独调用一次
+   * AuthManager.setWuxingOwnership()（该函数已随上一轮改造被删除）。
+   * 本函数现在只保留"更新本地 localStorage"这一半：供 _computeTier() 等本地
+   * 计算立即读到最新的 ownershipTier/ownershipProductId/lastMaintainedAt，
+   * 不再有任何云端副作用。仍然是 async（保留给调用方 `await`，虽然函数体内
+   * 已经没有需要等待的异步操作，但不改动既有调用方的调用方式）。
    */
-  function setOwnership(baziData, wx, direction, ownershipTier, productId) {
+  async function setOwnership(baziData, wx, direction, ownershipTier, productId) {
     const baziKey = _baziKeyOf(baziData);
     if (!baziKey || !wx || !_validDirection(direction)) return;
     if (ownershipTier !== 'crystal' && ownershipTier !== 'shrine') return;
@@ -464,6 +587,10 @@ const WuxingMaintenance = (() => {
     }
     all[key] = rec;
     _writeAll(all);
+    // 仍然同步其它字段（lastMaintainedAt/firstCycleConsumed等）到云端——
+    // ownership_tier/ownership_product_id 两列已被数据库侧列权限锁定，
+    // syncWuxingMaintenanceState() 内部本来就不会尝试写这两列（见该函数
+    // 定义处注释），这里推送的是维护时间等其它合法列，不冲突。
     _syncToCloud(baziKey, wx, direction, rec);
   }
 

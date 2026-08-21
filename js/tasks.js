@@ -121,24 +121,53 @@ const Tasks = (() => {
   }
 
   // ── 完成任务 ─────────────────────────────────────────────
-  function complete(taskId, baziData) {
+  // 2026-08-21 服务端权威记账重构：complete() 从同步函数改为 async——登录
+  // 用户改走服务端权威 RPC claim_task()（防止本地伪造任务完成状态/重复领取），
+  // 未登录（匿名试用）用户继续走纯本地逻辑（行为完全不变）。调用方大多是
+  // fire-and-forget（不关心返回值），不需要改；若有调用方依赖同步返回值做
+  // 后续判断，需要改成 await/.then()。
+  async function complete(taskId, baziData) {
     const def = TASK_DEFS[taskId];
     if (!def || isDone(taskId)) return false;
+    const isLoggedIn = typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn && AuthManager.isLoggedIn();
 
-    // 标记完成
-    if (def.type === 'daily') {
-      localStorage.setItem('smb_dtask_' + _todayKey(taskId), '1');
-      // 每日任务不走 UserState.completeTask，手动触发特效
-      setTimeout(() => {
-        if (typeof UIEffects !== 'undefined') { UIEffects.confetti(15); UIEffects.badgePop(); }
-        if (typeof AudioManager !== 'undefined') AudioManager.playSfx('task_complete');
-      }, 200);
+    if (isLoggedIn) {
+      const result = await AuthManager.claimTask(taskId);
+      if (result.error) {
+        console.warn('[Tasks] claimTask失败:', result.error);
+        return false; // 服务端拒绝（已领取/条件不满足/网络失败）：不在本地补发，避免绕过服务端判定
+      }
+      // 2026-08-21 顺带修复（PLAUSIBLE防御）：result.data 理论上不该为
+      // null（error为空时RPC应该总有返回行），加一道兜底避免下面访问
+      // result.data.new_balance 时抛TypeError中断整个任务完成流程。
+      if (!result.data) {
+        console.warn('[Tasks] claimTask返回了空数据，按失败处理');
+        return false;
+      }
+      if (def.type === 'daily') {
+        localStorage.setItem('smb_dtask_' + _todayKey(taskId), '1');
+        setTimeout(() => {
+          if (typeof UIEffects !== 'undefined') { UIEffects.confetti(15); UIEffects.badgePop(); }
+          if (typeof AudioManager !== 'undefined') AudioManager.playSfx('task_complete');
+        }, 200);
+      } else {
+        UserState.completeTask(taskId); // 仅做本地"已完成"标记，不再发灵气（服务端已经发了）
+      }
+      UserState.setSpiritLocalOnly(result.data.new_balance);
     } else {
-      if (!UserState.completeTask(taskId)) return false;
+      // 未登录：保留原有纯本地逻辑
+      if (def.type === 'daily') {
+        localStorage.setItem('smb_dtask_' + _todayKey(taskId), '1');
+        // 每日任务不走 UserState.completeTask，手动触发特效
+        setTimeout(() => {
+          if (typeof UIEffects !== 'undefined') { UIEffects.confetti(15); UIEffects.badgePop(); }
+          if (typeof AudioManager !== 'undefined') AudioManager.playSfx('task_complete');
+        }, 200);
+      } else {
+        if (!UserState.completeTask(taskId)) return false;
+      }
+      UserState.addSpirit(def.spirit);
     }
-
-    // 灵气奖励
-    UserState.addSpirit(def.spirit);
 
     // 解锁装饰
     if (def.unlock) {
@@ -483,10 +512,15 @@ const Tasks = (() => {
     `;
 
     // 绑定点击（固定任务：完成+发奖）
+    // complete() 已改为 async（见其定义处注释）——这里必须 await 完再
+    // renderPanel()，否则登录用户走服务端RPC那条分支时，isDone(tid) 依赖的
+    // 本地"已完成"标记（localStorage/UserState.completeTask）还没来得及在
+    // complete() 的异步延续里写入，会立刻重渲染出一份"看起来还没完成"的
+    // 面板，任务卡片状态短暂错误闪回，下一次任意触发重渲染前都不会自愈。
     container.querySelectorAll('[data-task]').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         const tid = btn.dataset.task;
-        if (!isDone(tid)) complete(tid, baziData);
+        if (!isDone(tid)) await complete(tid, baziData);
         renderPanel(container, baziData);
       });
     });

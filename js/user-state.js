@@ -63,11 +63,28 @@ const UserState = (() => {
   // ── 灵气值 ────────────────────────────────────────────────
   function getSpirit() { return get('spirit') || 0; }
 
+  // 2026-08-21 灵气值服务端权威记账重构：addSpirit()/useSpirit() 不再有任何
+  // 隐式云端副作用——这是刻意的架构变化，不是遗漏。旧模式是"本地先加/减好
+  // 数字，再顺便把增量同步给服务端"（曾经的 _syncSpiritDeltaToCloud()/
+  // AuthManager.syncSpiritDelta()/数据库RPC adjust_spirit_balance()，现已
+  // 全部删除），服务端对客户端传来的增量完全不做校验，理论上可以被篡改成
+  // 任意数值——这正是要修的安全漏洞。
+  //
+  // 现在的原则：这两个函数变成纯本地操作，只管 localStorage 读写 +
+  // 'spiritChanged' 事件广播。登录用户的灵气值变化必须由每个具体业务场景
+  // （签到 UserState.doCheckin()、任务 Tasks.complete()、五行维护/瞬间调理
+  // js/wuxing-maintenance.js、灵气兑换 js/products.js）各自显式调用对应的
+  // 服务端权威 RPC（见 js/auth.js 新增的 claimDailyCheckin/claimTask/
+  // wuxingFreeMaintain/wuxingInstantFix/redeemWuxingProduct），服务端算好新余额返回后，
+  // 调用方再用 setSpiritLocalOnly(new_balance) 同步本地显示——不能反过来先本地
+  // addSpirit()/useSpirit() 再"顺便"通知服务端。
+  //
+  // 未登录（匿名试用）用户完全不受影响：这两个函数本来就是他们唯一的灵气
+  // 记账入口，继续原样纯本地工作，服务端根本没有他们的账号行可同步。
   function addSpirit(amount) {
     const cur = getSpirit();
     set('spirit', cur + amount);
     _emit('spiritChanged', cur + amount);
-    _syncSpiritDeltaToCloud(amount);
     return cur + amount;
   }
 
@@ -76,29 +93,7 @@ const UserState = (() => {
     if (cur < amount) return false;
     set('spirit', cur - amount);
     _emit('spiritChanged', cur - amount);
-    _syncSpiritDeltaToCloud(-amount);
     return true;
-  }
-
-  // 登录用户：灵气值变化后 fire-and-forget 同步回 Supabase profiles 表，方便
-  // 换设备/重新登录时能取回余额。
-  //
-  // 用增量（delta）而不是绝对值：这里同步的是"这一次变化了多少"，服务端用
-  // adjust_spirit_balance() RPC 做 spirit_balance += delta——跟旧版
-  // syncSpiritBalance(绝对值) 的"推整个余额覆盖云端"语义不同。旧版会在裂变
-  // 邀请奖励（欢迎奖励+50、激活奖励150/80）这类"服务端单方面发钱"的场景下
-  // 把服务端刚发的奖励覆盖抹掉——奖励在云端入账那一刻，本地完全不知情，之后
-  // 任何一次本地"本地旧值+这次变动"当绝对值推上去，都会把云端余额直接覆盖，
-  // 取 max 也救不回来（本地余额本来就可能比服务端刚发的新值大）。增量式同步
-  // 天然不会覆盖期间内服务端自己写入的任何值。
-  // 注意：登录时的多设备合并（auth.js::_mergeSpiritBalance()）是另一种场景——
-  // 那里是"读取远端真实值、跟本地取max、reconcile后的结果视为新的权威绝对值
-  // 再写回"，本质是校准/对齐操作，继续用 syncSpiritBalance(绝对值) 是对的，
-  // 不在这个函数的改动范围内。
-  function _syncSpiritDeltaToCloud(delta) {
-    if (typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn && AuthManager.isLoggedIn()) {
-      try { AuthManager.syncSpiritDelta(delta); } catch (e) { /* fire-and-forget，不阻断本地操作 */ }
-    }
   }
 
   // ── 本地余额直接赋值，不触发云端增量同步 ─────────────────────────────
@@ -124,7 +119,42 @@ const UserState = (() => {
     };
   }
 
-  function doCheckin() {
+  // 2026-08-21 服务端权威记账重构：doCheckin() 从同步函数改为 async——登录
+  // 用户签到改走服务端权威 RPC claim_daily_checkin()（防止本地伪造签到奖励/
+  // 连续天数），未登录（匿名试用）用户继续走纯本地逻辑（_doCheckinLocal()，
+  // 行为完全不变）。调用方（js/main-new.js）需要 await 这个返回的 Promise
+  // 才能拿到 {alreadyDone, streak, bonus} 这个既有返回形状。
+  async function doCheckin() {
+    const isLoggedIn = typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn && AuthManager.isLoggedIn();
+    if (isLoggedIn) {
+      const result = await AuthManager.claimDailyCheckin();
+      if (!result) {
+        // 服务端调用失败（网络问题等）：退回本地兜底逻辑，不让用户当天完全
+        // 签不到——本地兜底不会同步到云端，下次登录/换设备时以云端记录为准。
+        return _doCheckinLocal();
+      }
+      // 2026-08-21 顺带修复（PLAUSIBLE，跨设备streak不同步）：streak 字段
+      // 无条件写回本地，不再只在 `!already_done` 分支才更新。修复前的问题：
+      // 手机上签到过、电脑打开网页时 already_done=true（服务端已记录今日
+      // 签到），但本地 localStorage 从未被写过这台设备的 streak，永远停留
+      // 在初始值0——导致依赖 streak 的成就判定（streak_3/streak_7/streak_30）
+      // 在这台设备上永远无法触发，哪怕服务端记录的连续天数早已达标。
+      set('streak', result.streak);
+      if (!result.already_done) {
+        set('checkin', _todayStr());
+        setSpiritLocalOnly(result.new_balance);
+        if (result.streak === 7)  _unlockAchievement('streak_7');
+        if (result.streak === 30) _unlockAchievement('streak_30');
+        _emit('checkinDone', { streak: result.streak, bonus: result.bonus });
+      }
+      return { alreadyDone: result.already_done, streak: result.streak, bonus: result.bonus };
+    }
+    return _doCheckinLocal();
+  }
+
+  // 未登录（匿名试用）用户的原有本地签到逻辑，改名保留，行为完全不变——
+  // 也作为登录用户在服务端调用失败时的兜底路径（见上方 doCheckin() 注释）。
+  function _doCheckinLocal() {
     const today    = _todayStr();
     const info     = getCheckinInfo();
 

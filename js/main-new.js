@@ -299,6 +299,19 @@ const App = (() => {
                 if (typeof AuthManager !== 'undefined' && typeof AuthManager.activateMyReferral === 'function') {
                   AuthManager.activateMyReferral();
                 }
+                // 2026-08-22 PLAUSIBLE修复：first_island 任务奖励的服务端校验
+                // （claim_task RPC）依赖 islands 表已经有对应行——下方
+                // _onIslandReady() 里那次 Tasks.complete('first_island', ...)
+                // 调用发生在"揭幕动画结束"这个较早的时间点，而 saveIsland() 是
+                // fire-and-forget 触发的，如果网络慢/服务端慢，动画结束时这行
+                // 记录可能还没真正插入，导致服务端拒绝、奖励静默丢失（onetime
+                // 任务之后不会再被触发第二次）。这里在 saveIsland() 确认成功后
+                // 补发一次同样的调用——Tasks.complete() 内部 isDone() 检查 +
+                // 服务端 claim_task() 本身的去重，保证即使前面那次已经成功过，
+                // 这次调用也不会重复发奖，纯粹是"兜底重试"，不引入新的副作用。
+                if (typeof Tasks !== 'undefined' && typeof Tasks.complete === 'function') {
+                  Tasks.complete('first_island', _baziData);
+                }
               }
             } catch (e) {}
           }).catch(() => {});
@@ -617,7 +630,13 @@ const App = (() => {
   }
 
   // ── 岛屿就绪后 ───────────────────────────────────────────
-  function _onIslandReady() {
+  // 2026-08-21 服务端权威记账重构：本函数改为 async——内部
+  // `UserState.doCheckin()` 登录用户分支现在要等一次服务端RPC往返（见
+  // user-state.js::doCheckin()注释）。两处调用点（_revealIsland()内部、
+  // loadSavedIsland()内部）都是fire-and-forget调用（不await、不使用返回值），
+  // 函数体内部所有后续逻辑仍按原有顺序同步/顺序执行，只是从"签到那一步"
+  // 开始，函数整体的挂钟耗时会多出一次网络往返，不影响任何调用方。
+  async function _onIslandReady() {
     const scene = IslandLoader.getScene();
 
     // 标注系统（含诊断徽标）
@@ -756,7 +775,9 @@ const App = (() => {
     Tasks.complete('first_island', _baziData);
 
     // 完成"每日签到"
-    const checkin = UserState.doCheckin();
+    // 2026-08-21起 doCheckin() 是async函数（登录用户走服务端权威RPC），
+    // 必须await才能拿到 {alreadyDone, streak, bonus} 这个既有返回形状。
+    const checkin = await UserState.doCheckin();
     if (!checkin.alreadyDone) {
       Tasks.complete('daily_checkin', _baziData);
     }
@@ -1255,7 +1276,9 @@ const App = (() => {
   // ── ②"瞬间调理"按钮 onclick：花灵气跳过拖拽直接把该五行问题调回档位1。
   //    参照 _redeemWuxingProduct() 同款写法风格（快照 _lastWxmaintCtx、按钮
   //    loading态、成功后走同一个 _refreshWxmaintPanel() 竞态守卫原地刷新）。
-  function _instantFixWuxingIssue(wx, direction, severity, btnEl) {
+  // 2026-08-21起 WuxingMaintenance.instantFix() 是async函数（登录用户走
+  // 服务端权威RPC，见该函数定义处注释），本函数同步改为async并await结果。
+  async function _instantFixWuxingIssue(wx, direction, severity, btnEl) {
     if (typeof WuxingMaintenance === 'undefined' || typeof WuxingMaintenance.instantFix !== 'function') return;
     if (!_lastWxmaintCtx) return;
 
@@ -1269,7 +1292,7 @@ const App = (() => {
 
     let result = null;
     try {
-      result = WuxingMaintenance.instantFix(baziData, wx, direction, severity);
+      result = await WuxingMaintenance.instantFix(baziData, wx, direction, severity);
     } catch (e) {
       result = null;
     }

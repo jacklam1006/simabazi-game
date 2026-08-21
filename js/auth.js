@@ -137,7 +137,9 @@ const AuthManager = (() => {
   }
 
   // ── 更新用户资料（目前仅昵称，供设置面板调用）──────────
-  // RLS：profiles 表 UPDATE / INSERT 策略 USING/WITH CHECK (auth.uid()=id) 已存在，不需要额外SQL。
+  // 权限分两层，缺一不可：RLS 只管"能不能改这一行"(USING/WITH CHECK auth.uid()=id)，
+  // "能改哪些列"由 supabase_setup.sql 里的表级 REVOKE + 列白名单 GRANT 另行控制，
+  // 防止 spirit_balance / is_admin 等敏感列被绕过前端直接篡改。
   // 用 upsert 而不是 update：如果 profiles 表里没有这一行（例如注册时因邮箱验证
   // 时序问题、RLS 拒绝了 registerWithProfile() 里的首次 upsert），update 会静默
   // 匹配 0 行成功返回（PostgREST 特性：UPDATE 匹配0行不报错），导致"假成功"——
@@ -203,62 +205,182 @@ const AuthManager = (() => {
     return data || [];
   }
 
-  // ── 灵气值同步（灵气兑换水晶商品功能，见 js/products.js）────
-  // fire-and-forget：调用方（js/user-state.js 的 addSpirit/useSpirit）不等待
-  // 这个 Promise，失败只打警告不影响本地灵气值的即时可用性——灵气不是真实
-  // 货币，Supabase 一侧只是"云端备份"用于换设备/重新登录时取回余额。
-  // 用 upsert 而不是 update：与 updateProfile() 同样的坑（见上方注释）——如果
-  // profiles 表里这一行因邮箱验证时序问题不存在，update 会静默匹配0行"成功"，
-  // 灵气值实际从未写入云端，换设备/清缓存登录后会读到0，导致本地灵气被
-  // max(0, 0) 覆盖为0，攒的灵气无声消失。upsert 只对 payload 里出现的列做
-  // ON CONFLICT DO UPDATE，不会清空 display_name/phone 等既有字段。
-  // 返回底层 upsert 的 Promise（而不是像大多数 fire-and-forget 函数一样返回
-  // undefined）：绝大多数调用方仍然照旧不 await、纯粹fire-and-forget，行为不受
-  // 影响；但 _mergeSpiritBalance() 的"本地>远端"分支需要确保这次绝对值推送真的
-  // 落地之后，才能安全地让"消费待插入邀请关系"（可能触发云端+50这类可加操作）
-  // 开始执行——否则两者仍可能并发，推送延迟较高时反而会把刚入账的+50覆盖掉
-  // （见 _mergeSpiritBalance() 调用处注释）。
-  function syncSpiritBalance(balance) {
-    if (!_sb || !_user) return Promise.resolve();
-    return _sb.from('profiles').upsert({ id: _user.id, spirit_balance: balance })
-      .then(({ error }) => { if (error) console.warn('[Auth] 灵气值同步失败:', error.message); })
-      .catch(e => console.warn('[Auth] 灵气值同步失败:', e));
+  // 2026-08-21 灵气服务端权威记账重构第四轮：syncSpiritBalance() 已删除。
+  // 它是 reconcile_spirit_balance_up(p_local_value) RPC 的唯一调用点，而
+  // 这个 RPC 已经在权威记账重构收尾时被 `REVOKE EXECUTE FROM authenticated`
+  // （它接受客户端任意上报数值，正是这次重构要堵住的洞——见上方
+  // adjust_spirit_balance 同款收尾注释）。函数体保留在数据库里只是为了
+  // 审计留痕，不代表还能被前端合法调用；这里继续保留调用点等于让
+  // "本地比云端大就推上去"这条登录合并分支必现失败——用户匿名试用攒的灵气，
+  // 登录时永远推不上云端，换设备/清缓存即丢失。见下方 _mergeSpiritBalance()
+  // 改造说明。
+
+  // ── 管理员测试专用：任意设置灵气值（不受列级REVOKE限制，走后端RPC内部is_admin校验）──
+  // 仅供管理员账号在浏览器控制台手动调用测试用（如 AuthManager.adminSetSpiritBalance(9999)），
+  // 不接入任何UI。非管理员账号调用会被数据库RPC内部拒绝并返回error，不会有任何副作用。
+  async function adminSetSpiritBalance(value, targetUserId = null) {
+    if (!_sb || !_user) { console.warn('[Auth] 未登录，无法调用'); return null; }
+    const { data, error } = await _sb.rpc('admin_set_spirit_balance', {
+      p_value: value, p_target_id: targetUserId,
+    });
+    if (error) { console.warn('[Auth] 管理员设置灵气值失败（可能不是管理员账号）:', error.message); return null; }
+    console.log('[Auth] 灵气值已设置为:', data);
+    if (data != null && typeof UserState !== 'undefined' && (!targetUserId || targetUserId === _user.id)) {
+      UserState.setSpiritLocalOnly(data); // 操作对象是自己时，顺带同步本地显示
+    } else if (data == null) {
+      console.warn('[Auth] 管理员设置灵气值返回空值，可能是目标用户资料尚未建立');
+    }
+    return data;
   }
 
-  // ── 灵气值增量同步（RPC，配合裂变奖励等"服务端单方面发钱"场景）─────────
-  // 与上面 syncSpiritBalance() 的"推绝对值覆盖云端"语义不同：这个函数调用
-  // 数据库函数 adjust_spirit_balance(p_delta)，服务端按增量 UPDATE
-  // spirit_balance = spirit_balance + p_delta，不会覆盖掉期间内服务端自己
-  // 发放的奖励（比如裂变邀请欢迎奖励+50、激活奖励150/80）——这两种奖励是数据库
-  // 触发器/SECURITY DEFINER函数单方面写入的，客户端完全不知情，如果客户端后续
-  // 用"本地旧值+这次变动"当绝对值推上去（syncSpiritBalance），会把服务端刚发
-  // 的钱覆盖抹掉。凡是 js/user-state.js 的 addSpirit()/useSpirit() 这类日常
-  // 增减场景，都应该改用这个函数同步，而不是 syncSpiritBalance()。
-  // fire-and-forget，同 syncSpiritBalance() 一样的取舍：不阻断本地灵气值的
-  // 即时可用性，失败只打警告。
-  function syncSpiritDelta(delta) {
-    if (!_sb || !_user || !delta) return;
-    _sb.rpc('adjust_spirit_balance', { p_delta: delta })
-      .then(({ error }) => { if (error) console.warn('[Auth] 灵气值增量同步失败:', error.message); })
-      .catch(e => console.warn('[Auth] 灵气值增量同步失败:', e));
+  // 2026-08-21 灵气值服务端权威记账重构：以下曾经的 syncSpiritDelta()（RPC
+  // adjust_spirit_balance）已删除——旧模式是"客户端先本地加/减好数字，再顺便
+  // 把增量推给服务端"，服务端对客户端传入的数值完全不做校验，理论上可以被
+  // 篡改成任意增量。现在改为服务端权威：具体业务场景（签到/任务/五行维护/
+  // 瞬间调理/灵气兑换）各自显式调用下面这批 SECURITY DEFINER RPC，由服务端
+  // 独立计算、独立记账并返回权威新余额，客户端只负责用
+  // UserState.setSpiritLocalOnly(new_balance) 同步本地显示，不再自己算钱。
+  // 对应的旧 RPC `adjust_spirit_balance`/`reconcile_spirit_balance_up` 均已
+  // 被数据库侧 REVOKE EXECUTE，不能再调用——`reconcile_spirit_balance_up`
+  // 一度还保留给 syncSpiritBalance() 的登录合并场景用，但该场景本身已在
+  // 本轮被废弃删除（登录合并现在永远以服务端为权威，不再存在"本地比云端大
+  // 就推上去"这个操作，见 AuthUI._mergeSpiritBalance() 改造说明），
+  // syncSpiritBalance() 函数已一并删除，两个旧 RPC 现在彻底没有任何合法
+  // 调用点。详见 claude-docs/已知问题与修复记录.md 对应日期条目。
+
+  // ── 每日签到（服务端权威）──────────────────────────────
+  // 对应 js/user-state.js::doCheckin() 登录分支。PostgREST 对
+  // `RETURNS TABLE(...)` 函数的响应形状是数组（哪怕只有一行），这里统一拆包
+  // 成对象，调用方拿到 null 表示请求失败（网络问题等，非"今日已签到"这种
+  // 正常业务结果——那种情况 already_done 会是 true 但函数本身仍返回非 null）。
+  async function claimDailyCheckin() {
+    if (!_sb || !_user) return null;
+    try {
+      const { data, error } = await _sb.rpc('claim_daily_checkin');
+      if (error) { console.warn('[Auth] 签到失败:', error.message); return null; }
+      return data && data[0] ? data[0] : null;
+    } catch (e) {
+      console.warn('[Auth] 签到异常:', e);
+      return null;
+    }
   }
 
+  // ── 领取任务奖励（服务端权威）────────────────────────────
+  // 对应 js/tasks.js::complete() 登录分支。失败（未知任务/已领取/条件不满足/
+  // 网络错误）统一走 { error } 形状，调用方据此决定是否在本地补发——原则上
+  // 不补发，避免绕过服务端判定。
+  async function claimTask(taskId) {
+    if (!_sb || !_user) return { error: 'not_logged_in' };
+    try {
+      const { data, error } = await _sb.rpc('claim_task', { p_task_id: taskId });
+      if (error) return { error: error.message };
+      return { data: data && data[0] ? data[0] : null };
+    } catch (e) {
+      console.warn('[Auth] claimTask异常:', e);
+      return { error: e.message };
+    }
+  }
+
+  // ── 五行免费维护（拖拽维护，服务端权威）──────────────────
+  // 对应 js/wuxing-maintenance.js::maintain() 登录分支。
+  // baseTier（2026-08-21顺带修复新增第5个可选参数）：服务端RPC签名是
+  // `wuxing_free_maintain(p_bazi_key, p_wx, p_direction, p_tier, p_base_tier
+  // SMALLINT DEFAULT 1)`——p_base_tier 只在服务端对应行不存在、需要自己
+  // INSERT创建时使用，此前前端调用没有传这个参数，会一律用默认值1创建行，
+  // 与本地已经算好的真实baseTier（可能是2或3）不一致。不传时保持原有行为
+  // （RPC内部COALESCE兜底为1），不会破坏未升级完成前的调用方。
+  async function wuxingFreeMaintain(baziKey, wx, direction, tier, baseTier) {
+    if (!_sb || !_user) return { error: 'not_logged_in' };
+    try {
+      const { data, error } = await _sb.rpc('wuxing_free_maintain', {
+        p_bazi_key: baziKey, p_wx: wx, p_direction: direction, p_tier: tier, p_base_tier: baseTier,
+      });
+      if (error) return { error: error.message };
+      return { data: data && data[0] ? data[0] : null };
+    } catch (e) {
+      console.warn('[Auth] wuxingFreeMaintain异常:', e);
+      return { error: e.message };
+    }
+  }
+
+  // ── 五行瞬间调理（花灵气，服务端权威）────────────────────
+  // 对应 js/wuxing-maintenance.js::instantFix() 登录分支。baseTier 同上方
+  // wuxingFreeMaintain() 的2026-08-21顺带修复说明。
+  async function wuxingInstantFix(baziKey, wx, direction, tier, baseTier) {
+    if (!_sb || !_user) return { error: 'not_logged_in' };
+    try {
+      const { data, error } = await _sb.rpc('wuxing_instant_fix', {
+        p_bazi_key: baziKey, p_wx: wx, p_direction: direction, p_tier: tier, p_base_tier: baseTier,
+      });
+      if (error) return { error: error.message };
+      return { data: data && data[0] ? data[0] : null };
+    } catch (e) {
+      console.warn('[Auth] wuxingInstantFix异常:', e);
+      return { error: e.message };
+    }
+  }
+
+  // 2026-08-21 灵气服务端权威记账重构第四轮：spendSpirit()/setWuxingOwnership()
+  // 已删除，被下方 redeemWuxingProduct() 取代——原来"先调 spendSpirit() 扣钱、
+  // 再调 setWuxingOwnership() 改状态"这种分步设计可以被跳过第二步单独调用、
+  // 或反过来只调第二步绕过扣款，是上一轮 C4（花0灵气白嫖shrine）的根因。
+  // 新的 redeem_wuxing_product() RPC 在服务端同一个事务里原子完成"校验商品
+  // /扣灵气/记录归属"，不再给客户端留下"分步执行、中途绕过"的空间。
+  // wuxingFreeMaintain()/wuxingInstantFix() 两个函数不受影响，继续保留——
+  // "瞬间调理"是与"购买商品"完全独立的另一条路径，这次改造不涉及。
+
+  // ── 兑换五行维护商品（水晶/请神仙），服务端权威原子操作 ──────
+  // 取代旧的"spendSpirit()扣钱 + setWuxingOwnership()改状态"两步分步调用。
+  // 服务端 redeem_wuxing_product() 在同一个事务里：①按 p_product_id 查服务端
+  // 自己的商品表（不信任客户端传的价格/商品名）；②校验灵气是否足够，不足
+  // RAISE EXCEPTION '灵气不足'；③原子扣款；④按商品类型分支——crystal类型
+  // 额外在同一事务内插入一行 redemption_requests（返回的 redemption_id 就是
+  // 这行的id，供 js/products.js 后续 fire-and-forget 通知业务方用）；shrine
+  // 类型纯虚拟购买，不插入该表。未知商品id同样 RAISE EXCEPTION '未知商品'。
+  async function redeemWuxingProduct({ productId, baziKey, wx, direction, baseTier, islandId, traitSummary }) {
+    if (!_sb || !_user) return { error: 'not_logged_in' };
+    try {
+      const { data, error } = await _sb.rpc('redeem_wuxing_product', {
+        p_product_id: productId, p_bazi_key: baziKey, p_wx: wx, p_direction: direction,
+        p_base_tier: baseTier, p_island_id: islandId, p_trait_summary: traitSummary,
+      });
+      if (error) return { error: error.message };
+      return { data: data && data[0] ? data[0] : null };
+    } catch (e) {
+      console.warn('[Auth] redeemWuxingProduct异常:', e);
+      return { error: e.message };
+    }
+  }
+
+  // 返回值语义：网络/查询失败时返回 null（不是0）——调用方 _mergeSpiritBalance()
+  // 靠这个区分"服务端确认余额为0"和"这次根本没问到服务端"，null 时会跳过本地
+  // 覆盖、保留原有显示值，避免一次网络抖动把本地灵气显示错误地清零（0 只在
+  // 真正查到 profiles 行且 spirit_balance 字段确实是0，或行不存在这种“新用户
+  // 尚未初始化”的合法场景下返回）。
   async function getSpiritBalance() {
-    if (!_sb || !_user) return 0;
+    if (!_sb || !_user) return null;
     try {
       const { data, error } = await _sb.from('profiles')
         .select('spirit_balance').eq('id', _user.id).maybeSingle();
-      if (error) { console.warn('[Auth] 读取灵气值失败:', error.message); return 0; }
+      if (error) { console.warn('[Auth] 读取灵气值失败:', error.message); return null; }
       return data?.spirit_balance || 0;
     } catch (e) {
       console.warn('[Auth] 读取灵气值失败:', e);
-      return 0;
+      return null;
     }
   }
 
   // ── 创建灵气兑换水晶商品请求 ─────────────────────────────
   // 涉及"欠用户一个真实商品发货"的业务承诺，失败不能静默——console.error 打印
   // 详情，返回 null 让调用方（js/products.js）决定要不要提示用户重试/退灵气。
+  //
+  // 2026-08-21 灵气服务端权威记账重构第四轮：js/products.js 已改为调用
+  // redeemWuxingProduct() 原子RPC（服务端同一事务内完成扣款+写
+  // redemption_requests，不再是"先扣钱、再单独调这个函数写记录"两步），
+  // 这个函数目前没有任何调用点。保留而不删除，是因为不确定是否有历史数据
+  // 依赖这条独立写入路径/未来是否有别的场景仍需要单独创建兑换请求——如果
+  // 确认彻底不需要了，可以连同 js/products.js::_wxToIndex()/WX_ORDER 一起
+  // 清理。
   //
   // 第三阶段"五行维护系统"：kind/idx 两个参数名保持不变（避免这里再改一次
   // 签名），但 js/products.js 调用方传入的实际语义已经变成 direction（
@@ -293,7 +415,7 @@ const AuthManager = (() => {
   }
 
   // ── 五行维护状态同步（第四阶段"五行经营机制"，见 js/wuxing-maintenance.js）──
-  // fire-and-forget upsert，同 syncSpiritBalance() 一样的理由用 upsert 不用
+  // fire-and-forget upsert，同 updateProfile() 一样的理由用 upsert 不用
   // update（profiles表那个坑：update对不存在的行静默匹配0行"假成功"）。
   // wuxing_maintenance_state 表的主键是自增 id（不是 user_id+bazi_key+wx+
   // direction 这个业务唯一键），所以必须显式传 onConflict 指向
@@ -303,6 +425,35 @@ const AuthManager = (() => {
   // 不传 created_at：让数据库首次插入时用 DEFAULT NOW()，之后的 upsert
   // 不在payload里带这个字段就不会覆盖已经写入过的原始创建时间（PostgREST
   // upsert 只对 payload 里出现的列做 ON CONFLICT DO UPDATE）。
+  //
+  // 【灵气服务端权威记账重构】ownership_tier/ownership_product_id 这两列已
+  // 被 supabase_setup.sql 表级REVOKE+列白名单GRANT锁定，只能通过 SECURITY
+  // DEFINER 函数写入——2026-08-21第四轮重构后，唯一合法写入路径是
+  // redeem_wuxing_product() RPC（见上方 redeemWuxingProduct()）在兑换成功
+  // 那一刻原子写入，前端不再有单独的"设置归属"调用点。Postgres 的列权限
+  // 检查是"语句里出现了这一列就检查"，不管值是否变化——payload 里只要带
+  // 这两个字段，upsert 就必然因权限不足报错。这里不再同步这两列。
+  //
+  // 2026-08-21 backend-service交接（见claude-docs/已知问题与修复记录.md
+  // 对应"C4修复"条目末尾）：C3修复把 base_tier/last_free_maintain_date 也从
+  // UPDATE白名单里去掉了（同样只能由 wuxing_free_maintain()/wuxing_instant_
+  // fix()/redeem_wuxing_product() 这些SECURITY DEFINER函数写入，防止客户端
+  // 直接抹掉"今日已维护"标记或伪造base_tier绕过每日限额/定价）——backend-
+  // service本地Postgres实测证实，这两列只要出现在upsert的payload里（不管
+  // 是INSERT列表还是DO UPDATE的SET子句），整条语句就会因列权限不足直接
+  // 报错，此前"只有真正走到DO UPDATE分支才会失败"的直觉是错的，Postgres对
+  // 这类语句的列权限检查覆盖整条语句。这里跟随上面 ownership_tier/
+  // ownership_product_id 同款处理，一并从payload里删除这两列。
+  // 安全性：这里省略 base_tier/last_free_maintain_date 不会导致本函数触发的
+  // INSERT分支因NOT NULL约束报错——依赖的是 wuxing_maintenance_state.base_tier
+  // 列本身有 DEFAULT 1 兜底（backend-service侧SQL修复），而不是"这条upsert
+  // 反正只会走ON CONFLICT DO UPDATE分支、不会真正走到INSERT"这个前提——
+  // INSERT...ON CONFLICT DO UPDATE会先构造并校验完整待插入行、再判断是否
+  // 冲突，缺DEFAULT时哪怕最终走DO UPDATE分支同样会报错，实测细节见
+  // claude-docs/已知问题与修复记录.md对应条目。base_tier/last_free_maintain_
+  // date 的权威写入路径仍然是 wuxing_free_maintain()/wuxing_instant_fix()/
+  // redeem_wuxing_product() 这几个SECURITY DEFINER函数（见各自定义处），
+  // 此后不该再被客户端这个fire-and-forget同步函数覆盖。
   function syncWuxingMaintenanceState(baziKey, wx, direction, record) {
     if (!_sb || !_user || !baziKey || !wx || !direction || !record) return;
     _sb.from('wuxing_maintenance_state').upsert({
@@ -310,12 +461,8 @@ const AuthManager = (() => {
       bazi_key:                baziKey,
       wx:                      wx,
       direction:               direction,
-      base_tier:               record.baseTier,
       last_maintained_at:      record.lastMaintainedAt ? new Date(record.lastMaintainedAt).toISOString() : null,
       first_cycle_consumed:    !!record.firstCycleConsumed,
-      ownership_tier:          record.ownershipTier || 'none',
-      ownership_product_id:    record.ownershipProductId || null,
-      last_free_maintain_date: record.lastFreeMaintainUTCDate || null,
       updated_at:              new Date().toISOString(),
     }, { onConflict: 'user_id,bazi_key,wx,direction' })
       .then(({ error }) => { if (error) console.warn('[Auth] 五行维护状态同步失败:', error.message); })
@@ -382,7 +529,7 @@ const AuthManager = (() => {
   // 多少次，只有真正存在待激活记录的那一次调用会有实际效果，所以调用方不需要
   // 自己判断"这是不是第一次生成岛屿"，每次成功生成/保存岛屿后都可以直接调用。
   // fire-and-forget：不返回 Promise 给调用方 await，失败只打警告，不阻断/不
-  // 影响岛屿保存本身这条主流程（同 syncSpiritBalance() 的设计取舍）。
+  // 影响岛屿保存本身这条主流程（同 syncWuxingMaintenanceState() 的设计取舍）。
   function activateMyReferral() {
     if (!_sb || !_user) return;
     _sb.rpc('activate_my_referral')
@@ -425,7 +572,8 @@ const AuthManager = (() => {
     init, login, register, registerWithProfile,
     logout, sendPasswordReset, getProfile, updateProfile,
     saveIsland, updateIslandAnalysis, updateIslandBaziData, getMyIslands, checkEmailExists,
-    syncSpiritBalance, syncSpiritDelta, getSpiritBalance, createRedemptionRequest,
+    getSpiritBalance, adminSetSpiritBalance, createRedemptionRequest,
+    claimDailyCheckin, claimTask, wuxingFreeMaintain, wuxingInstantFix, redeemWuxingProduct,
     syncWuxingMaintenanceState, getWuxingMaintenanceStates,
     resolveReferralCode, insertReferral, activateMyReferral, getMyReferrals,
     isLoggedIn: () => !!_user,
@@ -666,23 +814,16 @@ const AuthUI = (() => {
       _refreshUserInfoDisplay();
       _mergeWuxingMaintenanceState();
       _consumePendingIslandSave(); // 补写注册时因尚无session而暂存本地的岛屿数据（见该函数注释）
-      // 顺序很重要：必须先跑完一次灵气值合并（建立基线——如果本地余额比云端
-      // 大，把本地这个更大的值确实推上云端），再消费"待插入邀请关系"暂存记录
-      // （可能触发数据库端欢迎奖励+50灵气入账）——不能反过来。
-      // 原因：referrals行插入触发的欢迎奖励是数据库端"cloud.spirit_balance +=
-      // 50"这类可加操作，天然不怕在谁之后执行；但 _mergeSpiritBalance() 的
-      // "本地>远端"分支会把本地值当作新的权威值*绝对*推回云端（这是校准/对齐
-      // 操作，不在这次delta化改造范围内，见该函数顶部注释）——如果这次绝对值
-      // 推送发生在+50入账*之后*，会把刚到账的+50直接覆盖抹掉（本地170 vs
-      // 插入后云端0+50=50，取max若在+50入账后才推送，170>50，直接用170覆盖
-      // 云端，50灵气凭空消失）。反过来，先合并（此时云端还是0，本地170>0，
-      // 推送后云端=170）、再插入邀请关系（触发器在170基础上+50=220，天然正确
-      // ）——顺序对了，"取max绝对值覆盖"这条既有逻辑本身完全不用改。
-      // _consumePendingReferralInsert() 成功后内部本来就会再触发一次
-      // _mergeSpiritBalance()（见该函数内部注释），把这笔+50同步拉回本地余额，
-      // 这里不需要再手动追加一次。用 .finally() 而不是 .then()：不管这次登录
-      // 本地灵气是否比云端大、要不要真的推送，都要在合并跑完（无论成功失败）
-      // 之后再继续消费邀请关系，保证顺序而不是纯粹并发触发。
+      // 2026-08-21 第四轮重构后说明：_mergeSpiritBalance() 现在永远以服务端
+      // 为唯一权威来源、单纯拉取覆盖本地（不再有"本地>远端就推上去"这个分支，
+      // 见该函数定义处注释），因此这里先合并再消费邀请关系的顺序，已经不再
+      // 像旧版本那样是"避免推送覆盖掉+50奖励"的正确性前提——continue 保留这
+      // 个既有调用顺序纯粹是不必要的破坏性改动，不代表顺序本身仍然关键。
+      // _consumePendingReferralInsert() 插入成功后内部会再触发一次
+      // _mergeSpiritBalance()（见该函数内部注释），把 referrals 插入触发的
+      // +50 欢迎奖励从服务端同步拉回本地余额——这一步不管前面合并顺序如何都
+      // 会正确生效，因为它读到的永远是服务端此刻的真实值。.finally() 而不是
+      // .then()：合并请求失败也不应该阻断邀请关系的消费。
       _mergeSpiritBalance().finally(() => _consumePendingReferralInsert());
     } else {
       loginBtn?.classList.remove('hidden');
@@ -693,43 +834,34 @@ const AuthUI = (() => {
     }
   }
 
-  // ── 登录时灵气值合并：本地(localStorage) vs 云端(profiles.spirit_balance)
-  //    取较大值，避免换设备/重新登录时余额突然变少。不是强一致性同步——灵气
-  //    不是真实货币，多设备并发误差可接受。────────────────────────────────
-  // 2026-08-18 更新：remote > local 分支改用 UserState.setSpiritLocalOnly()
-  // 而不是 UserState.addSpirit(diff)——自从 addSpirit() 的云端同步从"推绝对值"
-  // 改造成"推增量"（配合裂变奖励等服务端单方面发钱场景，见 syncSpiritDelta()
-  // 注释）之后，这里如果继续借用 addSpirit()，会把"本地追平云端已有权威值"
-  // 误当成一次真实本地新增，把云端余额从 remote 又推高成 remote+(remote-local)，
-  // 凭空多出一笔灵气。这个分支的本意只是把本地存储追平远端，远端数值本身没有
-  // 变化，不需要（也不应该）再往云端推送任何东西——用不碰云端的
-  // setSpiritLocalOnly() 才是正确语义，取max/reconcile的合并逻辑本身不变。
+  // ── 登录时灵气值合并：服务端权威、单向覆盖本地 ─────────────────────
+  // 2026-08-21 第四轮重构：不再是"本地(localStorage) vs 云端 取较大值合并"。
+  // 旧语义的前提是"本地在未登录期间积累的灵气值，也是一份可信数据，值得在
+  // 它比云端大时被推送上去、成为新的权威值"——但灵气值系统已经全面改成
+  // 服务端权威记账（签到/任务/五行维护/瞬间调理/灵气兑换全部由服务端独立
+  // 计算并记账，见 claimDailyCheckin/claimTask/wuxingFreeMaintain/
+  // wuxingInstantFix/redeemWuxingProduct），本地在未登录状态下走的仍是纯
+  // 本地计数（UserState.addSpirit()/useSpirit() 的匿名试用路径），这个数字
+  // 不再代表任何服务端已确认的真实交易记录，不能被当作可信来源倒推给服务端
+  // ——旧的"本地>远端就推上去"分支依赖的 reconcile_spirit_balance_up RPC
+  // 也已经在重构收尾时被数据库侧 REVOKE，就算保留这个分支也必然调用失败。
+  // 现在的正确语义：服务端 profiles.spirit_balance 是唯一权威来源，登录这
+  // 一刻本地无条件用服务端返回值覆盖，不做任何比较、不回推任何东西。
+  // 直接影响：匿名试用攒的灵气不再能在注册/登录后带过去——这是架构变化的
+  // 直接后果，不是bug（已与用户确认过这个取舍，优先级是"确保没有潜在篡改
+  // 风险"，不是保留这段匿名试用体验）。
   async function _mergeSpiritBalance() {
     if (typeof UserState === 'undefined') return;
     try {
       const remote = await AuthManager.getSpiritBalance();
-      const local  = UserState.getSpirit();
-      if (remote > local) {
-        UserState.setSpiritLocalOnly(remote); // 本地追平远端权威值，远端未变化，不回推云端
-      } else if (local > remote) {
-        // 本地是较大值（例如登录前匿名试用已攒了灵气）——立即推送云端，不用
-        // 等到下一次 addSpirit/useSpirit 触发才同步，避免合并后云端数值仍
-        // 落后本地的窗口期。
-        //
-        // await（而不是像其它 fire-and-forget 调用一样丢在一边不管）：
-        // _onAuthChange() 依赖 _mergeSpiritBalance() 这个 Promise 真正 resolve
-        // 时，这次绝对值推送已经落地到云端，才会继续消费"待插入邀请关系"暂存
-        // 记录（那一步可能触发数据库端"云端+=50"这类可加操作，见调用处注释）。
-        // 如果这里不 await，_mergeSpiritBalance() 的 Promise 会在 upsert 请求
-        // 真正完成之前就提前 resolve，_onAuthChange() 那边的顺序保证就形同虚设
-        // ——插入邀请关系仍可能在这次推送真正落地之前抢先完成，云端+50 落在
-        // 推送前的旧值上，随后这次迟到的绝对值推送反而会把 +50 覆盖掉。
-        // 只在这一个分支加 await，不影响函数其它地方——如果调用方本身不关心
-        // 这个时序（比如未来别的地方也调用 _mergeSpiritBalance() 但不需要严格
-        // 顺序），await 与否对函数最终产生的效果（本地/云端各自的值）完全一致，
-        // 只是让"完成"这件事对外部可观察。
-        await AuthManager.syncSpiritBalance(local);
+      // remote === null 表示这次读取失败（网络抖动/查询异常），不是服务端确认
+      // 余额为0——这种情况必须跳过覆盖、保留本地原有显示值，否则一次网络抖动
+      // 就会把用户正确的灵气显示错误地清零，直到下次成功合并才恢复。
+      if (remote === null) {
+        console.warn('[AuthUI] 灵气值合并跳过：读取远端余额失败，保留本地原值');
+        return;
       }
+      UserState.setSpiritLocalOnly(remote); // 服务端是唯一权威来源，本地无条件追平
     } catch (e) {
       console.warn('[AuthUI] 灵气值合并失败:', e);
     }
