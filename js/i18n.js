@@ -235,6 +235,11 @@ const I18N = {
     'products.success':         '兑换成功！我们会尽快通过 WhatsApp 联系你安排发货',
     'products.fail':            '兑换失败，请稍后重试',
     'products.spirit_label':    '灵气',
+    // 2026-08-23 qa-reviewer复查修复：登录用户资料缓存（决定按人民币/马币
+    // 哪套价展示）尚未预热完成前，价格暂不展示具体数字，改用这句占位文案，
+    // 避免用户看到的价格和真正会扣的价格不一致造成困惑（见
+    // js/main-new.js::_wxmaintRedeemBlockHtml() 消费处注释）。
+    'products.price_loading':   '价格加载中…',
 
     // ── 五行维护系统（第三阶段）─────────────────
     'wxmaint.panel_title':      '命盘五行诊断',
@@ -529,6 +534,7 @@ const I18N = {
     'products.success':         'Redeemed! We\'ll contact you via WhatsApp soon to arrange shipping',
     'products.fail':            'Redemption failed, please try again later',
     'products.spirit_label':    'Spirit',
+    'products.price_loading':   'Loading price…',
 
     // ── Five-Element Maintenance System (Phase 3) ──
     'wxmaint.panel_title':      'Five-Element Diagnosis',

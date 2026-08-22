@@ -52,18 +52,53 @@ const Products = (() => {
     return i === -1 ? null : i;
   }
 
-  // kind:'crystal' 是本轮新增字段（4款水晶原有商品补上，不影响现有行为——
-  // redeem() 里 `product.kind || 'crystal'` 兜底，任何未来未标kind的旧款
-  // 同样按crystal实体履约路径处理，向后兼容）。
-  // shrine_generic 定价800-1200区间内取1000——明显高于单个水晶（200-500），
-  // 呼应"价格歧视阶梯顶层"的设计意图（js/wuxing-maintenance.js 文件头/方案
-  // 文档"四层结构"表格）。
+  // kind:'crystal' 是2026-08-16改造新增字段，redeem() 里 `product.kind ||
+  // 'crystal'` 兜底，任何未来未标kind的旧款同样按crystal实体履约路径处理，
+  // 向后兼容。
+  //
+  // 2026-08-23 五行专属水晶15款SKU + 分地区定价改造：原4款通用水晶
+  // （bracelet_rose/bracelet_obsidian/pillar_amethyst/basin_clear——此前
+  // 没有真实用户兑换过，仅管理员测试账号，直接移除不做向后兼容）扩展成
+  // 5个五行元素（金/木/水/火/土）× 3个档位（水晶簇小/水晶簇大/水晶盆栽）
+  // 共15款专属SKU，业务方提供的真实商品报价单，需与
+  // supabase_setup.sql::redeem_wuxing_product() 保持同步（数据库那份才是
+  // 唯一权威、被实际信任用来扣款的价格表，这里仅用于兑换前的UI展示预估）。
+  //
+  // 价格拆成 spiritCostCNY/spiritCostMYR 两个字段（替代原来单一
+  // spiritCost）——1灵气=1个货币单位，中国区号(+86)用CNY价，其它地区用
+  // MYR价，两套定价互相独立不做汇率换算。哪个字段生效由 _isCNYRegion()
+  // 统一判断，不要在各展示点各写一份判断逻辑（见该函数定义处注释）。
+  //
+  // wx 字段：该水晶自身的五行归属颜色（如绿水晶=木），不是"允许兑换的问题
+  // 五行"本身——同一款水晶服务两种问题：nourish方向滋养同五行的不足、
+  // restrain方向克制"这款水晶五行所克制的那个五行"的过旺（金克木/木克土/
+  // 土克水/水克火/火克金，业务方给定的固定映射）。真正决定某个五行问题
+  // 该展示哪一色水晶的换算逻辑见下方 getProductsFor()，与
+  // supabase_setup.sql::redeem_wuxing_product() 内 v_expected_wx 的CASE
+  // 分支保持同一份映射，不新造一套。shrine_generic不分五行，wx留
+  // undefined，不受这条映射约束，任何问题都可以展示"请神仙"选项。
+  //
+  // decorId 与 product id 同名——15款水晶都有各自静态的3D战利品展示位
+  // （island-decorations.js::DECOR_DEFS 的 crystal_{element}_{tier} 系列，
+  // frontend-3d 领域，本次改造随附新增），兑换哪个SKU就摆哪个造型，不需要
+  // 像下面shrine那样按wx/direction动态换算。
   const PRODUCT_DEFS = [
-    { id: 'bracelet_rose',     decorId: 'crystal_rose',     kind: 'crystal', name: { zh: '粉水晶手链', en: 'Rose Quartz Bracelet' },     spiritCost: 200 },
-    { id: 'bracelet_obsidian', decorId: 'crystal_obsidian', kind: 'crystal', name: { zh: '黑曜石手链', en: 'Obsidian Bracelet' },         spiritCost: 250 },
-    { id: 'pillar_amethyst',   decorId: 'crystal_amethyst', kind: 'crystal', name: { zh: '紫水晶柱',   en: 'Amethyst Pillar' },           spiritCost: 350 },
-    { id: 'basin_clear',       decorId: 'crystal_water',    kind: 'crystal', name: { zh: '白水晶盆',   en: 'Clear Quartz Basin' },         spiritCost: 500 },
-    // decorId 故意为 null——跟上面4款crystal不同，shrine没有一个静态、
+    { id: 'crystal_gold_cluster_s', decorId: 'crystal_gold_cluster_s', kind: 'crystal', wx: '金', name: { zh: '白水晶簇(小)', en: 'Clear Quartz Cluster (S)' }, spiritCostCNY: 99,  spiritCostMYR: 68  },
+    { id: 'crystal_gold_cluster_l', decorId: 'crystal_gold_cluster_l', kind: 'crystal', wx: '金', name: { zh: '白水晶簇(大)', en: 'Clear Quartz Cluster (L)' }, spiritCostCNY: 180, spiritCostMYR: 108 },
+    { id: 'crystal_gold_potted',    decorId: 'crystal_gold_potted',    kind: 'crystal', wx: '金', name: { zh: '琼英翠微',     en: 'Luminous Jade Grove' },       spiritCostCNY: 728, spiritCostMYR: 468 },
+    { id: 'crystal_wood_cluster_s',  decorId: 'crystal_wood_cluster_s',  kind: 'crystal', wx: '木', name: { zh: '绿水晶簇(小)', en: 'Green Quartz Cluster (S)' }, spiritCostCNY: 99,  spiritCostMYR: 68  },
+    { id: 'crystal_wood_cluster_l',  decorId: 'crystal_wood_cluster_l',  kind: 'crystal', wx: '木', name: { zh: '绿水晶簇(大)', en: 'Green Quartz Cluster (L)' }, spiritCostCNY: 180, spiritCostMYR: 108 },
+    { id: 'crystal_wood_potted',     decorId: 'crystal_wood_potted',     kind: 'crystal', wx: '木', name: { zh: '幽谷晶翠',     en: 'Emerald Valley Garden' },     spiritCostCNY: 728, spiritCostMYR: 468 },
+    { id: 'crystal_water_cluster_s', decorId: 'crystal_water_cluster_s', kind: 'crystal', wx: '水', name: { zh: '蓝水晶簇(小)', en: 'Blue Quartz Cluster (S)' },  spiritCostCNY: 158, spiritCostMYR: 98  },
+    { id: 'crystal_water_cluster_l', decorId: 'crystal_water_cluster_l', kind: 'crystal', wx: '水', name: { zh: '蓝水晶簇(大)', en: 'Blue Quartz Cluster (L)' },  spiritCostCNY: 298, spiritCostMYR: 188 },
+    { id: 'crystal_water_potted',    decorId: 'crystal_water_potted',    kind: 'crystal', wx: '水', name: { zh: '冰晶莲韵',     en: 'Frost Lotus Garden' },        spiritCostCNY: 788, spiritCostMYR: 488 },
+    { id: 'crystal_fire_cluster_s',  decorId: 'crystal_fire_cluster_s',  kind: 'crystal', wx: '火', name: { zh: '紫水晶簇(小)', en: 'Amethyst Cluster (S)' },     spiritCostCNY: 228, spiritCostMYR: 138 },
+    { id: 'crystal_fire_cluster_l',  decorId: 'crystal_fire_cluster_l',  kind: 'crystal', wx: '火', name: { zh: '紫水晶簇(大)', en: 'Amethyst Cluster (L)' },     spiritCostCNY: 438, spiritCostMYR: 268 },
+    { id: 'crystal_fire_potted',     decorId: 'crystal_fire_potted',     kind: 'crystal', wx: '火', name: { zh: '紫梦流光',     en: 'Amethyst Dreamlight Garden' }, spiritCostCNY: 628, spiritCostMYR: 388 },
+    { id: 'crystal_earth_cluster_s', decorId: 'crystal_earth_cluster_s', kind: 'crystal', wx: '土', name: { zh: '黄水晶簇(小)', en: 'Citrine Cluster (S)' },      spiritCostCNY: 99,  spiritCostMYR: 68  },
+    { id: 'crystal_earth_cluster_l', decorId: 'crystal_earth_cluster_l', kind: 'crystal', wx: '土', name: { zh: '黄水晶簇(大)', en: 'Citrine Cluster (L)' },      spiritCostCNY: 180, spiritCostMYR: 108 },
+    { id: 'crystal_earth_potted',    decorId: 'crystal_earth_potted',    kind: 'crystal', wx: '土', name: { zh: '金耀晶植',     en: 'Golden Radiance Garden' },    spiritCostCNY: 528, spiritCostMYR: 328 },
+    // decorId 故意为 null——跟上面15款crystal不同，shrine没有一个静态、
     // 兑换哪个wx/direction都一样的3D装饰位可以指向。真实要挂载的3D造型是
     // 按 wx/direction 动态生成的 `wxmaint_shrine_{wx}_{direction}`（frontend-3d
     // 领域，island-decorations.js::DECOR_DEFS），跟这份静态PRODUCT_DEFS表里
@@ -77,10 +112,60 @@ const Products = (() => {
     // ——若照抄crystal分支"IslandDecorations.add(product.decorId,...)"的写法
     // 给shrine也补一句，会被 IslandDecorations.add() 的 `if(!def) return`
     // 静默吞掉，且线索只有一个查无此key的字符串，很难排查。
-    { id: 'shrine_generic',    decorId: null,               kind: 'shrine',  name: { zh: '请神仙镇宅', en: 'Enshrine a Guardian Spirit' }, spiritCost: 1000 },
+    { id: 'shrine_generic',    decorId: null, kind: 'shrine', name: { zh: '请神仙镇宅', en: 'Enshrine a Guardian Spirit' }, spiritCostCNY: 1000, spiritCostMYR: 1000 },
   ];
 
   function getProducts() { return PRODUCT_DEFS; }
+
+  // 五行相克：谁克谁（元素→克它的元素）。与 supabase_setup.sql::
+  // redeem_wuxing_product() 内 v_expected_wx 的CASE分支保持同一份映射，
+  // 不新造一套——改这份映射时记得同步SQL那边。
+  const RESTRAIN_SOURCE = { '木': '金', '土': '木', '水': '土', '火': '水', '金': '火' };
+
+  // 给定一个五行问题(wx,direction)，算出"理论上应该展示的水晶五行"：
+  // nourish方向滋养同五行本身，restrain方向展示克制它的五行对应的水晶。
+  function _expectedCrystalWx(wx, direction) {
+    if (direction === 'nourish')  return wx;
+    if (direction === 'restrain') return RESTRAIN_SOURCE[wx] || null;
+    return null;
+  }
+
+  // 按当前五行问题(wx,direction)过滤出应该展示的商品：颜色匹配的水晶
+  // （同色三档cluster_s/cluster_l/potted全部返回，具体档位由用户自选）+
+  // shrine_generic（不分五行，任何问题都可以展示"请神仙"选项，因此始终
+  // 附加在结果末尾）。⚠️ 这只是提升UI体验、避免用户看到点了必错的选项——
+  // 不是安全边界，真正的权威校验在服务端 redeem_wuxing_product()（就算这里
+  // 过滤逻辑写错，最坏结果是错误地方展示/隐藏了商品，点击兑换仍会被服务端
+  // 正确拒绝，不会导致误扣款，见该函数定义处注释）。
+  function getProductsFor(wx, direction) {
+    const expected = _expectedCrystalWx(wx, direction);
+    return PRODUCT_DEFS.filter(p => p && (p.kind === 'shrine' || p.wx === expected));
+  }
+
+  // ── 分地区定价辅助：统一判断入口，各展示点不要各写一份判断逻辑 ──────
+  // profile 形状同 AuthManager.getProfile()/getCachedProfile() 的返回值
+  // （profiles表一行，含phone_code列）。未登录/profile尚未拉取到时传
+  // null/undefined，一律按非CN地区处理（见_costFor()的兜底选择）。
+  function _isCNYRegion(profile) { return profile?.phone_code === '+86'; }
+
+  // 给定 product 与 profile，返回该用户此刻应展示/预计会被扣的价格——
+  // 未知区域（profile为null，如未登录或缓存尚未预热）兜底展示spiritCostMYR
+  // ——项目本身面向的是马来西亚市场，比默认展示更高的CNY价更贴近目标用户
+  // 预期；这只是UI展示预估，不影响真正扣款金额（扣款价格永远由服务端RPC
+  // 按彼时最新phone_code权威计算，见supabase_setup.sql::
+  // redeem_wuxing_product()注释）。
+  //
+  // 2026-08-23 qa-reviewer复查：本函数本身不区分"未登录（MYR兜底就是最终
+  // 展示）"与"已登录但profile缓存还没预热完（MYR只是临时占位，真实答案
+  // 很快会来）"——这两种情况传进来的profile一样都是null，调用方如果想在
+  // 后一种情况下展示loading占位而不是可能错误的具体数字，需要在调用
+  // _costFor() 之前先用 AuthManager.isProfilePending() 单独判断一次，见
+  // js/main-new.js::_wxmaintRedeemBlockHtml() 消费处注释——本函数不内置
+  // 这层判断，避免这个纯定价计算函数依赖UI层"要不要展示loading态"的呈现
+  // 决策。
+  function _costFor(product, profile) {
+    return _isCNYRegion(profile) ? product.spiritCostCNY : product.spiritCostMYR;
+  }
 
   // ── i18n 辅助：Lang.t() 本身不支持占位符插值，这里补一层简单替换 ──────
   function _t(key, vars) {
@@ -178,8 +263,9 @@ const Products = (() => {
   // requests→通知业务方→本地解锁装饰→setOwnership→3D视觉刷新"里，"扣灵气"
   // 与"建redemption_requests"两步合并成一次 AuthManager.redeemWuxingProduct()
   // 原子RPC调用（服务端同一事务内完成，价格由服务端商品表决定，不再信任
-  // 客户端传的 product.spiritCost/product.name——这两个字段仅用于本地价格
-  // 展示，不再参与真正扣款）。原来"写库失败退灵气"这个兜底分支不再需要——
+  // 客户端传的 product.spiritCostCNY/spiritCostMYR/product.name（2026-08-23
+  // 分地区定价改造前是单一spiritCost字段，现拆成两个）——这几个字段仅用于
+  // 本地价格展示，不再参与真正扣款）。原来"写库失败退灵气"这个兜底分支不再需要——
   // 原子RPC要么整体成功要么整体失败，不存在"扣了钱但没建成记录"这种中间态。
   async function _redeemCrystal(product, { wx, direction, summary, baziData }) {
     const islandId = (typeof App !== 'undefined' && typeof App.getCurrentIslandId === 'function')
@@ -222,8 +308,14 @@ const Products = (() => {
       // 这种真正的配置不一致错误误报成"余额不足"，误导用户以为多凑点灵气
       // 就能解决）。
       if (String(redeemResult.error).includes('灵气不足')) {
-        const cur   = (typeof UserState !== 'undefined') ? UserState.getSpirit() : 0;
-        const short = Math.max(product.spiritCost - cur, 0);
+        const cur     = (typeof UserState !== 'undefined') ? UserState.getSpirit() : 0;
+        // 2026-08-23 分地区定价改造：spiritCost 拆成 spiritCostCNY/spiritCostMYR
+        // 两个字段后，"还需要多少灵气"这个差额提示也要按当前用户货币区域取对应
+        // 字段——这里已经在async函数体内，直接await一次最新profile即可，比
+        // main-new.js/analysis.js那类同步渲染管线更简单，不需要引入缓存。
+        const profile = (typeof AuthManager !== 'undefined' && typeof AuthManager.getProfile === 'function')
+          ? await AuthManager.getProfile().catch(() => null) : null;
+        const short   = Math.max(_costFor(product, profile) - cur, 0);
         _toast(_t('products.insufficient', { n: short }), true);
       } else {
         console.error('[Products] redeemWuxingProduct失败:', redeemResult.error);
@@ -328,8 +420,12 @@ const Products = (() => {
       // 同 _redeemCrystal()：只有真正的"灵气不足"才映射到余额不足提示，
       // 其它（理论上不该发生的）服务端校验失败走通用失败提示，见该处注释。
       if (String(redeemResult.error).includes('灵气不足')) {
-        const cur   = (typeof UserState !== 'undefined') ? UserState.getSpirit() : 0;
-        const short = Math.max(product.spiritCost - cur, 0);
+        const cur     = (typeof UserState !== 'undefined') ? UserState.getSpirit() : 0;
+        // 同 _redeemCrystal()：spiritCost 拆成 spiritCostCNY/spiritCostMYR
+        // 后按当前用户货币区域取对应字段，见 _costFor() 定义处注释。
+        const profile = (typeof AuthManager !== 'undefined' && typeof AuthManager.getProfile === 'function')
+          ? await AuthManager.getProfile().catch(() => null) : null;
+        const short   = Math.max(_costFor(product, profile) - cur, 0);
         _toast(_t('products.insufficient', { n: short }), true);
       } else {
         console.error('[Products] redeemWuxingProduct失败:', redeemResult.error);
@@ -363,5 +459,5 @@ const Products = (() => {
     return true;
   }
 
-  return { getProducts, redeem };
+  return { getProducts, getProductsFor, redeem, isCNYRegion: _isCNYRegion, costFor: _costFor };
 })();

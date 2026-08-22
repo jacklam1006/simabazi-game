@@ -1435,9 +1435,17 @@ const Analysis = (() => {
     const lang   = (typeof Lang !== 'undefined' && typeof Lang.getLang === 'function') ? Lang.getLang() : 'zh';
     const spirit = (typeof UserState.getSpirit === 'function') ? (UserState.getSpirit() || 0) : 0;
 
+    // 2026-08-23 分地区定价改造：spiritCost 拆成 spiritCostCNY/spiritCostMYR
+    // 后这里同步补一份区域取价（虽然本函数本身已确认是死代码，见函数头
+    // 2026-08-13 qa-reviewer说明，但留着的话要保持字段引用不失效，不产生
+    // NaN价格）——用 Products.costFor()（缓存profile同步读取，同 main-new.js
+    // 同款取舍，见该处注释）。
+    const _profileForPricing = (typeof AuthManager !== 'undefined' && typeof AuthManager.getCachedProfile === 'function')
+      ? AuthManager.getCachedProfile() : null;
+
     const cardsHtml = products.map(p => {
       const name = (p && p.name && (p.name[lang] || p.name.zh)) || (p && p.id) || '';
-      const cost = (p && Number(p.spiritCost)) || 0;
+      const cost = (p && typeof Products.costFor === 'function' ? Number(Products.costFor(p, _profileForPricing)) : (p && Number(p.spiritCostMYR))) || 0;
       const enough = spirit >= cost;
       const icon = _traitProductIcon(p);
       // 灵气不足：按钮禁用态+差额文案；足够：可点击的"兑换"按钮，
@@ -1465,12 +1473,16 @@ const Analysis = (() => {
   // 商品图标：本阶段"纯展示+外链"边界不引入真实商品图片资源，用简单emoji代替
   // （见项目方案文档第二阶段第5节）。按 decorId/id 关键词粗略匹配，找不到时
   // 回退通用水晶图标，不因为匹配不上而报错或留空。
+  // 2026-08-23：旧4款通用商品（amethyst/rose/obsidian/basin/clear）已被
+  // js/products.js::PRODUCT_DEFS 移除，改按新的 crystal_{element}_{tier}
+  // 命名匹配（同 js/main-new.js::_wxProductIcon() 同款映射，两处保持一致）。
   function _traitProductIcon(product) {
     const key = ((product && (product.decorId || product.id)) || '').toLowerCase();
-    if (key.includes('amethyst')) return '🔮';
-    if (key.includes('rose'))     return '💗';
-    if (key.includes('obsidian')) return '⚫';
-    if (key.includes('water') || key.includes('basin') || key.includes('clear')) return '💧';
+    if (key.includes('gold'))  return '⚪';
+    if (key.includes('wood'))  return '🟢';
+    if (key.includes('water')) return '🔵';
+    if (key.includes('fire'))  return '🟣';
+    if (key.includes('earth')) return '🟡';
     return '💎';
   }
 

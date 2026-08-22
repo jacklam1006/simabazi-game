@@ -45,11 +45,12 @@ const IslandDecorations = (() => {
     shensha_glow    : { frac:{x: 0.00, z: 0.00, y:1.00, hover:1.00}, type:'ring', color:0xc9a96e, size:5.0, radiusFrac:1.0, glb:null },
     island_expand   : { frac:{x: 0.00, z: 0.00, y:0.10, hover:0.00}, type:'ring', color:0x6EB5FF, size:6.0, radiusFrac:1.2, noRaycast:true, glb:null },
 
-    // 水晶商品购买后（预留）
-    crystal_water   : { frac:{x:-0.60, z: 0.20, y:0.30, hover:0.15}, type:'crystal', color:0x6EB5FF, size:0.8, glb:'basin_clear.glb' },
-    crystal_amethyst: { frac:{x: 0.00, z:-0.60, y:0.30, hover:0.15}, type:'crystal', color:0x9b59b6, size:0.8, glb:'pillar_amethyst.glb' },
-    crystal_rose    : { frac:{x: 0.60, z:-0.20, y:0.30, hover:0.15}, type:'crystal', color:0xffb7c5, size:0.6, glb:'bracelet_rose.glb' },
-    crystal_obsidian: { frac:{x:-0.60, z:-0.40, y:0.30, hover:0.15}, type:'crystal', color:0x1a1a2e, size:0.7, glb:'bracelet_obsidian.glb' },
+    // 水晶商品购买后：2026-08-23五行专属水晶15款SKU改造，原来这里手写的
+    // 4款通用商品（crystal_water/crystal_amethyst/crystal_rose/
+    // crystal_obsidian，对应旧PRODUCT_DEFS，已在js/products.js同轮改造移除）
+    // 已废弃删除，改由下方 `_registerCrystalProductDecors()` 程序化注册15条
+    // `crystal_{gold|wood|water|fire|earth}_{cluster_s|cluster_l|potted}`，
+    // 见该函数定义处注释。
 
     // ── 十神/神煞/地支关系/天干合 共65个（2026-08-18新增，
     // js/decoration-resolver.js 判定命中 → js/decoration-annotate.js 摆放）──
@@ -228,6 +229,59 @@ const IslandDecorations = (() => {
           frac: { x: 0.00, z: 0.00, y: 0.30, hover: 0.15 },
           type: 'crystal', color: 0xc9a96e, size: 0.9,
           glb: 'wuxing/shrine_generic.glb',
+        };
+      });
+    });
+  })();
+
+  // ── 五行专属水晶商品占位（2026-08-23，第四阶段③水晶兑换新15款SKU）────
+  // 与上面 wxmaint_* 系列不同，这批装饰物是真的靠这里的 `frac` 定位——
+  // js/products.js::_redeemCrystal() 兑换成功后调用
+  // `IslandDecorations.add(product.decorId, baziData)`，不传第三个
+  // overridePos 参数（对照 js/wuxing-scene.js::attach()/markShrined() 那种
+  // 会传 overridePos、让上面 wxmaint_* 的 frac 沦为纯防御性占位的路径），
+  // 因此这里必须给出真正会生效的坐标，不能随便写。
+  //
+  // decorId 命名规则：`crystal_{gold|wood|water|fire|earth}_
+  // {cluster_s|cluster_l|potted}`（金用 gold 不是 metal——跟用户已经命名好的
+  // 真实商品图片文件夹`product/wuxing/`保持一致，`assets/decorations/wuxing/`
+  // 下已有的五行维护装饰用的是`metal`这个旧命名，两套系统刻意不统一，改旧的
+  // 那套没有任何好处、还要动6个已上线GLB文件名，不值得），与 js/products.js::PRODUCT_DEFS 的
+  // product.id/decorId 一一对应（两边同名，兑换哪个SKU就摆哪个造型，不需要
+  // 像 wxmaint_shrine_* 那样按wx/direction动态换算 decorId）。
+  //
+  // GLB资产尚未生成（业务方计划下个月用TripoAI补齐），这里先用 glb:null
+  // 占位——`_loadGLB()` 对 null 直接跳过异步加载，走本文件内置的占位几何体
+  // 兜底显示（type:'crystal'的box+发光），不会报错，也不阻塞其它装饰渲染。
+  // 待GLB就位后按约定路径 `products/crystal_{element}_{tier}.glb` 填入
+  // （GLB_BASE + 该相对路径 = /assets/decorations/products/
+  // crystal_{element}_{tier}.glb，与 wxmaint_* 系列同一套 GLB_BASE 拼接
+  // 规则，见下方 GLB_BASE 声明处）。
+  //
+  // frac/type/color/size 只是合理默认值（与 wxmaint_* 同一档次量级），不是
+  // 精调过的最终视觉位置——5个五行按圆周角度均匀分布（每72°一个，颜色复用
+  // CONFIG.WUXING_COLORS[wx].hex，跨全项目一致，不新造配色系统），同一
+  // 五行的3档沿半径由内到外排开（cluster_s→cluster_l→potted 依次更靠外、
+  // size也依次更大，呼应"档位越高越显眼"的直觉），只是为了避免同一用户
+  // 名下多款不同水晶战利品完全重叠在同一点——具体最终摆放效果留给"阶段⑤
+  // 动态视觉效果"任务精调，这里不需要做到位。
+  const CRYSTAL_PRODUCT_TIERS = [
+    { key: 'cluster_s', radius: 0.35, size: 0.5 },
+    { key: 'cluster_l', radius: 0.55, size: 0.7 },
+    { key: 'potted',    radius: 0.75, size: 0.9 },
+  ];
+  (function _registerCrystalProductDecors() {
+    const ELEMENTS   = ['gold', 'wood', 'water', 'fire', 'earth'];
+    const WX_BY_EN   = { gold: '金', wood: '木', water: '水', fire: '火', earth: '土' };
+    ELEMENTS.forEach((el, i) => {
+      const angle = (i / ELEMENTS.length) * Math.PI * 2;
+      const hex = (typeof CONFIG !== 'undefined' && CONFIG.WUXING_COLORS && CONFIG.WUXING_COLORS[WX_BY_EN[el]])
+        ? CONFIG.WUXING_COLORS[WX_BY_EN[el]].hex : 0xc9a96e;
+      CRYSTAL_PRODUCT_TIERS.forEach(({ key, radius, size }) => {
+        DECOR_DEFS[`crystal_${el}_${key}`] = {
+          frac: { x: Math.cos(angle) * radius, z: Math.sin(angle) * radius, y: 0.30, hover: 0.15 },
+          type: 'crystal', color: hex, size,
+          glb: null, // 待补：products/crystal_{element}_{tier}.glb（见上方注释）
         };
       });
     });
@@ -497,8 +551,12 @@ const IslandDecorations = (() => {
         // 包围盒内，新旧两套语义下最终渲染尺寸差异<0.3%、pivot修正位移
         // <1cm（岛屿场景尺度~10单位），肉眼不可辨，因此DECOR_DEFS里这25条
         // 对应的def.size数值未做调整。crystal_water/amethyst/rose/obsidian
-        // 这4个水晶战利品 + sprout_plant/cherry_blossom/moon_shrine/
-        // share_flower 这4个任务解锁装饰，共8个decorId引用的GLB文件
+        // 这4个水晶战利品（⚠️2026-08-23已废弃删除，替换成
+        // crystal_{gold|wood|water|fire|earth}_{cluster_s|cluster_l|potted}
+        // 15款，同样glb:null未就位，见DECOR_DEFS该批定义处注释，这条历史
+        // 记录里旧decorId名字本身已不存在，仅保留描述"待真实GLB到位后需要
+        // 核实包围盒"这个结论仍然适用于新15款）+ sprout_plant/cherry_blossom/
+        // moon_shrine/share_flower 这4个任务解锁装饰，共8个decorId引用的GLB文件
         // （basin_clear.glb/sprout.glb等）在当前代码库/assets目录下实际
         // 尚不存在（find遍历确认），加载会404回退占位符，不受本次改动影响，
         // 待真实文件到位后建议按同样方法核实一次包围盒再决定是否需要调整

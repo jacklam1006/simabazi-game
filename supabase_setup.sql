@@ -456,9 +456,190 @@ ALTER TABLE profiles ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT 
 -- 安全策略"，而不是真的能改成功。正常 upsert 场景里 id = EXCLUDED.id 是
 -- "自己赋值给自己"（冲突键本来就是同一个 id），这条 GRANT 只是让这句
 -- 自反赋值本身能通过列级权限检查，不会让任何人真正改写 id 的值。
-REVOKE UPDATE, INSERT ON profiles FROM authenticated, anon;
+-- ⚠️ 2026-08-23 灵气兑换水晶商品改造后追加的教训——phone_code 决定汇率，
+-- 不能再简单套用上面"id 留在白名单没关系"的结论。qa-reviewer 实测复现：
+-- +86 账号先按人民币价兑换成功，再自己把 phone_code 改成 +60，同款商品
+-- 立刻变成马币价（数字更低）重新兑换成功，价格被腰斩且没有任何拦截——
+-- 这是因为 redeem_wuxing_product() 等 RPC 里直接读 profiles.phone_code
+-- 判断货币（见下方及 1384/1507 行附近注释），而这一列此前一直在 UPDATE
+-- 白名单里，legacy 原因是它只是"用户注册时选的国家"展示用途，当时改坏了
+-- 顶多显示错，没人重新评估它现在直接决定商品价格这个新用途。
+--
+-- 直接把 phone_code 从 UPDATE 白名单里去掉是错的（本条修复过程中本地
+-- Postgres 已实测证实）：会连带打断 registerWithProfile() 本身——它的
+-- upsert 生成的真实 SQL 是 INSERT ... ON CONFLICT(id) DO UPDATE SET
+-- phone_code = EXCLUDED.phone_code（连同 id/display_name/country/phone
+-- 一起），哪怕本次调用命中的是全新用户、根本走不到 DO UPDATE 分支，
+-- Postgres 在语句解析阶段仍然要求调用者对 SET 列表里出现的每一列都有
+-- UPDATE 权限，不是运行时按实际分支懒检查——这一点跟上面 id 那条注释描述
+-- 的机制是一回事，但 id 靠 RLS 的隐式 CHECK（auth.uid()=id）保证"自反赋值
+-- 改不了值"，phone_code 没有等价的天然不变量，所以简单摘掉白名单只会让
+-- 新用户注册 100% 报 "permission denied for table profiles"，问题没解决
+-- 反而炸了主流程。
+--
+-- 正确做法：phone_code 继续留在 UPDATE 白名单里（保证 upsert 语句能通过
+-- 列权限解析），但用下方触发器在行级把"UPDATE 路径修改 phone_code"这件事
+-- 变成静默无效——不管 UPDATE 语句里传了什么新值，一律强制写回旧值。
+-- 只有 INSERT（真正创建新行，注册时的常规路径）能设置 phone_code 的初始
+-- 值，因为 BEFORE UPDATE 触发器根本不会在 INSERT 路径上触发。本地 Postgres
+-- 已验证四种场景：①全新用户 upsert 注册成功且 phone_code 按提交值写入；
+-- ②直接 UPDATE profiles SET phone_code=... 语句本身不报错（列权限仍在），
+-- 但改动被触发器悄悄丢弃，最终值不变；③upsert 形态的"二次提交"攻击（同一
+-- 行已存在时再次 upsert 不同 phone_code，模拟表单重复提交或伪造重放）同样
+-- 被挡住，而同一次调用里的 display_name/country/phone 仍正常按新值写入，
+-- 不会连带锁死其它列；④updateProfile() 只传 display_name 的常规路径不受
+-- 任何影响，phone_code 原样保留。
+REVOKE UPDATE, INSERT, DELETE ON profiles FROM authenticated, anon;
 GRANT UPDATE (id, display_name, country, phone_code, phone) ON profiles TO authenticated;
 GRANT INSERT (id, display_name, country, phone_code, phone) ON profiles TO authenticated;
+-- DELETE 顺带收紧：这一列此前从未被显式 REVOKE 过（Supabase 项目新建表默认
+-- 会给 authenticated 表级 ALL，只有本文件显式 REVOKE 过的操作才会被真正
+-- 收回，DELETE 之前不在收回名单里，本地 Postgres 实测确认 authenticated
+-- 目前确实能直接 DELETE FROM profiles WHERE id=auth.uid()）。这不是无关
+-- 紧要的口子：现有 RLS 还留着一条"用户只能删除自己的资料"策略（本文件
+-- 78-98 行附近），配合上面 INSERT 白名单本来就包含 phone_code，攻击者可以
+-- 走"先删除自己那一行、再自行 INSERT 一行全新 phone_code"绕开上面的
+-- UPDATE 触发器防线（触发器只挡 UPDATE 路径，挡不住"整行重新插入"）。全项目
+-- grep 确认前端 js/*.js 和后端 island_service/*.py 均没有任何代码调用
+-- profiles 的 delete()，不存在账号注销之类依赖这个权限的现有功能，收紧不
+-- 影响任何已知合法流程；RLS 那条 DELETE 策略予以保留（不影响安全结论，
+-- 因为表级 GRANT 已经先一步拒绝，策略永远不会被 authenticated 实际触发到；
+-- 保留是为了将来若真要做账号注销功能，只需要新增一个 SECURITY DEFINER
+-- RPC 内部用 postgres 身份执行 DELETE，不需要重新设计 RLS）。
+
+-- ── phone_code 一旦写入，仅允许被 INSERT（首次注册）设置，UPDATE 路径一律
+--    静默保留旧值，堵住"改地区改价"的漏洞（详见上方 2026-08-23 注释）───
+-- ⚠️ 2026-08-23 qa-reviewer 第二轮发现：上面这条"无条件锁死"的触发器留了
+-- 一个没人能修正的缺口——它不区分调用者角色，连 service_role/数据库超级
+-- 用户都改不动，且是"UPDATE 语句本身不报错、但值静默没变"这种假成功，
+-- 业务方在 Supabase Studio 表格界面手动改也会被悄悄吞掉。而现有代码有
+-- 多处会让用户永久卡在默认值 +86（人民币，价格更高，比如幽谷晶翠 728 而
+-- 不是 468）：①表定义 phone_code 默认值就是 '+86'；②js/auth.js
+-- updateProfile() 的自愈式 upsert 只传 {id, display_name}，如果这条路径
+-- 先于注册流程建出 profiles 行，phone_code 会停在默认值；③注册表单国家
+-- 选择器默认选中的就是 CN/+86。一个马来西亚用户如果没有主动去改选择器、
+-- 或走了自愈建行路径，会被永久按人民币价扣款，且在上一版设计里没有任何
+-- 修正手段，只能靠一次性 DB migration 手动改——这对持续运营的产品不可
+-- 接受。
+--
+-- 修复：给触发器加一个受控的"逃生口"——只有当前事务显式声明
+-- app.allow_phone_code_change='on' 才放行，普通前端 UPDATE 永远拿不到
+-- 这个声明（PostgREST 不暴露 SET/set_config 这类会话级语句给前端调用，
+-- 前端只能发 UPDATE/RPC，没有任何路径能让 authenticated 角色自己设置
+-- 这个 GUC）。真正合法的修正入口是下方 admin_fix_phone_code()，用
+-- SECURITY DEFINER RPC 内部校验 is_admin 后用 SET LOCAL（PostgreSQL
+-- `set_config(..., is_local:=true)`）打开这个声明。
+-- ⚠️ 这里的 is_local=true 只保证这个 GUC 是"事务级"生效——只在当前事务
+-- 结束（COMMIT/ROLLBACK）时才自动失效，不是"语句级"，同一事务内紧跟着
+-- 的其它语句会继续读到 'on'。同时，这个 GUC 本身只是一个约定名字，任何
+-- 拿到裸数据库连接的角色理论上都能自己 SET 它再发 UPDATE 绕过——之所以
+-- 目前安全，纯粹是因为 PostgREST/supabase-js 这层不会把裸 SET 语句暴露
+-- 给前端调用，不是数据库自己在防。这两点合起来意味着单靠这个 GUC 不构成
+-- 数据库自身独立的防线，只是建立在"客户端连不到能自己 SET 这个 GUC 的
+-- 通道"这个应用层假设之上。
+--
+-- 2026-08-23 qa-reviewer 第三轮曾要求叠加第二道判断：current_user <>
+-- session_user，理由是"这个条件天然只在 SECURITY DEFINER 函数体内部执行
+-- 期间才成立"。⚠️ 2026-08-23 qa-reviewer 第四轮用更贴近真实 Supabase 架构
+-- 的方式复现（创建 authenticator 角色 + SET SESSION AUTHORIZATION
+-- authenticator; SET ROLE authenticated; 模拟 PostgREST 的真实连接身份，
+-- 而不是简单 SET ROLE），证实第三轮这个大前提本身是错的，判断已撤回
+-- （下方函数体恢复成只依赖 GUC 的版本）。撤回原因——
+-- Supabase/PostgREST 的标准连接架构本来就是：数据库连接以 authenticator
+-- 角色建立（这是 session_user，整个连接生命周期不变），每一次 HTTP 请求
+-- PostgREST 都会在这条连接上执行 SET ROLE authenticated（或其它对应角色）
+-- 切换 current_user 去匹配调用者的 JWT 身份。也就是说，
+-- current_user（authenticated）<> session_user（authenticator）对**所有**
+-- 正常 PostgREST 流量天然成立，根本不需要经过任何 SECURITY DEFINER 函数——
+-- 这不是"进入 SECURITY DEFINER 函数体内部"才有的独特信号，而是 PostgREST
+-- 每次请求本身固有的连接特征。第三轮的复现之所以得出相反结论，是因为测试
+-- 时直接以 postgres/超级用户身份 SET ROLE authenticated，而不是先切换到
+-- authenticator 再 SET ROLE——这样测出来的 session_user 仍是 postgres，
+-- 掩盖了真实 PostgREST 连接下 session_user=authenticator 这个关键前提，
+-- 让"仅 SECURITY DEFINER 函数体内部才满足"这个假设看似成立，实际不成立。
+-- 后果是双重的：①拦不住真实威胁——攻击者只要能以 authenticator 身份连接
+-- （即拿到能直连数据库的凭证）、自己 SET ROLE authenticated、自己 SET 这个
+-- GUC 再发 UPDATE，此时 current_user(authenticated) 本来就不等于
+-- session_user(authenticator)，这条新增判断对这条路径形同虚设，完全拦不住；
+-- ②误伤唯一合法的修正路径——业务方在 Supabase Studio SQL Editor 里操作时
+-- 连接身份是 postgres，此时 current_user 和 session_user 都是 postgres、
+-- 天然相等，不管是调用 admin_fix_phone_code()（函数体内 current_user 会被
+-- SECURITY DEFINER 切成属主 postgres，跟已经是 postgres 的 session_user
+-- 仍然相等）还是直接发裸 UPDATE，都会被 current_user=session_user 命中、
+-- 强制吞掉新值，且是"UPDATE 不报错、值静默没变"的假成功，业务方完全发现
+-- 不了。综上，这个判断从设计前提上就没有区分度，直接撤回，不是修补。
+-- ✅ 但"SECURITY DEFINER 函数体内部执行期间，current_user 会被 Postgres
+-- 自动切换成函数属主（本项目是 postgres），且这个切换独立于调用者原本的
+-- session_user"这条知识本身依然正确，只是不能反过来当成"current_user<>
+-- session_user 就等于正在 SECURITY DEFINER 函数体内部"的充分/必要判据——
+-- 两者不是等价关系，PostgREST 的角色切换会制造大量与 SECURITY DEFINER 无关
+-- 的 current_user<>session_user 场景，未来任何人想复用"比对 current_user
+-- 和 session_user"这个思路做权限判断前，先看这条记录。
+--
+-- 撤回后这套防线的真实边界：GUC 判断本身足以挡住通过 PostgREST/supabase-js
+-- 的所有正常 Web 端攻击面——supabase-js 的 .update()/.rpc() 没有任何办法
+-- 让客户端注入一条裸 SET/set_config 语句，前端唯一能碰这个 GUC 的路径就是
+-- 调用 admin_fix_phone_code()（内部有 is_admin 校验）。但如果攻击者拿到的
+-- 不是 anon/service_role 这类 API key，而是能直连 Postgres 的真实连接串
+-- （session_user 可以是 authenticator 甚至更高权限角色），是可以绕过的——
+-- 这属于"数据库连接凭证泄露"这个更高等级的威胁，凭证泄露后能做的坏事远不止
+-- 改一个 phone_code，不属于这一层该覆盖的范围，如实记录边界即可，不需要在
+-- 这一层继续加码防御。
+CREATE OR REPLACE FUNCTION lock_profile_phone_code()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF current_setting('app.allow_phone_code_change', true) IS DISTINCT FROM 'on' THEN
+    NEW.phone_code := OLD.phone_code;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_lock_profile_phone_code ON profiles;
+CREATE TRIGGER trg_lock_profile_phone_code
+  BEFORE UPDATE ON profiles
+  FOR EACH ROW EXECUTE FUNCTION lock_profile_phone_code();
+
+-- ── phone_code 唯一合法修正入口：仅管理员可调用，事务级临时放行触发器──
+-- 沿用本文件 admin_set_spirit_balance() 同款"对所有 authenticated 开放
+-- EXECUTE，安全性完全靠函数体内部 is_admin 校验兜底"的既有模式，不是
+-- 新发明的写法。非管理员调用直接 RAISE EXCEPTION 报错、不产生任何副作用；
+-- 管理员调用时先 set_config(..., true) 打开当前事务内的放行声明，紧接着
+-- 在同一事务里执行 UPDATE，触发器读到 'on' 后放行本次赋值。
+-- ⚠️ 2026-08-23 订正：这里 set_config(..., is_local:=true) 打开的放行声明
+-- 是"事务级"而不是"语句级"——它在当前事务提交/回滚之前始终保持 'on'，
+-- 而不是本函数一返回就失效。如果调用方通过 PostgREST/RPC 走单语句
+-- autocommit（Supabase 默认走这条路径，每次 RPC 调用各自是独立的隐式
+-- 事务），那么函数返回时事务确实随之结束，GUC 自然重置，不影响调用方
+-- 后续的其它请求；但如果调用方是在自己手动开启的多语句事务里（例如
+-- `BEGIN; SELECT admin_fix_phone_code(...); UPDATE profiles SET
+-- phone_code=... ...; COMMIT;`），GUC 在整个事务期间都读得到 'on'，
+-- 同一事务里紧跟着的其它 UPDATE 语句本身单靠这个 GUC 判断是会被放行的，
+-- 不能笼统断言"不影响调用方后续任何其它 UPDATE"。
+-- ⚠️ 2026-08-23 第四轮订正：这里曾经写过"真正堵住这条路径的是
+-- lock_profile_phone_code() 里的 current_user <> session_user 判断"——
+-- 该判断已被证伪并撤回（详见上方 lock_profile_phone_code() 定义处注释），
+-- 这个说法一并作废。真实情况是：这个"事务级而非语句级"的缺口，在通过
+-- PostgREST/supabase-js 的正常 Web 端调用下并不构成可利用路径——
+-- PostgREST 不会把 BEGIN/COMMIT 这类会话级语句暴露给客户端，每次 RPC 调用
+-- 本身就是独立的隐式事务，调用方没有任何办法让 admin_fix_phone_code() 和
+-- 自己紧接着的一条 UPDATE 共享同一个事务。只有当调用方本身就拥有能开启
+-- 手动多语句事务的直连数据库凭证（例如 psql、Supabase Studio SQL Editor、
+-- 迁移脚本）时，这个缺口才有实际意义——而这种连接凭证本身已经等同于前面
+-- 提过的"数据库连接凭证泄露"级别威胁，超出这一层该覆盖的范围，不需要为此
+-- 单独加码防御，如实记录即可。
+CREATE OR REPLACE FUNCTION admin_fix_phone_code(p_user_id UUID, p_phone_code TEXT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF NOT COALESCE((SELECT is_admin FROM profiles WHERE id = auth.uid()), FALSE) THEN
+    RAISE EXCEPTION '权限不足：仅管理员可调用';
+  END IF;
+  PERFORM set_config('app.allow_phone_code_change', 'on', true); -- true=仅本事务内生效
+  UPDATE profiles SET phone_code = p_phone_code WHERE id = p_user_id;
+END;
+$$;
+REVOKE ALL ON FUNCTION admin_fix_phone_code(UUID, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION admin_fix_phone_code(UUID, TEXT) TO authenticated;
 
 -- ── 登录合并专用：本地余额 > 云端余额 时取较大值写回 ─────────────
 -- 替代原来 js/auth.js syncSpiritBalance() 里"本地值整包 upsert 覆盖云端"
@@ -1365,3 +1546,174 @@ ALTER TABLE wuxing_maintenance_state ALTER COLUMN base_tier SET DEFAULT 1;
 -- spend_spirit(p_amount) 不再被任何合法前端流程调用。收回执行权限，保留
 -- 函数体做审计痕迹（不删除，与本文件其它"锁死旧RPC"的一贯做法一致）。
 REVOKE EXECUTE ON FUNCTION spend_spirit(INTEGER) FROM authenticated;
+
+-- ═══════════════════════════════════════════════════════════════
+-- 2026-08-23 五行专属水晶15款SKU + 分地区定价改造
+-- ═══════════════════════════════════════════════════════════════
+-- 背景：原4款通用水晶（bracelet_rose/bracelet_obsidian/pillar_amethyst/
+-- basin_clear）扩展成5个五行元素（金/木/水/火/土）× 3个档位（水晶簇小/
+-- 水晶簇大/水晶盆栽）共15款专属SKU + 维持不变的shrine_generic，业务方
+-- 已确认真实商品价目表（同步维护于 js/products.js::PRODUCT_DEFS）。旧的
+-- 4款通用商品此前未有真实用户兑换过（仅管理员测试账号），直接从商品表
+-- 里移除，不做向后兼容——已发生的历史 redemption_requests 行不受影响
+-- （那张表的 product_id 是自由文本列，不是外键，不会因为商品表移除某个
+-- product_id 而报错或被级联删除）。
+--
+-- 改动①——分地区定价：VALUES表从(product_id, kind, cost, name)四列扩展
+-- 成(product_id, kind, cost_cny, cost_myr, name, wx)六列。1灵气=1个货币
+-- 单位，cost_cny/cost_myr两套定价互相独立、不做汇率换算。调用者货币区域
+-- 判断：profiles.phone_code = '+86'（中国大陆，js/auth.js::COUNTRY_CODES
+-- 与注册流程写入的格式一致，确认过是带'+'号的完整区号字符串，不是纯数字）
+-- 用cost_cny；其它（含phone_code为NULL，即老账号/未走完整注册流程的
+-- 边界情况）一律按cost_myr——不假设"没填区号=中国用户"，宁可少收更贴近
+-- 目标市场（马来西亚）定价的钱，也不要反过来对不明地区用户按更高定价
+-- 硬扣。shrine_generic两个货币列价格相同（都是1000），不受这次改动影响。
+--
+-- 改动②——商品五行归属校验：VALUES表新增 wx 列，记录该水晶自身的五行
+-- 归属颜色（如绿水晶=木），这**不是**"允许兑换的问题五行"本身——同一款
+-- 水晶服务两种问题：nourish方向滋养同五行的不足、restrain方向克制"这款
+-- 水晶五行所克制的那个五行"的过旺（业务方给定的固定映射：金克木/木克土/
+-- 土克水/水克火/火克金，完整对照表见 js/products.js 头部注释）。因此
+-- 校验逻辑**不是**拿 p_wx 直接等于 VALUES 表里的 wx 做比较——那样会把
+-- 全部restrain方向的合法兑换都误判为"张冠李戴"而错误拒绝（例：土行
+-- restrain合法应使用绿水晶/木，若直接比较 p_wx='土' 和 product wx='木'
+-- 会不相等，被误拒；但nourish方向恰好是p_wx与wx直接相等，容易被误认为
+-- "本该如此"而不假思索套用naive比较，因此在此特别说明取舍原因）——而是
+-- 先按 p_direction 把 p_wx 换算成"这次兑换理论上应该对应的水晶五行"
+-- （v_expected_wx：nourish时就是p_wx本身，restrain时是p_wx的"克"），
+-- 再拿这个换算结果去比对VALUES表里的wx，不匹配则RAISE EXCEPTION拒绝。
+-- shrine_generic不分五行，wx留NULL，这条校验对shrine分支整体跳过。
+--
+-- 商品目录须与 js/products.js::PRODUCT_DEFS 保持同步——改商品价格/新增
+-- 商品时两边都要改，这是本函数与前端之间的契约点（数据库这份是唯一被
+-- 实际信任、用来扣款的权威价格表，前端那份仅用于兑换前的UI展示预估）。
+-- 其余逻辑（direction/wx枚举校验、bazi_key归属校验、shrine态重复兑换
+-- 守卫、wx→trait_index映射、contact_phone拼接）原样保留自上一版本
+-- （2026-08-22 P4修复），未改动。
+CREATE OR REPLACE FUNCTION redeem_wuxing_product(
+  p_product_id TEXT, p_bazi_key TEXT, p_wx TEXT, p_direction TEXT, p_base_tier SMALLINT,
+  p_island_id UUID, p_trait_summary TEXT
+) RETURNS TABLE(new_balance INTEGER, redemption_id UUID)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+  v_cost_cny      INTEGER;
+  v_cost_myr      INTEGER;
+  v_cost          INTEGER;
+  v_kind          TEXT;
+  v_name          TEXT;
+  v_product_wx    TEXT;
+  v_expected_wx   TEXT;
+  v_wx_index      INTEGER;
+  v_balance       INTEGER;
+  v_redemption_id UUID;
+  v_phone         TEXT;
+  v_phone_code    TEXT;
+  v_contact_phone TEXT;
+BEGIN
+  IF p_direction NOT IN ('nourish', 'restrain') THEN
+    RAISE EXCEPTION '无效的direction: %', p_direction;
+  END IF;
+  IF p_wx NOT IN ('木','火','土','金','水') THEN
+    RAISE EXCEPTION '无效的五行: %', p_wx;
+  END IF;
+  IF NOT bazi_key_belongs_to_caller(p_bazi_key) THEN
+    RAISE EXCEPTION '无效的命盘标识';
+  END IF;
+
+  -- P4：该五行问题若已存在且已是 shrine 态，禁止重复兑换重复扣款；行不
+  -- 存在（新用户从未维护过、直接购买）应正常放行。
+  IF EXISTS (
+    SELECT 1 FROM wuxing_maintenance_state
+    WHERE user_id = auth.uid() AND bazi_key = p_bazi_key AND wx = p_wx AND direction = p_direction
+      AND ownership_tier = 'shrine'
+  ) THEN
+    RAISE EXCEPTION '该问题已永久巩固，无需重复兑换';
+  END IF;
+
+  -- 与 js/products.js PRODUCT_DEFS 保持同步，改商品价格/新增商品时两边都要改。
+  -- 15款五行专属水晶（金/木/水/火/土 × 水晶簇小/水晶簇大/水晶盆栽 三档，
+  -- 业务方真实报价）+ 1款不分五行的通用请神仙镇宅。
+  SELECT cost_cny, cost_myr, kind, name, wx INTO v_cost_cny, v_cost_myr, v_kind, v_name, v_product_wx FROM (VALUES
+    ('crystal_gold_cluster_s', 'crystal', 99,   68,  '白水晶簇(小)', '金'),
+    ('crystal_gold_cluster_l', 'crystal', 180,  108, '白水晶簇(大)', '金'),
+    ('crystal_gold_potted',    'crystal', 728,  468, '琼英翠微',     '金'),
+    ('crystal_wood_cluster_s',  'crystal', 99,   68,  '绿水晶簇(小)', '木'),
+    ('crystal_wood_cluster_l',  'crystal', 180,  108, '绿水晶簇(大)', '木'),
+    ('crystal_wood_potted',     'crystal', 728,  468, '幽谷晶翠',     '木'),
+    ('crystal_water_cluster_s', 'crystal', 158,  98,  '蓝水晶簇(小)', '水'),
+    ('crystal_water_cluster_l', 'crystal', 298,  188, '蓝水晶簇(大)', '水'),
+    ('crystal_water_potted',    'crystal', 788,  488, '冰晶莲韵',     '水'),
+    ('crystal_fire_cluster_s',  'crystal', 228,  138, '紫水晶簇(小)', '火'),
+    ('crystal_fire_cluster_l',  'crystal', 438,  268, '紫水晶簇(大)', '火'),
+    ('crystal_fire_potted',     'crystal', 628,  388, '紫梦流光',     '火'),
+    ('crystal_earth_cluster_s', 'crystal', 99,   68,  '黄水晶簇(小)', '土'),
+    ('crystal_earth_cluster_l', 'crystal', 180,  108, '黄水晶簇(大)', '土'),
+    ('crystal_earth_potted',    'crystal', 528,  328, '金耀晶植',     '土'),
+    ('shrine_generic',          'shrine',  1000, 1000,'请神仙镇宅',   NULL)
+  ) AS t(product_id, kind, cost_cny, cost_myr, name, wx) WHERE t.product_id = p_product_id;
+
+  IF v_cost_cny IS NULL THEN RAISE EXCEPTION '未知商品: %', p_product_id; END IF;
+
+  -- 复刻 js/products.js::WX_ORDER/_wxToIndex()，仅 crystal 路径需要（写入
+  -- redemption_requests.trait_index 这个INTEGER列）；shrine路径不写这张表，
+  -- 不需要这个映射合法，宽松放行任意wx。上面已有 p_wx IN (...) 枚举校验，
+  -- 这里理论上不会再命中 ELSE NULL 分支，保留 CASE 结构与既有风格一致、
+  -- 不引入行为差异。
+  v_wx_index := CASE p_wx
+    WHEN '木' THEN 0 WHEN '火' THEN 1 WHEN '土' THEN 2 WHEN '金' THEN 3 WHEN '水' THEN 4
+    ELSE NULL
+  END;
+
+  -- 商品五行归属校验（见上方函数头注释②的换算说明）：nourish方向要求
+  -- 水晶五行与问题五行相同；restrain方向要求水晶五行是问题五行的"克"
+  -- （金克木/木克土/土克水/水克火/火克金）。不匹配（如拿绿水晶/木去兑换
+  -- 一个火的问题，无论nourish还是restrain都不成立）一律拒绝。shrine
+  -- 不分五行，跳过。
+  IF v_kind = 'crystal' THEN
+    v_expected_wx := CASE
+      WHEN p_direction = 'nourish' THEN p_wx
+      WHEN p_direction = 'restrain' THEN
+        CASE p_wx
+          WHEN '木' THEN '金' WHEN '土' THEN '木' WHEN '水' THEN '土'
+          WHEN '火' THEN '水' WHEN '金' THEN '火'
+          ELSE NULL
+        END
+      ELSE NULL
+    END;
+    IF v_product_wx IS DISTINCT FROM v_expected_wx THEN
+      RAISE EXCEPTION '商品与问题五行不匹配: product=%, wx=%, direction=%', p_product_id, p_wx, p_direction;
+    END IF;
+  END IF;
+
+  -- 按调用者货币区域取价：查一次profiles顺带拿到phone/phone_code，后面
+  -- crystal分支拼contact_phone时复用，不用再查第二次。
+  SELECT phone, phone_code INTO v_phone, v_phone_code FROM profiles WHERE id = auth.uid();
+  v_cost := CASE WHEN v_phone_code = '+86' THEN v_cost_cny ELSE v_cost_myr END;
+
+  UPDATE profiles SET spirit_balance = spirit_balance - v_cost
+    WHERE id = auth.uid() AND spirit_balance >= v_cost
+    RETURNING spirit_balance INTO v_balance;
+  IF NOT FOUND THEN RAISE EXCEPTION '灵气不足'; END IF;
+
+  INSERT INTO wuxing_maintenance_state (user_id, bazi_key, wx, direction, base_tier, ownership_tier, ownership_product_id, last_maintained_at, first_cycle_consumed)
+    VALUES (auth.uid(), p_bazi_key, p_wx, p_direction, GREATEST(1, LEAST(3, COALESCE(p_base_tier, 1))), v_kind, p_product_id, NOW(), TRUE)
+  ON CONFLICT (user_id, bazi_key, wx, direction) DO UPDATE SET
+    ownership_tier        = EXCLUDED.ownership_tier,
+    ownership_product_id  = EXCLUDED.ownership_product_id,
+    last_maintained_at     = NOW(),
+    first_cycle_consumed   = TRUE,
+    updated_at              = NOW();
+
+  IF v_kind = 'crystal' THEN
+    v_contact_phone := NULLIF(TRIM(COALESCE(v_phone_code, '') || COALESCE(v_phone, '')), '');
+
+    INSERT INTO redemption_requests (user_id, product_id, product_name, spirit_cost, island_id, trait_kind, trait_index, trait_summary, contact_phone)
+      VALUES (auth.uid(), p_product_id, v_name, v_cost, p_island_id, p_direction, v_wx_index, p_trait_summary, v_contact_phone)
+      RETURNING id INTO v_redemption_id;
+  END IF;
+
+  RETURN QUERY SELECT v_balance, v_redemption_id;
+END;
+$$;
+REVOKE ALL ON FUNCTION redeem_wuxing_product(TEXT, TEXT, TEXT, TEXT, SMALLINT, UUID, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION redeem_wuxing_product(TEXT, TEXT, TEXT, TEXT, SMALLINT, UUID, TEXT) TO authenticated;

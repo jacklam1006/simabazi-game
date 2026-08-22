@@ -251,6 +251,31 @@ ANALYSIS_MODEL_CHAIN = ([_ENV_ANALYSIS_MODEL] if _ENV_ANALYSIS_MODEL else []) + 
 ANALYSIS_CACHE  = Path('./persistent_data/analysis_cache')
 ANALYSIS_CACHE.mkdir(parents=True, exist_ok=True)
 
+# 2026-08-23 新增「今日运势」（流日）：独立的缓存目录，刻意不与上面的
+# ANALYSIS_CACHE（六步命理框架，缓存key只按"命盘hash"、同一命盘算一次永久
+# 有效）共用同一份存储——流日分析的正确内容会随"今天是哪一天"逐日变化，
+# 缓存key必须是"命盘hash + 流日干支字符串"这个二维组合（见
+# `_liuri_cache_key()`），如果沿用/污染 ANALYSIS_CACHE 那份"命盘hash → 结果"
+# 的单维度缓存文件，今天生成的内容会被误当成"这张命盘的流日分析"永久缓存住，
+# 明天读到的还是今天的内容。用独立目录而不是"同一目录、不同文件名前缀"，是
+# 为了让这两套缓存的生命周期管理（未来如需清理"N天前的流日缓存文件"批处理）
+# 可以按目录整体操作，不需要用文件名模式匹配去区分两种不同性质的缓存文件。
+#
+# 2026-08-23 当天 qa-reviewer 复查发现时区错位bug并修复（详见
+# claude-docs/已知问题与修复记录.md 对应日期条目）：缓存key的第二维度最初
+# 设计成"服务端UTC日期字符串"（`_today_utc_str()`），但流日本身（今天的
+# 干支）是前端 `js/bazi-engine.js::getLiuri()` 按**用户本地时间**算出来
+# 再传给后端的——这两个"今天"在UTC+8这类时区的本地时间00:00-08:00这8小时
+# 窗口内必然不一致（服务端UTC仍是"昨天"，前端传来的干支已经是"今天"的），
+# 导致服务端用"昨天"的日期去查/写缓存，返回文不对题的内容，且每天都会
+# 发生、不是偶发。修复：缓存key第二维度直接改用请求里的流日干支本身
+# （`liuri['gan']+liuri['zhi']`，见 `_liuri_cache_key()`）——干支就是"今天
+# 到底是哪天"这件事最终、唯一需要关心的判定依据，服务端不需要也不应该
+# 自己另算一个日期代理值去猜。`_today_utc_str()` 已随之删除（改完后没有
+# 任何调用点，留着只会误导以后的人以为它还在被信任使用）。
+LIURI_CACHE = Path('./persistent_data/liuri_cache')
+LIURI_CACHE.mkdir(parents=True, exist_ok=True)
+
 
 class GeminiCallError(Exception):
     """Gemini 调用失败：message 里必须包含明确原因（不含 API Key），
@@ -2090,3 +2115,256 @@ async def analyze_bazi(bazi_data: dict, gender: str = '男', birth_year: int = 0
         msg = _redact(f"{type(e).__name__}: {e}")
         print(f"[gemini_analysis ERROR] unexpected {msg}")
         return {'hash': bz_hash, 'analysis': None, 'error': f'unexpected_error({msg})'}
+
+
+# ══════════════════════════════════════════════════════════════
+# 「今日运势」（流日）——2026-08-23新增
+#
+# 每日任务用的轻量AI生成步骤，跟六步命理框架完全独立、不共享缓存、不影响
+# 六步框架任何既有逻辑。输入是前端 js/bazi-engine.js::BaziEngine.getLiuri()/
+# getLiuriRelations() 已经算好的确定性数据（今天的流日干支 + 流日跟命盘四柱
+# 的十神/冲合刑害关系）——跟本文件一贯"命盘层面的确定性事实只在JS引擎算一次，
+# Python侧只消费不重算"的既有分工原则一致（interactions/nayin/hiddenStems等
+# 字段都是这个模式，见 `_build_context()` 顶部注释）。
+#
+# 篇幅明显短于六步深析（那是命盘级一次性深度分析，这是每日的轻量提醒）：
+# 目标100-150字，不复述命理术语堆砌，给用户一点"今天可以关注"的具体感，
+# 不空泛、不制造焦虑、不过度承诺——沿用本文件顶部 PERSONA_SYSTEM 里已经定下的
+# 同一套立场（"专业但不故弄玄虚""不说模棱两可的正确废话"），不另起一套人设。
+# ══════════════════════════════════════════════════════════════
+
+# ── 干支合法性校验（60甲子）──────────────────────────────────
+# 天干/地支顺序必须与 `js/bazi-engine.js::STEM_WX`/`BRANCH_WX` 的key顺序
+# 一致（前端流日gan/zhi的权威来源，本文件不重新实现干支计算逻辑本身，只是
+# "这个组合是否存在于60甲子循环里"这一步合法性校验——后端向来只消费前端
+# 算好的确定性数据，不重算，见本节顶部注释）。
+_GAN_ORDER = '甲乙丙丁戊己庚辛壬癸'
+_ZHI_ORDER = '子丑寅卯辰巳午未申酉戌亥'
+
+
+def _is_valid_ganzhi(gan: str, zhi: str) -> bool:
+    """60甲子合法性校验：天干（10个）与地支（12个）的阴阳属性必须一致
+    （即天干在`_GAN_ORDER`里的index与地支在`_ZHI_ORDER`里的index同奇偶）——
+    这是"10×12=120种理论组合里恰好只有60种真实存在于甲子循环"的数学根源
+    （10和12的最大公约数是2，只有同奇偶的组合会落在同一个循环里），不是
+    经验规则、没有例外。
+
+    2026-08-23 时区错位bug修复时新增（见本文件顶部docstring对应日期条目、
+    claude-docs/已知问题与修复记录.md）：这个接口不产生货币/权益类结果，
+    不是安全攻击面，但如果客户端传来的`gan`/`zhi`不是合法的60甲子组合之一
+    （空字符串、乱码、或故意拼错成阳干配阴支这类不存在的搭配），不应该被
+    悄悄接受——一旦接受就会用这个非法值拼出缓存key、生成一份跟"今天"实际
+    不对应的垃圾缓存文件落盘，且缓存文件本身完全没有自检线索能事后发现这
+    是一次非法输入触发的（这也是`_liuri_cache_write()`这次同时把`ganzhi`
+    本身存进缓存文件的原因之一）。必须在调用入口（`generate_liuri_reading()`）
+    就用这个函数挡掉，不进入生成流程。
+
+    2026-08-23 qa-reviewer第二轮发现：`LiuriRequest.liuri`声明为宽松的
+    `dict`类型，pydantic不校验内层`gan`/`zhi`的值类型——如果客户端传的
+    是整数/列表/字典而非字符串，下面的`in`运算符会直接抛`TypeError`并
+    冒泡成500错误，而不是走本函数设计好的干净的`invalid_ganzhi`拒绝
+    路径。必须在`in`运算符之前就做类型检查、把非字符串输入当非法输入
+    处理，不能让类型错误的输入有机会走到`in`那一步。
+
+    2026-08-23 qa-reviewer第三轮发现：`_GAN_ORDER`/`_ZHI_ORDER`是**字符串**
+    常量，Python里字符串的`in`是子串包含判断，不是成员判断——传入多字符
+    拼接串（比如把10个天干拼成一个字符串）也会被`in`判定为"存在于
+    `_GAN_ORDER`里"（因为确实是它的子串），`.index()`拿到的是子串起始
+    位置，奇偶校验碰巧也可能通过，导致这个函数本该挡住的目的（防止非法
+    输入触发一次真实生成+落盘垃圾缓存）完全失效。必须先校验`gan`/`zhi`
+    恰好是单个字符，多字符输入直接拒绝，不能让它有机会走到`in`那一步。"""
+    if not isinstance(gan, str) or not isinstance(zhi, str):
+        return False
+    if len(gan) != 1 or len(zhi) != 1:
+        return False
+    if gan not in _GAN_ORDER or zhi not in _ZHI_ORDER:
+        return False
+    return _GAN_ORDER.index(gan) % 2 == _ZHI_ORDER.index(zhi) % 2
+
+
+def _liuri_cache_key(bz_hash: str, ganzhi_str: str) -> str:
+    """缓存key = 命盘hash + 流日干支字符串（如 '己巳'）。
+
+    2026-08-23 时区错位bug修复（完整根因分析见本文件顶部docstring对应
+    日期条目、claude-docs/已知问题与修复记录.md）：这个函数的第一版用的是
+    "命盘hash + 服务端UTC日期字符串"，出发点是"不能信任客户端本地时钟"——
+    这个出发点本身没错，但选错了修复层面。流日（今天的干支）本来就是前端
+    `BaziEngine.getLiuri()` 按**用户本地时间**算出来、随请求体一起传进来的
+    权威值，服务端在缓存key这一步又用`datetime.now(timezone.utc)`另算一个
+    "今天是哪天"的代理值，这两个"今天"在UTC+8这类时区的本地时间
+    00:00-08:00这8小时窗口内必然不一致——用一个跟真正决定内容对不对的输入
+    （干支）不同步的代理值做缓存key，才是错位的根因。真正的修复：缓存key
+    直接用请求里的流日干支本身，干支就是"今天到底是哪天"这件事最终、
+    唯一需要关心的判定依据，不需要服务端另算日期去猜。调用方
+    （`generate_liuri_reading()`）必须先用 `_is_valid_ganzhi()` 校验过
+    `ganzhi_str` 的合法性再调用本函数，本函数自身不重复校验。"""
+    return f"{bz_hash}_{ganzhi_str}"
+
+
+def _liuri_cache_read(key: str):
+    path = LIURI_CACHE / f"{key}.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return None
+    # 与 `_cache_read()` 同一原则：不能只判断文件存在就信任，要校验落盘内容
+    # 结构合法（reading是非空字符串）才判定命中，否则当作未命中重新生成。
+    if isinstance(data, dict) and isinstance(data.get('reading'), str) and data['reading'].strip():
+        return data
+    return None
+
+
+def _liuri_cache_write(key: str, data: dict):
+    """2026-08-23 时区错位bug修复时新增约定：调用方应在 `data` 里除了
+    `reading` 本身，顺手带上这份缓存对应的 `ganzhi`（比如
+    `{'reading': ..., 'ganzhi': '己巳'}`）——此前缓存文件只存了reading
+    本身，qa-reviewer复现这次时区错位bug时指出，这类"内容跟缓存维度对不
+    上"的问题一旦发生，缓存文件本身完全没有任何字段可以用来事后核对"这份
+    缓存究竟是给哪个干支生成的"，排查只能靠猜文件名。带上`ganzhi`后，
+    以后再出现类似问题，直接对比文件里的`ganzhi`字段和请求实际传入的
+    干支是否一致，就能立刻定位是缓存key设计错位还是别的原因，不需要
+    再从头复现一遍。本函数自身只负责落盘，不校验`data`结构，校验/组装
+    由调用方（`generate_liuri_reading()`）负责。"""
+    (LIURI_CACHE / f"{key}.json").write_text(
+        json.dumps(data, ensure_ascii=False, indent=2)
+    )
+
+
+def _liuri_relations_str(relations: dict) -> str:
+    """`relations` 是前端 `BaziEngine.getLiuriRelations()` 的原样输出
+    （`{'shishen': str, 'relations': [{'type','desc','pillar'}, ...]}`）。
+    只取 `desc` 拼成一行文本喂给prompt，跟 `_build_context()` 里
+    `interaction_str` 的兜底文案风格保持一致（无关系时给出明确的"无"陈述，
+    不是空字符串，避免prompt里出现语义空洞的占位）。"""
+    rels = (relations or {}).get('relations') if isinstance(relations, dict) else None
+    if not isinstance(rels, list) or not rels:
+        return '今日地支与命盘四柱无明显冲合刑害'
+    descs = [r.get('desc', '') for r in rels if isinstance(r, dict) and r.get('desc')]
+    return '；'.join(descs) if descs else '今日地支与命盘四柱无明显冲合刑害'
+
+
+def _liuri_reading_sync(ctx: dict, liuri: dict, relations: dict) -> str:
+    liuri_ganzhi = f"{(liuri or {}).get('gan', '')}{(liuri or {}).get('zhi', '')}"
+    shishen = (relations or {}).get('shishen', '') if isinstance(relations, dict) else ''
+    rel_str = _liuri_relations_str(relations)
+    fav = '、'.join(ctx['favorable']) or '未知'
+    unfav = '、'.join(ctx['unfavorable']) or '未知'
+
+    prompt = f"""【命盘核心资料（仅供你判断依据，不要在正文里逐项复述）】
+日主：{ctx['dm']}（{ctx['dm_wx']}行） · {ctx['strength_str']}
+喜用神：{fav} · 忌神：{unfav}
+
+【今天】
+流日干支：{liuri_ganzhi}（相对日主的十神：{shishen or '未知'}）
+今日地支跟命盘四柱的关系：{rel_str}
+
+【本步骤任务】
+结合上面的命盘依据和今天流日的十神/地支关系，写一段"今日运势"提醒，
+100-150字（中文字符数，不含标点也大致在这个区间，不要明显超出或不足）。
+
+要求：
+1. 语气贴近日常生活，像朋友随口提醒，不要堆砌"十神""冲合刑害"这类命理
+   术语本身——你可以让判断依据来自这些概念，但表达出来要是普通人能懂的
+   具体感受/建议，不是术语翻译。
+2. 给一点"今天可以关注/留意什么"的具体感（比如具体的场合、具体的一类
+   决定、具体的相处对象类型），不要写"诸事顺利""万事如意"这种空泛套话。
+3. 不制造焦虑、不夸大问题、不做绝对化的承诺（不要说"一定会""必然"），
+   如果今天的流日关系偏向需要留意的一面，语气也要平实客观，给出可以做的
+   具体小事，而不是让人紧张。
+4. 不需要开场白/称呼语，直接进入内容。
+
+请输出严格JSON（不含markdown代码块，不含JSON之外的任何文字）：
+{{"reading": "今日运势正文，100-150字"}}"""
+
+    # max_tokens=2048：目标正文只有100-150字（远小于六步任何一个narrative
+    # 字段），但仍留出比"按字数直接折算"更宽松的预算——JSON包裹本身开销很小，
+    # 主要余量是给Gemini 3.x思考型模型的内部推理token（`_build_generation_
+    # config()`已设置thinkingLevel=minimal降低这块占用，但不是0）。不用比
+    # 六步任何一步都更激进的极小值（如512），避免重蹈本文件历史上MAX_TOKENS
+    # 截断的坑；`_call_gemini()`本身在MAX_TOKENS时也会自动加倍预算重试一次。
+    raw = _call_gemini(prompt, max_tokens=2048, system_instruction=PERSONA_SYSTEM)
+    data = _parse_json(raw)
+    reading = data.get('reading') if isinstance(data, dict) else None
+    if not isinstance(reading, str) or not reading.strip():
+        raise GeminiCallError(f'Gemini返回的今日运势缺少合法reading字段；原始返回：{raw[:200]!r}')
+    return reading.strip()
+
+
+async def _liuri_reading(ctx: dict, liuri: dict, relations: dict) -> str:
+    return await asyncio.to_thread(_liuri_reading_sync, ctx, liuri, relations)
+
+
+async def generate_liuri_reading(bazi_data: dict, liuri: dict, relations: dict,
+                                  gender: str = '男', birth_year: int = 0,
+                                  force_refresh: bool = False) -> dict:
+    """
+    生成"今日运势"（流日分析）。
+
+    Args:
+        bazi_data: 前端 BaziEngine.calculate() 的完整结果（跟六步深析共用
+            同一份命盘数据，不重新计算命盘本身）。
+        liuri: 前端 BaziEngine.getLiuri(year, month, day) 的输出
+            （{'gan','zhi','wx','yang',...}）——`gan`/`zhi`是缓存key的
+            权威依据（见 `_liuri_cache_key()`），本函数入口会先用
+            `_is_valid_ganzhi()` 校验其合法性。
+        relations: 前端 BaziEngine.getLiuriRelations(baziData, liuri) 的输出
+            （{'shishen': str, 'relations': [...]})。
+        force_refresh: True 时跳过缓存直接重新生成（同一天内强制刷新用）。
+
+    Returns:
+        命中/生成成功：{ hash, ganzhi, reading: str, from_cache: bool }
+        非法干支：{ hash, ganzhi, reading: None, error: 'invalid_ganzhi(...)' }
+        其它失败：{ hash, ganzhi, reading: None, error: str }
+
+    2026-08-23 时区错位bug修复：返回字段从 `date`（服务端UTC日期字符串）
+    改为 `ganzhi`（流日干支字符串），与缓存key的第二维度改动保持一致——
+    完整根因见本文件顶部docstring对应日期条目、`_liuri_cache_key()`上方
+    注释。此接口截至本次修复尚无前端调用方接入（`js/`下未找到
+    `/liuri-reading`的fetch调用），改返回字段名不存在破坏既有前端契约的
+    风险。
+
+    调用方（main.py）注意：本函数是 `async def`，必须 `await`——跟
+    `analyze_bazi()` 同一约定，内部用 `asyncio.to_thread` 包裹同步的
+    Gemini HTTP调用，避免阻塞事件循环。
+    """
+    bz_hash = _bazi_hash(bazi_data, gender)
+    gan = (liuri or {}).get('gan', '')
+    zhi = (liuri or {}).get('zhi', '')
+    ganzhi_str = f"{gan}{zhi}"
+
+    if not _is_valid_ganzhi(gan, zhi):
+        # 不合法的干支组合（空字符串/乱码/阳干配阴支这类不存在的搭配）
+        # 直接拒绝，不进入生成流程——否则会用这个非法值拼缓存key、落盘一份
+        # 跟"今天"实际不对应且事后无法追溯的垃圾缓存文件。详见
+        # `_is_valid_ganzhi()` 上方注释。
+        return {
+            'hash': bz_hash, 'ganzhi': ganzhi_str, 'reading': None,
+            'error': f'invalid_ganzhi(gan={gan!r}, zhi={zhi!r})：不是合法的60甲子组合',
+        }
+
+    cache_key = _liuri_cache_key(bz_hash, ganzhi_str)
+
+    if not force_refresh:
+        cached = _liuri_cache_read(cache_key)
+        if cached:
+            return {'hash': bz_hash, 'ganzhi': ganzhi_str, 'reading': cached['reading'], 'from_cache': True}
+
+    if not GEMINI_API_KEY:
+        return {'hash': bz_hash, 'ganzhi': ganzhi_str, 'reading': None, 'error': 'no_api_key'}
+
+    try:
+        ctx = _build_context(bazi_data, gender, birth_year)
+        reading = await _liuri_reading(ctx, liuri, relations)
+        # ganzhi 顺手存进缓存文件本身（不只是缓存key的一部分）——排查用的
+        # 自检线索，见 `_liuri_cache_write()` 上方注释。
+        _liuri_cache_write(cache_key, {'reading': reading, 'ganzhi': ganzhi_str})
+        return {'hash': bz_hash, 'ganzhi': ganzhi_str, 'reading': reading, 'from_cache': False}
+    except GeminiCallError as e:
+        print(f"[gemini_analysis ERROR] 今日运势生成失败: {e}")
+        return {'hash': bz_hash, 'ganzhi': ganzhi_str, 'reading': None, 'error': str(e)}
+    except Exception as e:
+        msg = _redact(f"{type(e).__name__}: {e}")
+        print(f"[gemini_analysis ERROR] 今日运势生成 unexpected {msg}")
+        return {'hash': bz_hash, 'ganzhi': ganzhi_str, 'reading': None, 'error': f'unexpected_error({msg})'}
