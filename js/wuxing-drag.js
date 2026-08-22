@@ -25,7 +25,7 @@
  *     getActiveMarkers() 按约定形状不带severity字段，不额外扩展那个契约，
  *     改从这个已有的公开纯函数现查，等价、且不引入新的跨模块假设）
  *   WuxingMaintenance.maintain(baziData, wx, direction, severity)
- *     → { ok:true, spiritEarned, newTier:1 } | { ok:false, reason:'daily_limit' }
+ *     → { ok:true, spiritEarned, newTier:1 } | { ok:false, reason:'daily_limit'|'daily_total_limit'|... }
  *     （js/wuxing-maintenance.js，user-system领域，并行开发中——本文件
  *     全程typeof防御，对方尚未接入时优雅降级为"维护系统尚未就绪"提示，
  *     不报错、不阻塞其它交互）
@@ -312,6 +312,12 @@ const WuxingDrag = (() => {
         refresh();
       } else if (res && res.reason === 'daily_limit') {
         _toast(_t('wxmaint.drag_daily_limit'), true);
+      } else if (res && res.reason === 'daily_total_limit') {
+        // 2026-08-22 第八轮遗留PLAUSIBLE①修复：跟上面的daily_limit（这条
+        // issue/这张命盘今天已经打理过）是不同场景——这条对应"今天所有
+        // 命盘加起来的免费维护总次数已经用完"，issue本身可能从未被打理过，
+        // 不能沿用"这条今天已经打理过了"这句话，否则跟事实相反。
+        _toast(_t('wxmaint.drag_daily_total_limit'), true);
       } else if (res && res.reason === 'already_shrined') {
         // 换设备/清缓存后云端同步落地前的极短窗口内，3D场景可能还没被
         // main-new.js::_onIslandReady()里sync完成后的markShrined()纠正过来，

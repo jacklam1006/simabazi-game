@@ -259,6 +259,10 @@ const I18N = {
     // 跨域顺手补齐——CLAUDE.md强制规则7要求用户可见文案中英key必须同步）：
     'wxmaint.drag_gained':      '获得 {n} 灵气',
     'wxmaint.drag_daily_limit': '这条今天已经打理过了，明天再来吧',
+    // 2026-08-22 第八轮遗留PLAUSIBLE①修复：跟上面的drag_daily_limit区分——
+    // 这条对应"今日所有命盘加起来的免费维护总次数已经用完"，不是这条issue
+    // 本身今天被打理过，措辞不能说"这条今天已经打理过了"。
+    'wxmaint.drag_daily_total_limit': '今日免费维护次数已经用完了，明天再来吧',
     'wxmaint.drag_fail':        '维护失败，请稍后再试',
     'wxmaint.drag_not_ready':   '维护系统尚未就绪，请稍后再试',
 
@@ -546,6 +550,7 @@ const I18N = {
     'wxmaint.fallback_restrain':      'The {wx} element is relatively strong in this chart — a direction that could use some moderation.',
     'wxmaint.drag_gained':      'Gained {n} Spirit',
     'wxmaint.drag_daily_limit': 'Already maintained today — come back tomorrow',
+    'wxmaint.drag_daily_total_limit': "Today's free maintenance limit is used up — come back tomorrow",
     'wxmaint.drag_fail':        'Maintenance failed, please try again later',
     'wxmaint.drag_not_ready':   'Maintenance system not ready yet, please try again later',
     'wxmaint.drag_already_shrined': 'This one is already permanently protected — no maintenance needed. Refreshing now',

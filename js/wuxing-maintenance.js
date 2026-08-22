@@ -47,7 +47,7 @@
  *     字段，前四个字段行为不变，见 getState() 定义处注释）
  *   WuxingMaintenance.maintain(baziData, wx, direction, severity)
  *     → Promise<{ ok:true, spiritEarned, newTier:1 }
- *     | { ok:false, reason:'daily_limit'|'invalid_params'|'already_shrined'|'server_error' }>
+ *     | { ok:false, reason:'daily_limit'|'daily_total_limit'|'invalid_params'|'already_shrined'|'server_error' }>
  *     （2026-08-21起为 async 函数——登录用户走服务端权威RPC，见函数定义处
  *     注释；返回值形状本身未变，只是包了一层Promise，调用方 js/wuxing-drag.js
  *     本来就已双重兼容同步/Promise两种返回）
@@ -350,7 +350,11 @@ const WuxingMaintenance = (() => {
   /**
    * WuxingMaintenance.maintain(baziData, wx, direction, severity)
    * → { ok:true, spiritEarned, newTier:1 }
-   *   | { ok:false, reason:'daily_limit' }
+   *   | { ok:false, reason:'daily_limit' }（这条issue/这张命盘今天已经维护过）
+   *   | { ok:false, reason:'daily_total_limit' }（2026-08-22 第八轮遗留
+   *     PLAUSIBLE①修复新增：今日所有命盘加起来的免费维护总次数已用完，跟
+   *     上面的daily_limit语义不同——这条issue本身可能从未被维护过，不能
+   *     沿用"这条今天已经打理过了"的文案，见 _mapServerError() 定义处注释）
    *   | { ok:false, reason:'invalid_params' }（baziKey/wx/direction 非法——
    *     2026-08-16 qa-reviewer PLAUSIBLE修复：此前参数非法时也返回
    *     reason:'daily_limit'，会让 js/wuxing-drag.js 弹出"今天已经打理过了"
@@ -444,18 +448,25 @@ const WuxingMaintenance = (() => {
     // 2026-08-22 qa-reviewer第六轮CONFIRMED-2修复：服务端这轮新增了两道硬顶
     // 校验（wuxing_free_maintain() 里"这张命盘今日免费维护次数≥3"+"本用户
     // 今日免费维护总次数≥30"，跟上面'已经维护过'——针对单条issue是否当天
-    // 已维护过——是三条不同的校验），语义上都是"今天不能再免费维护、明天再
-    // 来"，js/wuxing-drag.js 现有 daily_limit 分支弹出的 wxmaint.
-    // drag_daily_limit 文案已经能准确传达这一点，不需要为了区分三种细节差异
-    // 而新增reason值/新增i18n key——直接复用同一个reason，避免过度设计。
-    // 用'次数已达上限'做子串匹配（不锁死"今日免费维护"这个前缀）：backend-
-    // service那轮把具体文案从'今日免费维护次数已达上限'拆成了'今日这张命盘的
-    // 免费维护次数已达上限'/'今日免费维护总次数已达上限'两条，如果这里继续
-    // 按原来那个完整短语做包含匹配，两条新文案都不含这个完整子串、会双双
-    // 漏判落回兜底的server_error——这正是本条CONFIRMED-2要修的问题，因为
-    // 两个并行子agent各自持有的错误文案字符串没有同步导致被重新引入了一次。
-    // 用更短、更稳定的核心短语兜底，以后SQL侧再怎么调整"今日/这张命盘/总"这
-    // 几个修饰语，只要不改"次数已达上限"这个核心措辞就不会再次漏判。
+    // 已维护过——是三条不同的校验）。用'次数已达上限'做子串匹配（不锁死
+    // "今日免费维护"这个前缀）：backend-service那轮把具体文案从'今日免费
+    // 维护次数已达上限'拆成了'今日这张命盘的免费维护次数已达上限'/'今日
+    // 免费维护总次数已达上限'两条，如果按原来那个完整短语做包含匹配，两条
+    // 新文案都不含这个完整子串、会双双漏判落回兜底的server_error。
+    //
+    // 2026-08-22 第八轮遗留PLAUSIBLE①修复：这两条文案此前被一并映射到
+    // 同一个 daily_limit——但它们语义并不相同："这张命盘今日已达上限"（单
+    // 张命盘今天维护满3次）复用 daily_limit 是对的（js/wuxing-drag.js 的
+    // wxmaint.drag_daily_limit"这条今天已经打理过了"这句话在这个场景下是
+    // 准确的：这张命盘确实已经被打理过了）；但"总次数已达上限"（今天所有
+    // 命盘加起来满30次）如果也弹同一句文案，用户点击一条本命盘从未打理过
+    // 的issue时会被告知"这条今天已经打理过了"——这跟事实相反。这里改为
+    // 优先匹配更精确的'总次数已达上限'子串映射到新增的 daily_total_limit，
+    // 剩余（单张命盘维度）的'次数已达上限'继续映射到 daily_limit。顺序很
+    // 重要：'今日这张命盘的免费维护次数已达上限'不含'总次数已达上限'，但
+    // '今日免费维护总次数已达上限'同时含有'次数已达上限'和'总次数已达上限'
+    // 两个子串，必须先判更精确的那个，否则永远走不到 daily_total_limit 分支。
+    if (msg.includes('总次数已达上限')) return 'daily_total_limit';
     if (msg.includes('次数已达上限')) return 'daily_limit';
     if (msg.includes('已永久巩固')) return 'already_shrined';
     if (msg.includes('未找到'))     return 'invalid_params';

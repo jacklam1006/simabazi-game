@@ -281,6 +281,30 @@ const AuthManager = (() => {
     }
   }
 
+  // ── 读取当前用户的任务完成记录（服务端权威，多设备场景用）───────────
+  // 2026-08-22 第八轮遗留PLAUSIBLE③修复：task_completions 表本来就是给
+  // 换设备/清缓存场景设计的，但此前全项目没有任何地方读取过。RLS已有
+  // `FOR SELECT USING (auth.uid()=user_id)` 策略，不需要新的SQL——这里
+  // 直接查得到，供 js/tasks.js::hydrateFromServer() 登录时回灌本地状态。
+  async function getTaskCompletions() {
+    if (!_sb || !_user) return null;
+    try {
+      // 2026-08-22 PLAUSIBLE修复：这张表每天最多新增3行（3个daily任务），
+      // 不加限制会在约333天后触及PostgREST默认1000行上限，届时早期的
+      // onetime任务记录可能被截断查不到，导致"换设备后任务状态不同步"
+      // 这个问题静默复发。.limit(5000) 约等于4.5年的用量，足够避免近期
+      // 触达，不需要做更复杂的分页/游标方案。明确不按 day_key 过滤/只拉
+      // 最近N天——那样会破坏 hydrateFromServer() 依赖读到历史daily记录来
+      // 追平装饰解锁状态的既有逻辑（见该函数注释）。
+      const { data, error } = await _sb.from('task_completions').select('task_id, day_key').eq('user_id', _user.id).limit(5000);
+      if (error) { console.warn('[Auth] 读取任务完成记录失败:', error.message); return null; }
+      return data;
+    } catch (e) {
+      console.warn('[Auth] 读取任务完成记录失败:', e);
+      return null;
+    }
+  }
+
   // ── 五行免费维护（拖拽维护，服务端权威）──────────────────
   // 对应 js/wuxing-maintenance.js::maintain() 登录分支。
   // baseTier（2026-08-21顺带修复新增第5个可选参数）：服务端RPC签名是
@@ -573,7 +597,7 @@ const AuthManager = (() => {
     logout, sendPasswordReset, getProfile, updateProfile,
     saveIsland, updateIslandAnalysis, updateIslandBaziData, getMyIslands, checkEmailExists,
     getSpiritBalance, adminSetSpiritBalance, createRedemptionRequest,
-    claimDailyCheckin, claimTask, wuxingFreeMaintain, wuxingInstantFix, redeemWuxingProduct,
+    claimDailyCheckin, claimTask, getTaskCompletions, wuxingFreeMaintain, wuxingInstantFix, redeemWuxingProduct,
     syncWuxingMaintenanceState, getWuxingMaintenanceStates,
     resolveReferralCode, insertReferral, activateMyReferral, getMyReferrals,
     isLoggedIn: () => !!_user,
@@ -825,6 +849,13 @@ const AuthUI = (() => {
       // 会正确生效，因为它读到的永远是服务端此刻的真实值。.finally() 而不是
       // .then()：合并请求失败也不应该阻断邀请关系的消费。
       _mergeSpiritBalance().finally(() => _consumePendingReferralInsert());
+      // 2026-08-22 第八轮遗留PLAUSIBLE③修复：登录时把服务端 task_completions
+      // 记录回灌本地任务完成状态（换设备/清缓存场景），fire-and-forget，不
+      // 阻塞其它登录后逻辑，也不涉及灵气数字（灵气数字由上面的
+      // _mergeSpiritBalance() 独立负责）。
+      if (typeof Tasks !== 'undefined' && typeof Tasks.hydrateFromServer === 'function') {
+        Tasks.hydrateFromServer();
+      }
     } else {
       loginBtn?.classList.remove('hidden');
       logoutBtn?.classList.add('hidden');
@@ -1075,6 +1106,20 @@ const AuthUI = (() => {
       // 触发激活检测，理由同 main-new.js:284 附近那处调用点的注释
       // （activate_my_referral() 幂等，不需要判断是否首次）。
       AuthManager.activateMyReferral();
+      // 2026-08-22 第八轮遗留PLAUSIBLE②修复：这条正是"匿名生成岛屿→之后才
+      // 注册"的边缘路径——匿名生成时 first_island 走的是纯本地记账分支
+      // （UserState.completeTask('first_island') 已经把本地"已完成"标记
+      // 永久写死，这个标记不会随注册重置），如果这里像 main-new.js 那样
+      // 直接调用 Tasks.complete('first_island', ...)，会被该函数开头的
+      // `isDone(taskId)` 短路直接拦住、永远不会真正调用服务端 claim_task()
+      // ——服务端这笔50灵气奖励会永久领不到。用 Tasks.
+      // completeIgnoringLocalState() 专门跳过这道本地短路，直接走服务端
+      // 权威 claim_task()（真正的防重复发奖机制是服务端自己的幂等去重，
+      // 不是本地isDone，见该函数定义处注释）。fire-and-forget，不阻塞
+      // 岛屿保存这条主流程。
+      if (typeof Tasks !== 'undefined' && typeof Tasks.completeIgnoringLocalState === 'function') {
+        Tasks.completeIgnoringLocalState('first_island', payload.baziData);
+      }
     } else {
       // 没拿到非空结果——不管是 saveIsland() 内部捕获错误后返回 null，还是
       // 这里 catch 到真正抛出的异常，都算没有真正保存成功，把原始 payload

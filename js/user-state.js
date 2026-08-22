@@ -181,12 +181,17 @@ const UserState = (() => {
   // ── 任务 ──────────────────────────────────────────────────
   function getCompletedTasks() { return get('tasks') || []; }
 
-  function completeTask(taskId) {
+  // opts.silent：仅追平本地状态、不触发 'taskCompleted' 事件——供
+  // js/tasks.js::_syncTaskDoneLocally() 的换设备自愈分支使用（hydrate/自愈
+  // 场景只是把本地状态追平服务端已有的历史记录，不代表"刚刚发生了一次新的
+  // 完成动作"，不应该播放 main-new.js 挂在这个事件上的音效/彩带/徽标弹跳）。
+  // 不传 opts 时行为与改动前完全一致，不影响任何现有调用点。
+  function completeTask(taskId, opts) {
     const tasks = getCompletedTasks();
     if (tasks.includes(taskId)) return false;
     tasks.push(taskId);
     set('tasks', tasks);
-    _emit('taskCompleted', taskId);
+    if (!opts || !opts.silent) _emit('taskCompleted', taskId);
     return true;
   }
 
@@ -195,12 +200,14 @@ const UserState = (() => {
   // ── 装饰解锁 ──────────────────────────────────────────────
   function getDecorations() { return get('decorations') || []; }
 
-  function unlockDecoration(decorId) {
+  // opts.silent：同上 completeTask() 的静默选项，供换设备自愈场景使用，
+  // 不传 opts 时行为与改动前完全一致。
+  function unlockDecoration(decorId, opts) {
     const list = getDecorations();
     if (list.find(d => d.id === decorId)) return false;
     list.push({ id: decorId, unlockedAt: Date.now() });
     set('decorations', list);
-    _emit('decorationUnlocked', decorId);
+    if (!opts || !opts.silent) _emit('decorationUnlocked', decorId);
     return true;
   }
 

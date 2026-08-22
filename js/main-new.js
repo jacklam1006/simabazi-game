@@ -892,9 +892,13 @@ const App = (() => {
     if (el) el.textContent = '✦ ' + UserState.getSpirit() + ' ' + spiritWord;
   }
 
-  function _refreshTaskUI() {
+  // opts.skipReferralFetch（2026-08-22新增）：透传给 Tasks.renderPanel()——
+  // 为true时跳过内部的邀请进度拉取（及其真实存在的装饰解锁/音效/彩带/toast
+  // 副作用），只刷新纯任务完成状态+徽标数字。见 App.refreshTaskUI 导出处
+  // 及 js/tasks.js::hydrateFromServer()/renderPanel() 注释。
+  function _refreshTaskUI(opts) {
     // 任务面板内容
-    Tasks.renderPanel(document.getElementById('task-panel-body'), _baziData);
+    Tasks.renderPanel(document.getElementById('task-panel-body'), _baziData, opts);
 
     // 徽标：未完成的每日任务数
     const pending = Tasks.getDailyTasks().filter(t => !t.done).length;
@@ -1513,6 +1517,15 @@ const App = (() => {
     viewTutorialDetail, // 引导Modal"查看完整详解"按钮用
     redeemWuxingProduct: _redeemWuxingProduct, // wxmaint面板"兑换"按钮 onclick 用
     instantFixWuxingIssue: _instantFixWuxingIssue, // wxmaint面板"②瞬间调理"按钮 onclick 用
+    // js/tasks.js::hydrateFromServer() 换设备/token刷新时静默追平任务状态后，
+    // 用于刷新任务面板内容+未完成徽标数字。typeof防御与其它跨模块调用点
+    // （如 _highlightWuxingTarget() 里的 App.toggleTaskPanel）同款风格。
+    // 2026-08-22 追加：接受可选 opts 并透传给 _refreshTaskUI()——目前
+    // hydrateFromServer() 结尾那次调用会传 {skipReferralFetch:true}，跳过
+    // Tasks.renderPanel() 内部对 _refreshReferralState() 的调用，避免拉取
+    // 邀请进度触发的装饰解锁/音效/彩带/toast 副作用在跟本次刷新无关的场景
+    // 下被误触发（见 js/tasks.js::renderPanel()/hydrateFromServer() 注释）。
+    refreshTaskUI: (opts) => _refreshTaskUI(opts),
     // AuthUI 内部调用（勿删）
     _getBaziData:  () => _baziData,
     _getBirthInfo: () => _birthInfo,

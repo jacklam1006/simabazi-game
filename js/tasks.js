@@ -106,8 +106,16 @@ const Tasks = (() => {
   let _referralFetchInFlight = false;
 
   // ── 每日任务key（每天重置用）────────────────────────────
+  // 2026-08-22 抽出 _todayUTCDateStr()：toISOString() 本身就是UTC时间，
+  // slice(0,10) 得到的 'YYYY-MM-DD' 恰好跟服务端 day_key 的格式
+  // （`to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD')`）一致——
+  // hydrateFromServer() 需要单独用这个日期字符串跟服务端 row.day_key 比对，
+  // 不能只拼进 _todayKey() 内部私有使用。
+  function _todayUTCDateStr() {
+    return new Date().toISOString().slice(0, 10);
+  }
   function _todayKey(taskId) {
-    return taskId + '_' + new Date().toISOString().slice(0, 10);
+    return taskId + '_' + _todayUTCDateStr();
   }
 
   // ── 检查任务是否已完成 ────────────────────────────────────
@@ -118,6 +126,24 @@ const Tasks = (() => {
       return !!localStorage.getItem('smb_dtask_' + _todayKey(taskId));
     }
     return UserState.isTaskDone(taskId);
+  }
+
+  // ── 解锁装饰+弹成就toast（2026-08-22从 complete()/_completeViaServer() 里
+  //    抽出的共用收尾逻辑）───────────────────────────────────────────────
+  // 抽出原因：未登录分支（complete() 内部）和已登录分支（_completeViaServer()）
+  // 此前各自写了一遍完全相同的"解锁装饰→若是首次解锁则往3D场景摆装饰→
+  // 弹成就toast"，是本项目已知的"两处独立实现容易失去同步"模式（跟哈希
+  // 算法双实现是同一类教训）。两个调用方在这一步之前的差异（daily任务
+  // 打点方式、灵气发放方式）已经各自处理完，走到这里时行为应当完全一致，
+  // 抽成一处避免以后改一处忘了改另一处。
+  function _unlockAndCelebrate(def, baziData) {
+    if (def.unlock) {
+      const isNew = UserState.unlockDecoration(def.unlock);
+      if (isNew && baziData) {
+        IslandDecorations.add(def.unlock, baziData);
+      }
+    }
+    _showToast(def);
   }
 
   // ── 完成任务 ─────────────────────────────────────────────
@@ -132,55 +158,201 @@ const Tasks = (() => {
     const isLoggedIn = typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn && AuthManager.isLoggedIn();
 
     if (isLoggedIn) {
-      const result = await AuthManager.claimTask(taskId);
-      if (result.error) {
-        console.warn('[Tasks] claimTask失败:', result.error);
-        return false; // 服务端拒绝（已领取/条件不满足/网络失败）：不在本地补发，避免绕过服务端判定
-      }
-      // 2026-08-21 顺带修复（PLAUSIBLE防御）：result.data 理论上不该为
-      // null（error为空时RPC应该总有返回行），加一道兜底避免下面访问
-      // result.data.new_balance 时抛TypeError中断整个任务完成流程。
-      if (!result.data) {
-        console.warn('[Tasks] claimTask返回了空数据，按失败处理');
-        return false;
-      }
-      if (def.type === 'daily') {
-        localStorage.setItem('smb_dtask_' + _todayKey(taskId), '1');
-        setTimeout(() => {
-          if (typeof UIEffects !== 'undefined') { UIEffects.confetti(15); UIEffects.badgePop(); }
-          if (typeof AudioManager !== 'undefined') AudioManager.playSfx('task_complete');
-        }, 200);
-      } else {
-        UserState.completeTask(taskId); // 仅做本地"已完成"标记，不再发灵气（服务端已经发了）
-      }
-      UserState.setSpiritLocalOnly(result.data.new_balance);
+      return _completeViaServer(taskId, def, baziData);
+    }
+
+    // 未登录：保留原有纯本地逻辑
+    if (def.type === 'daily') {
+      localStorage.setItem('smb_dtask_' + _todayKey(taskId), '1');
+      // 每日任务不走 UserState.completeTask，手动触发特效
+      setTimeout(() => {
+        if (typeof UIEffects !== 'undefined') { UIEffects.confetti(15); UIEffects.badgePop(); }
+        if (typeof AudioManager !== 'undefined') AudioManager.playSfx('task_complete');
+      }, 200);
     } else {
-      // 未登录：保留原有纯本地逻辑
-      if (def.type === 'daily') {
-        localStorage.setItem('smb_dtask_' + _todayKey(taskId), '1');
-        // 每日任务不走 UserState.completeTask，手动触发特效
-        setTimeout(() => {
-          if (typeof UIEffects !== 'undefined') { UIEffects.confetti(15); UIEffects.badgePop(); }
-          if (typeof AudioManager !== 'undefined') AudioManager.playSfx('task_complete');
-        }, 200);
-      } else {
-        if (!UserState.completeTask(taskId)) return false;
-      }
-      UserState.addSpirit(def.spirit);
+      if (!UserState.completeTask(taskId)) return false;
     }
+    UserState.addSpirit(def.spirit);
 
-    // 解锁装饰
-    if (def.unlock) {
-      const isNew = UserState.unlockDecoration(def.unlock);
-      if (isNew && baziData) {
-        IslandDecorations.add(def.unlock, baziData);
-      }
-    }
-
-    // 显示成就弹窗
-    _showToast(def);
+    // 解锁装饰 + 显示成就弹窗
+    _unlockAndCelebrate(def, baziData);
 
     return true;
+  }
+
+  // ── 已登录用户走服务端权威RPC完成任务（2026-08-22从 complete() 里抽出）──
+  // 抽出原因：这段"调claim_task→按结果记本地状态→解锁装饰→弹toast"的逻辑
+  // 需要被两个入口共用——① complete()（正常路径，前面有 isDone() 短路）
+  // ② completeIgnoringLocalState()（专供 js/auth.js::_consumePendingIslandSave()
+  // 使用，跳过 isDone() 短路，见该函数定义处注释）——避免两处各自维护一份
+  // 容易失去同步的重复实现。
+  async function _completeViaServer(taskId, def, baziData) {
+    const result = await AuthManager.claimTask(taskId);
+    if (result.error) {
+      console.warn('[Tasks] claimTask失败:', result.error);
+      // 2026-08-22 第八轮遗留PLAUSIBLE③配套自愈修复：如果拒绝原因是"这个
+      // 任务在别的设备已经领取过"（不是条件不满足/网络失败），说明本设备
+      // 本地状态没跟上服务端早已存在的事实——这时应该把本地状态追平，但
+      // 不弹任何"完成"提示/不摆3D装饰（这次没有真的拿到新奖励，只是本地
+      // 追上服务端事实，避免用户误以为又领了一次）。其余拒绝原因（条件
+      // 不满足/网络失败）维持原有行为：不在本地补发，避免绕过服务端判定。
+      if (String(result.error).includes('已领取过')) {
+        _syncTaskDoneLocally(taskId);
+      }
+      return false;
+    }
+    // 2026-08-21 顺带修复（PLAUSIBLE防御）：result.data 理论上不该为
+    // null（error为空时RPC应该总有返回行），加一道兜底避免下面访问
+    // result.data.new_balance 时抛TypeError中断整个任务完成流程。
+    if (!result.data) {
+      console.warn('[Tasks] claimTask返回了空数据，按失败处理');
+      return false;
+    }
+    if (def.type === 'daily') {
+      localStorage.setItem('smb_dtask_' + _todayKey(taskId), '1');
+      setTimeout(() => {
+        if (typeof UIEffects !== 'undefined') { UIEffects.confetti(15); UIEffects.badgePop(); }
+        if (typeof AudioManager !== 'undefined') AudioManager.playSfx('task_complete');
+      }, 200);
+    } else {
+      UserState.completeTask(taskId); // 仅做本地"已完成"标记，不再发灵气（服务端已经发了）
+    }
+    UserState.setSpiritLocalOnly(result.data.new_balance);
+
+    // 解锁装饰 + 显示成就弹窗
+    _unlockAndCelebrate(def, baziData);
+
+    return true;
+  }
+
+  // ── 跳过本地isDone短路、直接走服务端权威领取（专供 js/auth.js
+  //    ::_consumePendingIslandSave() 使用）──────────────────────────────
+  // 2026-08-22 第八轮遗留PLAUSIBLE②修复：complete() 开头的
+  // `if (!def || isDone(taskId)) return false` 短路对绝大多数调用点都是
+  // 必要的防线——防止重复触发弹toast/放装饰这类UI副作用，不能改变这个
+  // 对外语义。但"匿名用户生成岛屿→之后才注册"这条边缘路径下，本地
+  // isDone('first_island') 因为匿名时走的纯本地记账分支已经被永久标记为
+  // true（这个标记不会随注册重置），导致注册后即便服务端从未真正发过这
+  // 笔奖励，也再也无法通过 complete() 触发一次真正的 claim_task() 调用——
+  // 函数一进来就被本地isDone拦住，服务端这笔奖励永久领不到。
+  // 这里提供一个只跳过 isDone 短路的入口：真正防止重复发奖的机制是服务端
+  // claim_task() 自己的幂等去重（拒绝并返回"任务已领取过"），不是本地
+  // isDone——跳过本地短路不会绕开这道服务端防线，只是让这一个特定场景
+  // 能够重新尝试触发它。未登录状态下没有服务端权威记账可言，直接返回false。
+  async function completeIgnoringLocalState(taskId, baziData) {
+    const def = TASK_DEFS[taskId];
+    if (!def) return false;
+    const isLoggedIn = typeof AuthManager !== 'undefined' && AuthManager.isLoggedIn && AuthManager.isLoggedIn();
+    if (!isLoggedIn) return false;
+    return _completeViaServer(taskId, def, baziData);
+  }
+
+  // ── 仅本地追平服务端已有的完成状态，不触发任何UI副作用 ─────────────
+  // 2026-08-22 第八轮遗留PLAUSIBLE③配套修复：hydrateFromServer()（登录时
+  // 拉取服务端 task_completions 回灌本地）和 _completeViaServer()（收到
+  // "任务已领取过"这个特定拒绝原因时的自愈分支）共用同一套收尾——只把
+  // 本地状态追平成"已完成"+按需解锁对应装饰的本地数据（不调用
+  // IslandDecorations.add() 往3D场景摆装饰，那是 restoreAll() 的职责：
+  // 岛屿加载时本来就会根据 UserState.getDecorations() 重新摆放所有已解锁
+  // 装饰，这里只需要把解锁状态写进localStorage），绝不弹toast/放特效——
+  // 这两个场景都没有真的拿到新奖励，只是本地状态追上服务端/其它设备已经
+  // 存在的事实。
+  // 2026-08-22 追加修复：上面这句"绝不弹toast/放特效"此前并不成立——
+  // UserState.completeTask()/unlockDecoration() 内部无条件 _emit()
+  // 'taskCompleted'/'decorationUnlocked'，而 js/main-new.js::_onIslandReady()
+  // 注册了这两个事件的监听器，会播放音效+彩带+徽标弹跳，导致换设备hydrate
+  // 拉到历史记录时连续误放好几次"任务完成"特效（灵气却分毫未涨，比原来
+  // "卡在未完成"体验更差）。现在改用 UserState.completeTask(taskId,
+  // {silent:true})/unlockDecoration(def.unlock, {silent:true}) 静默调用，
+  // 这两个事件不会被触发，本行注释描述才真正属实。
+  // 返回值：true=本地此前确实不知道、这次真的把状态从false翻成true了；
+  // false=本地本来就已经是true（没有新变化）或taskId未知。
+  function _syncTaskDoneLocally(taskId) {
+    const def = TASK_DEFS[taskId];
+    if (!def) return false;
+    if (def.type === 'daily') {
+      const key = 'smb_dtask_' + _todayKey(taskId);
+      if (localStorage.getItem(key)) return false;
+      localStorage.setItem(key, '1');
+      return true;
+    }
+    const isNewlyDone = UserState.completeTask(taskId, { silent: true });
+    if (isNewlyDone && def.unlock) {
+      UserState.unlockDecoration(def.unlock, { silent: true });
+    }
+    return isNewlyDone;
+  }
+
+  // ── 登录时拉取服务端任务完成记录，回灌本地状态 ──────────────────────
+  // 2026-08-22 第八轮遗留PLAUSIBLE③主要修复：task_completions 表本来就是
+  // 给多设备场景设计的服务端权威记录，但此前全项目没有任何地方读取它——
+  // isDone() 只看localStorage，换设备/清缓存后已完成的任务会在新设备上
+  // 显示"未完成"，点击后 claim_task 报"已领取过"却不给任何反馈，任务卡片
+  // 永久卡死。js/auth.js::_onAuthChange() 登录成功后 fire-and-forget 调用
+  // 这个函数。只同步"任务是否完成"这个布尔状态，不涉及灵气数字（灵气数字
+  // 的同步已经由 _mergeSpiritBalance() 独立负责）。
+  async function hydrateFromServer() {
+    if (typeof AuthManager === 'undefined' || typeof AuthManager.getTaskCompletions !== 'function') return;
+    let rows;
+    try {
+      rows = await AuthManager.getTaskCompletions();
+    } catch (e) {
+      console.warn('[Tasks] hydrateFromServer失败:', e);
+      return;
+    }
+    if (!rows || !rows.length) return;
+
+    const todayUTCDateStr = _todayUTCDateStr();
+    rows.forEach(row => {
+      const taskId = row && row.task_id;
+      const def = TASK_DEFS[taskId];
+      // def为空直接跳过，不报错。真实原因不是"未知task_id"（TASK_DEFS里
+      // invite_friend这条定义确实存在，这行代码拦不住它）——task_completions
+      // 表里之所以永远不会出现invite_friend记录，是因为它的奖励走邀请裂变
+      // 系统（activate_my_referral()）单独发放，从不经过claim_task()，服务端
+      // 对应的商品/任务表本来就没有这一条。这里的防御针对的是真正未知/
+      // 未来任务定义变化的task_id，不针对invite_friend这个特例。
+      if (!def) return;
+      if (def.type === 'onetime') {
+        _syncTaskDoneLocally(taskId);
+      } else if (def.type === 'daily') {
+        // 2026-08-22 PLAUSIBLE-1修复：装饰解锁是永久性状态，不应该受
+        // day_key是否是今天限制——换设备后哪怕历史记录的day_key是昨天/更早，
+        // 之前解锁过的装饰（如daily_share→share_flower）依然应该在新设备上
+        // 出现。"今天是否已完成"这个布尔标记（smb_dtask_）才继续保持"只有
+        // day_key===今天才写入"这条限制不变，两件事拆开各自判断。
+        if (def.unlock) {
+          UserState.unlockDecoration(def.unlock, { silent: true });
+        }
+        if (row.day_key === todayUTCDateStr) {
+          // day_key 是服务端UTC自然日，只有等于"今天"才需要回灌——昨天及
+          // 更早的每日任务记录本来就该在新的一天重置，不需要（也不应该）
+          // 追平成"今天已完成"。
+          _syncTaskDoneLocally(taskId);
+        }
+      }
+    });
+
+    // 2026-08-22 纯UI刷新（不经过事件总线，不播音效/彩带）：hydrate若在任务
+    // 面板打开期间触发（onAuthStateChange 除 SIGNED_IN 外的 TOKEN_REFRESHED
+    // 等事件也会走到这里，不是只在页面刚加载/登录那一刻发生），面板既有内容
+    // 靠 toggleTaskPanel() 打开时重渲染这条既有结论只覆盖"关闭状态下hydrate、
+    // 下次打开自然最新"这一种情形——面板当时若已经打开，不会有任何东西再触发
+    // 重渲染，会一直卡在旧状态直到用户手动关闭重开。这里主动触发一次纯UI
+    // 刷新（任务面板内容+徽标数字），不需要为此专门弹音效彩带。
+    // 2026-08-22 追加修复：这次刷新本身不能再是"纯UI刷新"的空话——
+    // renderPanel() 内部结尾会无条件调用 _refreshReferralState()，那个函数
+    // 会真的拉取一次邀请进度，若该账号名下有真实已激活的邀请记录（哪怕是
+    // 很久以前的），会触发 UserState.unlockDecoration('island_expand') 并
+    // 经事件总线弹音效/彩带/toast——这跟本次hydrate（换设备/token刷新）完全
+    // 无关，且可能在用户还停留在出生信息表单/loading屏时凭空弹出。显式传
+    // {skipReferralFetch:true}，让这次刷新只处理跟本次hydrate相关的任务
+    // 完成状态+装饰，不牵连一次不相关的邀请进度检查。真实的邀请进度刷新
+    // 依然会在用户下次正常打开任务面板（toggleTaskPanel() 那条既有路径，
+    // 不传这个跳过标记）时照常发生，不影响真实使用体验。
+    if (typeof App !== 'undefined' && typeof App.refreshTaskUI === 'function') {
+      App.refreshTaskUI({ skipReferralFetch: true });
+    }
   }
 
   // ── 获取当前所有任务状态（用于UI渲染）────────────────────
@@ -455,8 +627,16 @@ const Tasks = (() => {
   }
 
   // ── 任务面板UI渲染 ─────────────────────────────────────
-  function renderPanel(container, baziData) {
+  // opts.skipReferralFetch（2026-08-22新增）：为true时跳过结尾对
+  // _refreshReferralState() 的调用，即不发起邀请进度网络请求、也不会触发
+  // 该函数内部真实存在的 UserState.unlockDecoration('island_expand') 副作用
+  // （音效/彩带/toast）。目前唯一传true的调用方是 App.refreshTaskUI()
+  // 被 hydrateFromServer() 结尾调用的那一次（见该函数注释）——其余调用
+  // （用户手动打开任务面板 toggleTaskPanel()、内部递归重渲染等）都不传，
+  // 邀请进度照常拉取刷新，不受影响。
+  function renderPanel(container, baziData, opts) {
     if (!container) return;
+    const skipReferralFetch = !!(opts && opts.skipReferralFetch);
 
     const spirit   = UserState.getSpirit();
     const checkin  = UserState.getCheckinInfo();
@@ -548,8 +728,11 @@ const Tasks = (() => {
     }
 
     // 拉取真实邀请进度（异步，fire-and-forget；数据变化时会自行触发一次
-    // renderPanel 重渲染，见 _refreshReferralState() 注释）。
-    _refreshReferralState(container, baziData);
+    // renderPanel 重渲染，见 _refreshReferralState() 注释）。opts.skipReferralFetch
+    // 为true时跳过——见本函数顶部注释。
+    if (!skipReferralFetch) {
+      _refreshReferralState(container, baziData);
+    }
   }
 
   // 动态五行维护卡片渲染——跟 _taskCard() 同款视觉风格，但右侧展示当前档位
@@ -609,5 +792,8 @@ const Tasks = (() => {
     `;
   }
 
-  return { complete, isDone, getAllStatus, getDailyTasks, getOnetimeTasks, getDynamicWuxingTasks, renderPanel };
+  return {
+    complete, isDone, getAllStatus, getDailyTasks, getOnetimeTasks, getDynamicWuxingTasks, renderPanel,
+    completeIgnoringLocalState, hydrateFromServer,
+  };
 })();
