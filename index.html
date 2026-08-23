@@ -97,6 +97,8 @@
     #hud-spirit{font-size:11px;color:rgba(201,169,110,.8);letter-spacing:1px}
     #hud-task-btn{background:rgba(201,169,110,.12);border:1px solid rgba(201,169,110,.25);border-radius:16px;padding:4px 12px;color:#c9a96e;font-size:11px;letter-spacing:1px;cursor:pointer;position:relative}
     .task-badge{position:absolute;top:-4px;right:-4px;width:14px;height:14px;border-radius:50%;background:#EB5757;font-size:9px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700}
+    /* 2026-08-23"今日运势"HUD入口按钮——同款样式，跟#hud-task-btn并排 */
+    #hud-liuri-btn{background:rgba(201,169,110,.12);border:1px solid rgba(201,169,110,.25);border-radius:16px;padding:4px 12px;color:#c9a96e;font-size:11px;letter-spacing:1px;cursor:pointer;white-space:nowrap}
     /* 音频开关按钮 */
     .audio-btn{width:28px;height:28px;border-radius:50%;background:rgba(201,169,110,.1);border:1px solid rgba(201,169,110,.2);color:rgba(201,169,110,.75);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s;line-height:1;padding:0}
     .audio-btn:hover{background:rgba(201,169,110,.2);border-color:rgba(201,169,110,.45)}
@@ -487,6 +489,19 @@
       transform:scale(1.35);
       box-shadow:0 0 20px var(--wx-glow,rgba(201,169,110,.85)),0 0 6px var(--wx-color,#c9a96e) inset;
     }
+    /* 2026-08-23新增：tier===3（"已达最重档"）时松手命中该热点，免费拖拽
+       维护应该失效——用摇晃+泛红短暂反馈告诉用户"命中了，但这条已经不能
+       免费维护"，跟碰撞检测没命中（无任何反馈）区分开，避免用户以为是
+       交互卡住。js/wuxing-drag.js::_rejectTier3() 驱动，.5s后自动移除
+       class，不常驻。 */
+    .wx-marker.wx-locked-shake .wx-dot{animation:wx-locked-shake .5s ease-in-out}
+    @keyframes wx-locked-shake{
+      0%,100%{transform:translateX(0)}
+      20%{transform:translateX(-5px);box-shadow:0 0 14px rgba(235,87,87,.85),0 0 4px #eb5757 inset}
+      40%{transform:translateX(5px);box-shadow:0 0 14px rgba(235,87,87,.85),0 0 4px #eb5757 inset}
+      60%{transform:translateX(-4px);box-shadow:0 0 10px rgba(235,87,87,.6),0 0 3px #eb5757 inset}
+      80%{transform:translateX(3px);box-shadow:0 0 6px rgba(235,87,87,.4)}
+    }
 
     /* 右侧分析面板 */
     /* 2026-08-11修复（qa CONFIRMED 1）：外壳本身不再滚动（overflow:hidden），
@@ -522,12 +537,24 @@
     .trait-product-list{display:flex;flex-direction:column;gap:8px}
     .trait-product-card{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,.02);border:1px solid rgba(201,169,110,.12)}
     .trait-product-icon{font-size:22px;flex-shrink:0;line-height:1}
+    /* 2026-08-23 图文详情改造：真实商品缩略图，点击弹出大图（见
+       js/main-new.js::_openProductImage()）。尺寸与.trait-product-icon
+       视觉占位一致，替换而不是叠加图标位。 */
+    .trait-product-thumb{width:40px;height:40px;flex-shrink:0;border-radius:8px;object-fit:cover;cursor:pointer;border:1px solid rgba(201,169,110,.2);transition:transform .15s ease}
+    .trait-product-thumb:hover{transform:scale(1.06)}
     .trait-product-info{flex:1;min-width:0}
     .trait-product-name{font-size:12px;color:rgba(232,224,208,.85)}
+    .trait-product-reason{font-size:10px;color:rgba(232,224,208,.45);margin-top:2px;line-height:1.5}
     .trait-product-price{font-size:11px;color:#c9a96e;margin-top:2px}
     .trait-redeem-btn{flex-shrink:0;padding:6px 12px;border-radius:16px;border:1px solid rgba(111,207,151,.5);background:rgba(111,207,151,.1);color:#6FCF97;font-size:11px;letter-spacing:1px;cursor:pointer;white-space:nowrap;font-family:inherit}
     .trait-redeem-btn:hover{background:rgba(111,207,151,.2)}
     .trait-redeem-btn.disabled,.trait-redeem-btn:disabled{border-color:rgba(235,87,87,.4);background:rgba(235,87,87,.06);color:rgba(235,87,87,.75);cursor:not-allowed}
+    /* 2026-08-23 经济模型改造：今日已维护时的"不想等？花N灵气立即调理"
+       次要按钮——用既有金色调（#c9a96e）区分于主按钮的绿色"可执行"语义，
+       避免跟真正的默认可点击态混淆（它是备选，不是默认路径），也不用红色
+       （红色在本文件语义上一直代表"不可用/disabled"，这个按钮明明可点）。 */
+    .trait-redeem-btn.secondary{border-color:rgba(201,169,110,.5);background:rgba(201,169,110,.08);color:#c9a96e;margin-left:6px}
+    .trait-redeem-btn.secondary:hover{background:rgba(201,169,110,.18)}
 
     /* ══ wxmaint面板·健康度进度条（2026-08-15新增，js/main-new.js::
        _wxHealthBarHtml()）══
@@ -608,6 +635,30 @@
     .report-advice-item:last-child{border-bottom:none}
     .report-advice-icon{font-size:16px;flex-shrink:0;margin-top:1px}
     .report-advice-text{font-size:12px;color:rgba(232,224,208,.6);line-height:1.7}
+
+    /* ══ 今日运势 Modal（流日AI分析，2026-08-23新增，js/main-new.js::
+       _showLiuri()）══
+       结构/视觉风格照抄 #report-modal（同为"独立全屏文字内容展示层"），
+       内容区复用上面 .report-summary/.report-section 系列类，不新起一套
+       样式——本文件"其它文字内容展示面板"的既有约定。 */
+    #liuri-modal{position:fixed;top:0;left:0;right:0;bottom:0;z-index:600;background:rgba(6,6,14,.98);display:none;flex-direction:column;overflow-y:auto}
+    #liuri-modal.open{display:flex}
+    .liuri-loading,.liuri-error{padding:40px 20px;text-align:center;font-size:13px;color:rgba(232,224,208,.5)}
+    .liuri-relations-list{margin:0;padding-left:18px;font-size:12px;color:rgba(232,224,208,.65);line-height:1.9}
+    .liuri-no-relations{font-size:12px;color:rgba(232,224,208,.4)}
+    .liuri-disclaimer{font-size:10px;color:rgba(232,224,208,.3);text-align:center;margin-top:8px;letter-spacing:.5px}
+
+    /* ══ 商品大图弹层（2026-08-23图文详情+点击放大改造新增，
+       js/main-new.js::_openProductImage()/_closeProductImage()）══
+       独立轻量lightbox，不复用zone-panel（语义不同，见该函数定义处注释）。 */
+    #product-lightbox{position:fixed;top:0;left:0;right:0;bottom:0;z-index:650;background:rgba(4,4,10,.92);display:none;align-items:center;justify-content:center;padding:24px;overflow-y:auto}
+    #product-lightbox.open{display:flex}
+    .product-lightbox-inner{max-width:520px;width:100%;background:rgba(10,10,20,.98);border:1px solid rgba(201,169,110,.2);border-radius:16px;overflow:hidden;position:relative}
+    .product-lightbox-inner img{width:100%;display:block;background:#111}
+    #product-lightbox-caption{padding:16px 18px 20px}
+    .product-lightbox-name{font-size:13px;color:#c9a96e;letter-spacing:1px;margin-bottom:8px}
+    .product-lightbox-blurb{font-size:12px;color:rgba(232,224,208,.65);line-height:1.8}
+    #product-lightbox-close{position:absolute;top:10px;right:10px;width:30px;height:30px;border-radius:50%;background:rgba(6,6,14,.75);border:1px solid rgba(255,255,255,.15);color:#e8e0d0;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2}
 
     /* ══ 报告 Tab 系统 ══ */
     .r-tabs{display:flex;gap:0;border-bottom:1px solid rgba(201,169,110,.15);margin-bottom:20px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
@@ -924,8 +975,10 @@
   #auth-user-info{font-size:11px;color:rgba(201,169,110,.75);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .auth-bar-btn{background:rgba(201,169,110,.1);border:1px solid rgba(201,169,110,.18);border-radius:8px;padding:5px 11px;color:#c9a96e;font-size:11px;cursor:pointer;letter-spacing:1px;height:32px;display:flex;align-items:center}
   .auth-bar-btn:hover{background:rgba(201,169,110,.2)}
-  /* 报告弹窗打开时隐藏导航栏 */
-  #report-modal.open ~ #auth-bar, body.report-open #auth-bar{display:none}
+  /* 报告弹窗打开时隐藏导航栏（2026-08-23同步补上#liuri-modal——今日运势
+     弹层是同一套"独立全屏文字内容展示层"模式，需要同样的导航栏遮挡处理，
+     见 js/main-new.js::_showLiuri()/_closeLiuri()） */
+  #report-modal.open ~ #auth-bar, #liuri-modal.open ~ #auth-bar, body.report-open #auth-bar{display:none}
 
   /* ── 主表单：可选注册字段 ──────────────────────── */
   .form-divider{color:rgba(232,224,208,.25);font-size:10px;letter-spacing:2px;text-align:center;margin:14px 0 12px;position:relative}
@@ -1028,6 +1081,23 @@
       justify-content:center;
     }
     #tutorial-skip-btn{ padding:8px 14px; min-height:36px; display:flex; align-items:center; }
+
+    /* 2026-08-23 qa-reviewer复查修复（CONFIRMED②）：新增的"今日运势"
+       #hud-liuri-btn 把"任务"#hud-task-btn 挤出375px手机屏幕外——#hud-right
+       此前没有 flex-wrap，英文模式下"Today's Fortune"+"Tasks"两个按钮的
+       文案比中文长得多，加上灵气值/音频开关/测试模式重玩引导按钮，总宽度
+       远超375px可用空间，任务按钮（wuxing_upkeep这个新任务的唯一领取
+       入口）直接被推出视口，不可见不可点。这里让按钮组允许换行——右对齐
+       换到第二行，不裁切/不推出视口；同时收紧gap，尽量让常见375px宽度下
+       第一行能塞下更多按钮，减少换行造成的HUD占用高度。 */
+    #hud-right{
+      flex-wrap:wrap;
+      justify-content:flex-end;
+      gap:6px;
+      max-width:78vw;
+      row-gap:6px;
+    }
+    #hud-spirit{ font-size:10px; }
   }
   </style>
 </head>
@@ -1302,6 +1372,9 @@
       <button class="audio-btn" id="btn-sfx" title="音效"     onclick="App.toggleSfx(this)">🔔</button>
       <!-- 测试模式：重玩引导按钮（醒目样式，方便测试） -->
       <button id="hud-tutorial-restart" onclick="App.restartTutorial()" style="background:rgba(201,169,110,.18);border:1px solid rgba(201,169,110,.5);border-radius:10px;padding:4px 10px;color:#c9a96e;font-size:11px;letter-spacing:.5px;cursor:pointer;white-space:nowrap">🧭 重玩引导</button>
+      <button id="hud-liuri-btn" onclick="App.showLiuri()">
+        <span data-i18n="hud.liuri">今日运势</span>
+      </button>
       <button id="hud-task-btn" onclick="App.toggleTaskPanel()">
         <span data-i18n="hud.tasks">任务</span>
         <span class="task-badge hidden" id="task-badge">0</span>
@@ -1357,6 +1430,25 @@
     <button id="report-close" onclick="App.closeReport()">← 返回命盘</button>
   </div>
   <div class="report-body" id="report-body"></div>
+</div>
+
+<!-- 今日运势Modal（流日AI分析，2026-08-23新增，见 js/main-new.js::_showLiuri()） -->
+<div id="liuri-modal">
+  <div class="report-header">
+    <h2 data-i18n="liuri.title">今日运势</h2>
+    <button id="liuri-close" onclick="App.closeLiuri()" data-i18n="liuri.close_btn">← 返回命盘</button>
+  </div>
+  <div class="report-body" id="liuri-body"></div>
+</div>
+
+<!-- 商品大图弹层（2026-08-23图文详情+点击放大改造新增，见
+     js/main-new.js::_openProductImage()/_closeProductImage()） -->
+<div id="product-lightbox" onclick="if(event.target===this) App.closeProductImage()">
+  <div class="product-lightbox-inner">
+    <button id="product-lightbox-close" onclick="App.closeProductImage()">×</button>
+    <img id="product-lightbox-img" src="" alt="">
+    <div id="product-lightbox-caption"></div>
+  </div>
 </div>
 
 <!-- ══ CDN 脚本 ══ -->

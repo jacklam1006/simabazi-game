@@ -779,7 +779,22 @@ GRANT EXECUTE ON FUNCTION claim_daily_checkin() TO authenticated;
 -- ── 任务领奖：与 js/tasks.js TASK_DEFS 保持同步，改任务奖励金额时两边都要改 ──
 -- invite_friend 任务不收录在这张任务表里：它的奖励已经完全由
 -- activate_my_referral() 单独发放，走这个函数会造成重复发奖。
-CREATE OR REPLACE FUNCTION claim_task(p_task_id TEXT)
+--
+-- 2026-08-23 新增 p_bazi_key 参数（DEFAULT NULL，向后兼容旧的1参数调用——
+-- 除 wuxing_upkeep 外的所有任务都不需要它，前端 js/auth.js 里
+-- `_sb.rpc('claim_task', { p_task_id: taskId })` 不用改）。这是Postgres里
+-- "参数列表变了=新重载"的老问题（同样的坑见下方 wuxing_free_maintain()
+-- 大段注释），所以先显式 DROP 旧的1参数签名，否则前端调用会因为存在两个
+-- 同名重载而产生歧义。
+--
+-- daily_read_analysis → daily_liuri_read："阅读流日"任务改名，task_id
+-- 字符串由总agent统一拍板，与前端 user-system 领域同步改动的
+-- js/tasks.js TASK_DEFS 保持一致。
+--
+-- 新增 wuxing_upkeep（"维护岛屿"每日任务，8灵气）：领取条件是"今天有没有
+-- 打理过五行问题"，校验逻辑见下方专属分支，设计理由写在分支上方注释里。
+DROP FUNCTION IF EXISTS claim_task(TEXT);
+CREATE OR REPLACE FUNCTION claim_task(p_task_id TEXT, p_bazi_key TEXT DEFAULT NULL)
 RETURNS TABLE(spirit_awarded INTEGER, new_balance INTEGER)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
@@ -790,7 +805,8 @@ DECLARE
   v_balance INTEGER;
 BEGIN
   SELECT type, spirit INTO v_type, v_spirit FROM (VALUES
-    ('daily_checkin','daily',10), ('daily_read_analysis','daily',15), ('daily_share','daily',20),
+    ('daily_checkin','daily',5), ('daily_liuri_read','daily',12), ('daily_share','daily',20),
+    ('wuxing_upkeep','daily',8),
     ('first_island','onetime',50), ('streak_3','onetime',30), ('streak_7','onetime',80),
     ('streak_30','onetime',300), ('read_dayun','onetime',25), ('read_shensha','onetime',25)
   ) AS t(task_id, type, spirit) WHERE t.task_id = p_task_id;
@@ -810,6 +826,60 @@ BEGIN
     END IF;
   END IF;
 
+  -- ── wuxing_upkeep 领取条件：刻意不重新实现 js/wuxing-maintenance.js::
+  -- _computeTier() 那套带浮点时间窗口的完整懒计算tier算法——那是一个
+  -- 200000+组fuzz测试验证过的复杂算法，在SQL里重新实现一遍风险极高，还会
+  -- 制造"同一算法两处实现"的耦合（哈希算法双实现在本项目吃过两次亏，见
+  -- claude-docs/已知问题与修复记录.md）。这里只需要一个"今天有没有打理"的
+  -- 粗略判断，滥用的最坏后果也只是多刷8灵气/天，风险可控（真正的防刷主线
+  -- 是 wuxing_free_maintain()/wuxing_instant_fix() 各自的每日限额+花费
+  -- 机制，这个任务只是一份小额外激励）。
+  --
+  -- 简化方案：用 base_tier（命盘创建时就确定、不随时间变化的命理静态严重
+  -- 度，本身不需要动态计算）配合 ownership_tier 做静态代理判断——
+  -- base_tier > 1 AND ownership_tier != 'shrine' 近似"存在未被永久巩固的
+  -- 中/高严重度问题"。这只是一个近似（真实动态tier可能因长期不维护从
+  -- base_tier=1劣化、也可能因刚维护过临时回落到1），但作为"今天有没有事
+  -- 要做"的粗略判断已经足够合理。
+  --   · 如果该用户该bazi_key在 wuxing_maintenance_state 里找不到任何
+  --     base_tier>1 且非shrine的行——包括这个bazi_key在表里完全没有记录
+  --     （用户可能还没打开过维护面板）——视为"没有已知问题"，直接放行，
+  --     不能卡住用户。
+  --   · 否则要求"今天该用户该bazi_key下至少有一行 last_maintained_at 是
+  --     今天"。已确认 wuxing_free_maintain() 和 wuxing_instant_fix() 成功
+  --     时都会无条件把 last_maintained_at 更新为 NOW()（分别见两个函数体
+  --     内的 UPDATE 语句），所以这个字段能可靠反映"今天是否做过真实维护/
+  --     调理动作"。用 (last_maintained_at AT TIME ZONE 'utc')::date 与
+  --     (now() AT TIME ZONE 'utc')::date 比较，对齐文件里其它daily任务的
+  --     UTC对日写法。
+  IF p_task_id = 'wuxing_upkeep' THEN
+    IF p_bazi_key IS NULL OR p_bazi_key = '' THEN
+      RAISE EXCEPTION '维护岛屿任务缺少命盘标识';
+    END IF;
+
+    -- 归属校验：与 wuxing_free_maintain()/wuxing_instant_fix()/
+    -- redeem_wuxing_product() 用的是同一道防线（bazi_key_belongs_to_caller()，
+    -- 定义在本文件后面）。没有这道校验的话，随便传一个查无此命盘的
+    -- bazi_key 会天然落入"这张表里没有base_tier>1的行→没有已知问题→直接
+    -- 放行"这个分支，等于绕过下面"今天有没有真实维护过"的检查白拿8灵气。
+    IF NOT bazi_key_belongs_to_caller(p_bazi_key) THEN
+      RAISE EXCEPTION '无效的命盘标识';
+    END IF;
+
+    IF EXISTS (
+      SELECT 1 FROM wuxing_maintenance_state
+      WHERE user_id = auth.uid() AND bazi_key = p_bazi_key
+        AND base_tier > 1 AND ownership_tier != 'shrine'
+    ) AND NOT EXISTS (
+      SELECT 1 FROM wuxing_maintenance_state
+      WHERE user_id = auth.uid() AND bazi_key = p_bazi_key
+        AND last_maintained_at IS NOT NULL
+        AND (last_maintained_at AT TIME ZONE 'utc')::date = (now() AT TIME ZONE 'utc')::date
+    ) THEN
+      RAISE EXCEPTION '今日尚未维护任何五行问题，暂时无法领取';
+    END IF;
+  END IF;
+
   v_day_key := CASE WHEN v_type = 'daily' THEN to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD') ELSE NULL END;
 
   BEGIN
@@ -825,8 +895,8 @@ BEGIN
   RETURN QUERY SELECT v_spirit, v_balance;
 END;
 $$;
-REVOKE ALL ON FUNCTION claim_task(TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION claim_task(TEXT) TO authenticated;
+REVOKE ALL ON FUNCTION claim_task(TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION claim_task(TEXT, TEXT) TO authenticated;
 
 -- ── 五行免费维护：tier 接受客户端上报但 clamp 到 1-3，severity 只信任 ──
 -- 服务端已存储的 wuxing_maintenance_state.base_tier（base_tier=3 等价于
@@ -1315,6 +1385,17 @@ BEGIN
   END IF;
   IF NOT bazi_key_belongs_to_caller(p_bazi_key) THEN
     RAISE EXCEPTION '无效的命盘标识';
+  END IF;
+
+  -- 2026-08-23 P3：tier3不能免费维护这条规则此前只做在前端（面板CTA +
+  -- 拖拽工具），服务端完全没拦截。这不是密码学级别的防伪——本函数对
+  -- p_tier本来就是"客户端上报、clamp到1-3、不做精确校验"的信任模型（见
+  -- 上方DROP FUNCTION那段大段注释：故意不在SQL里重新实现完整tier算法），
+  -- 绕过方向也只是"少花灵气"而不是"多刷灵气"。这里只是在honest-client
+  -- 场景下补一道一致性兜底：既然v_tier已经是clamp后的值，tier3就直接
+  -- 拒绝免费维护、引导去 wuxing_instant_fix() 花灵气立即调理。
+  IF v_tier = 3 THEN
+    RAISE EXCEPTION '该问题已到最严重档位，请使用灵气立即调理';
   END IF;
 
   INSERT INTO wuxing_maintenance_state (user_id, bazi_key, wx, direction, base_tier)

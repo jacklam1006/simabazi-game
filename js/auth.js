@@ -361,10 +361,19 @@ const AuthManager = (() => {
   // 对应 js/tasks.js::complete() 登录分支。失败（未知任务/已领取/条件不满足/
   // 网络错误）统一走 { error } 形状，调用方据此决定是否在本地补发——原则上
   // 不补发，避免绕过服务端判定。
-  async function claimTask(taskId) {
+  // 2026-08-23 跨agent接口细节：服务端 claim_task() SQL函数签名扩展为
+  // claim_task(p_task_id TEXT, p_bazi_key TEXT DEFAULT NULL)——task_id=
+  // 'wuxing_upkeep' 时服务端要求必传该参数（判定"这张命盘今天是否至少
+  // 真实维护过一处五行问题"），其余task_id继续走DEFAULT NULL的向后兼容
+  // 路径。baziKey 为可选第二参数，调用方（js/tasks.js::_completeViaServer()）
+  // 只在taskId==='wuxing_upkeep'时传，其余调用点沿用旧的单参数调用方式，
+  // 不受影响。
+  async function claimTask(taskId, baziKey) {
     if (!_sb || !_user) return { error: 'not_logged_in' };
     try {
-      const { data, error } = await _sb.rpc('claim_task', { p_task_id: taskId });
+      const params = { p_task_id: taskId };
+      if (baziKey) params.p_bazi_key = baziKey;
+      const { data, error } = await _sb.rpc('claim_task', params);
       if (error) return { error: error.message };
       return { data: data && data[0] ? data[0] : null };
     } catch (e) {

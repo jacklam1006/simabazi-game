@@ -30,8 +30,11 @@
  *     全程typeof防御，对方尚未接入时优雅降级为"维护系统尚未就绪"提示，
  *     不报错、不阻塞其它交互）
  *   WuxingMaintenance.getState(baziData, wx, direction, severity) → {tier,ownershipTier,...}
- *     （同上，可选——仅用于"水晶态换皮✨"这个锦上添花的判断，不存在时
- *     工具图标退回默认💧/✂️，不影响核心维护流程）
+ *     （同上，可选，两处用到：①"水晶态换皮✨"锦上添花的判断，不存在时工具
+ *     图标退回默认💧/✂️；②2026-08-23新增——命中判定后、真正调用maintain()
+ *     前现查一次tier，tier===3（"已达最重档"）时免费拖拽维护失效，改走
+ *     _rejectTier3()给出摇晃+toast反馈，不发起maintain()调用。不存在时
+ *     这道拦截静默跳过，直接走原有maintain()流程，不阻塞核心维护）
  *   App._getBaziData()（js/main-new.js，运行时调用，脚本加载顺序不要求
  *     main-new.js在本文件之前，见index.html对应script标签注释）
  *
@@ -261,15 +264,33 @@ const WuxingDrag = (() => {
     }
 
     if (state?.hitEntry) {
-      _performMaintain(state.hitEntry.wx, state.direction);
+      _performMaintain(state.hitEntry, state.direction);
     }
     // 工具条数据可能因为这次维护发生变化（tier回1、水晶态判断等），
     // 刷新一次不影响没命中的情况（重建成本可忽略）
     refresh();
   }
 
+  // ── tier===3（"已达最重档"）拦截反馈 ────────────────────────────────
+  // 2026-08-23新增：tier===3时免费拖拽维护应该失效（只能走面板里花灵气的
+  // "瞬间调理"付费入口，main-new.js面板逻辑，本文件不涉及）。给用户一个
+  // 短暂的摇晃+泛红反馈，配合toast文案说明原因——不是静默不响应（那样
+  // 用户会以为是碰撞检测没命中/交互卡住，而不是"这个问题状态特殊"）。
+  function _rejectTier3(hitEntry) {
+    _toast(_t('wxmaint.drag_tier3_locked'), true);
+    const markerEl = hitEntry?.dotEl?.closest('.wx-marker');
+    if (!markerEl) return;
+    markerEl.classList.remove('wx-locked-shake');
+    // 强制reflow，确保连续两次命中同一个tier3热点时动画能重新触发
+    // （同一class连续加两次浏览器不会重新播放keyframe动画）。
+    void markerEl.offsetWidth;
+    markerEl.classList.add('wx-locked-shake');
+    setTimeout(() => markerEl.classList.remove('wx-locked-shake'), 500);
+  }
+
   // ── 命中后执行维护 ───────────────────────────────────────────────
-  function _performMaintain(wx, direction) {
+  function _performMaintain(hitEntry, direction) {
+    const wx = hitEntry.wx;
     if (typeof WuxingMaintenance === 'undefined' || typeof WuxingMaintenance.maintain !== 'function') {
       _toast(_t('wxmaint.drag_not_ready'), true);
       return;
@@ -281,6 +302,21 @@ const WuxingDrag = (() => {
     }
 
     const severity = _severityFor(baziData, wx, direction);
+
+    // tier===3（"已达最重档"）时免费拖拽维护失效——现查
+    // WuxingMaintenance.getState()（不用hitEntry.tier缓存值：那是marker上
+    // 次reflectTier()写入时的快照，页面开着不动、时间流逝时会因懒计算
+    // 变旧，见wuxing-maintenance.js::getState()头部注释"每次getState()懒
+    // 计算"）。shrine态下tier恒为1（见getState()内部注释），不会误伤已
+    // 巩固的issue——这里不需要额外排除ownershipTier。
+    if (typeof WuxingMaintenance.getState === 'function') {
+      let state = null;
+      try { state = WuxingMaintenance.getState(baziData, wx, direction, severity); } catch (e) { state = null; }
+      if (state && Number(state.tier) === 3) {
+        _rejectTier3(hitEntry);
+        return;
+      }
+    }
 
     let result;
     try {

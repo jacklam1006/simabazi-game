@@ -106,6 +106,18 @@ const I18N = {
     'hud.title':           '命盘沙盒',
     'hud.tasks':           '任务',
     'hud.spirit':          '灵气',
+    'hud.liuri':            '今日运势',
+
+    // ── 今日运势（流日AI分析，2026-08-23新增）───────────────
+    'liuri.title':          '今日运势',
+    'liuri.close_btn':      '← 返回命盘',
+    'liuri.loading':        '正在为你解读今日运势…',
+    'liuri.error':          '今日运势暂时无法获取，请稍后再试',
+    'liuri.ganzhi_label':   '今日干支',
+    'liuri.shishen_label':  '与日主关系',
+    'liuri.relations_label':'与命盘的互动',
+    'liuri.no_relations':   '今天与命盘四柱没有特别的冲合刑害关系',
+    'liuri.disclaimer':     '以上内容仅供参考娱乐，不作为人生决策依据',
 
     // ── 顶部栏 ────────────────────────────────
     'nav.brand':           '司 马 八 字',
@@ -240,6 +252,26 @@ const I18N = {
     // 避免用户看到的价格和真正会扣的价格不一致造成困惑（见
     // js/main-new.js::_wxmaintRedeemBlockHtml() 消费处注释）。
     'products.price_loading':   '价格加载中…',
+    // 2026-08-23 商品图文详情+点击放大改造：商品讲解长文案（成分/使用/摆放
+    // 建议）本身直接以纯中文字符串存在 js/products.js::PRODUCT_DEFS[i].blurb
+    // 里，不经过i18n查表（见该文件改动处注释——文案量大且素材来源本身是
+    // 中文商品图，双语化投入产出比低）；这里只补齐UI chrome级别的文案，
+    // 符合CLAUDE.md"i18n完整性"对"用户可见文案"的字面要求——chrome文案确实
+    // 中英文都补齐，只有长文案正文本身是刻意的中文单语例外。
+    // 2026-08-23 qa-reviewer复查修复：`products.why_title` 曾在此处声明但
+    // 全项目零消费（最终实现里"为什么推荐"这句理由直接内联展示在商品卡
+    // 上，没有单独的标题行——见 js/main-new.js::_wxProductReasonText() 及其
+    // 调用点），是一个漏了接线也漏了清理的死key，已删除；`products.
+    // reason_nourish`/`products.reason_restrain` 才是真正驱动这句理由文案的
+    // key，保留。
+    // 2026-08-23 注意：_wxT()/_t() 这类i18n占位符替换是"逐key替换首次出现"
+    // （String.replace 只替换第一处，不是replaceAll），本项目至少5处
+    // （main-new.js/products.js/analysis.js/wuxing-scene.js/wuxing-drag.js）
+    // 都是这个既有实现，本次不改动这个共享行为（跨其它agent领域文件，改动
+    // 面不必要地扩大）——这两句文案改为每个占位符只出现一次，绕开这个限制，
+    // 不是文案本身需要这样写。
+    'products.reason_nourish':  '命盘中{wx}偏弱，五行讲究"同气相求"——用同属性水晶，呼应你需要补强的方向。',
+    'products.reason_restrain': '命盘中{wx}偏旺，五行讲究"以克制衡"——{srcWx}属性的水晶主克旺气，呼应你需要制衡的方向。',
 
     // ── 五行维护系统（第三阶段）─────────────────
     'wxmaint.panel_title':      '命盘五行诊断',
@@ -268,6 +300,7 @@ const I18N = {
     // 这条对应"今日所有命盘加起来的免费维护总次数已经用完"，不是这条issue
     // 本身今天被打理过，措辞不能说"这条今天已经打理过了"。
     'wxmaint.drag_daily_total_limit': '今日免费维护次数已经用完了，明天再来吧',
+    'wxmaint.drag_tier3_locked': '这个问题已经很严重了，需要花灵气立即调理',
     'wxmaint.drag_fail':        '维护失败，请稍后再试',
     'wxmaint.drag_not_ready':   '维护系统尚未就绪，请稍后再试',
 
@@ -283,6 +316,15 @@ const I18N = {
     'wxmaint.crystal_note':     '水晶庇护中 · 消磁周期已延长',
     'wxmaint.instant_fix_title':'瞬间调理',
     'wxmaint.instant_fix_btn':  '花 {n} 灵气立即调理',
+    // 2026-08-23 经济模型改造：tier<3时的默认入口从"瞬间调理"改为"维护赚
+    // 灵气"（调用 WuxingMaintenance.maintain() 而非 instantFix()），呼应
+    // "愿意花时间的靠免费维护攒灵气"这条产品定位；只有tier===3（健康度
+    // 归零）才展示瞬间调理这个付费选项，见 js/main-new.js::
+    // _wxmaintRedeemBlockHtml()/_wxMaintainSectionHtml() 定义处注释。
+    'wxmaint.maintain_title':      '维护赚灵气',
+    'wxmaint.maintain_btn':        '维护一下，赚 {n} 灵气',
+    'wxmaint.maintain_done_today': '今日已维护，明天再来吧',
+    'wxmaint.instant_fix_alt_btn': '不想等？花 {n} 灵气立即调理',
     // 2026-08-15 新增：健康度进度条文案，见 js/main-new.js::_wxHealthBarHtml()
     'wxmaint.health_status':    '健康度 {pct}% · 约 {days} 天后进一步恶化',
     // 2026-08-16新增：tier===3（已封顶最重档）专属文案，不复用上面那句
@@ -292,6 +334,21 @@ const I18N = {
 
     // ── 灵气兑换：④请神仙/设炉灶（纯虚拟购买，不走实体履约）─────
     'products.success_shrine':  '兑换成功！该五行问题已永久巩固，不再需要打理',
+
+    // ── 任务面板：TASK_DEFS 里本批（2026-08-23每日任务重构）新增的两条
+    //    daily任务文案（name/desc）。CLAUDE.md规则7要求"新增的用户可见文案"
+    //    zh/en同步——daily_checkin/daily_share等历史条目仍是硬编码中文（既有
+    //    欠账，不在本次修复范围），但这两条是本批新增，走i18n查表（见
+    //    js/tasks.js::TASK_DEFS.wuxing_upkeep/daily_liuri_read 的
+    //    nameKey/descKey 字段，以及 getAllStatus()/_showToast() 里的解析
+    //    逻辑）──────────────────────────────────────────────────
+    'tasks.wuxing_upkeep_name':     '维护岛屿',
+    'tasks.wuxing_upkeep_desc':     '今日打理过至少一处五行问题（或命盘已安泰）',
+    'tasks.daily_liuri_read_name':  '阅读流日',
+    'tasks.daily_liuri_read_desc':  '查看今日运势',
+    // wuxing_upkeep 被服务端拒绝时的提示（见 js/tasks.js::_completeViaServer()
+    // 失败分支，qa-reviewer复查CONFIRMED①修复）
+    'tasks.wuxing_upkeep_rejected': '今天还没有维护过五行问题哦，去岛上拖拽处理一处再来领取吧',
 
     // ── 任务面板：五行维护动态卡片（第四阶段）───────────────────
     'tasks.wxmaint_section':        '五行维护',
@@ -405,6 +462,18 @@ const I18N = {
     'hud.title':           'Destiny Sandbox',
     'hud.tasks':           'Tasks',
     'hud.spirit':          'Spirit',
+    'hud.liuri':            "Today's Fortune",
+
+    // ── Today's Fortune (daily reading) ──────────────────────
+    'liuri.title':          "Today's Fortune",
+    'liuri.close_btn':      '← Back to Chart',
+    'liuri.loading':        "Reading today's fortune for you…",
+    'liuri.error':          "Couldn't load today's fortune, please try again later",
+    'liuri.ganzhi_label':   "Today's Stem-Branch",
+    'liuri.shishen_label':  'Relation to Day Master',
+    'liuri.relations_label':'Interaction with Your Chart',
+    'liuri.no_relations':   "No notable clash/combine relations with your chart's pillars today",
+    'liuri.disclaimer':     'For entertainment and reference only — not a basis for major life decisions',
 
     // ── Auth Bar ──────────────────────────────
     'nav.brand':           'Sima BaZi',
@@ -535,6 +604,17 @@ const I18N = {
     'products.fail':            'Redemption failed, please try again later',
     'products.spirit_label':    'Spirit',
     'products.price_loading':   'Loading price…',
+    // 2026-08-23 product gallery + lightbox: long-form product copy
+    // (composition/usage/placement) lives as plain Chinese strings in
+    // js/products.js::PRODUCT_DEFS[i].blurb (not routed through i18n — see
+    // that file's comment). Only chrome-level copy is mirrored here.
+    // 2026-08-23 qa-reviewer fix: `products.why_title` was declared here but
+    // never consumed anywhere (the final implementation inlines the reason
+    // line directly on the product card with no separate title) — removed
+    // as dead code. `products.reason_nourish`/`products.reason_restrain`
+    // are the keys that actually drive that reason line; kept.
+    'products.reason_nourish':  'Your chart shows {wx} running weak — Five-Element theory pairs like with like, so a matching crystal echoes the direction you need to strengthen.',
+    'products.reason_restrain': 'Your chart shows {wx} running strong — Five-Element theory restrains with the controlling element, so a {srcWx}-aligned crystal echoes the direction you need to temper.',
 
     // ── Five-Element Maintenance System (Phase 3) ──
     'wxmaint.panel_title':      'Five-Element Diagnosis',
@@ -557,6 +637,7 @@ const I18N = {
     'wxmaint.drag_gained':      'Gained {n} Spirit',
     'wxmaint.drag_daily_limit': 'Already maintained today — come back tomorrow',
     'wxmaint.drag_daily_total_limit': "Today's free maintenance limit is used up — come back tomorrow",
+    'wxmaint.drag_tier3_locked': 'This issue is too severe now — use Spirit for an instant fix',
     'wxmaint.drag_fail':        'Maintenance failed, please try again later',
     'wxmaint.drag_not_ready':   'Maintenance system not ready yet, please try again later',
     'wxmaint.drag_already_shrined': 'This one is already permanently protected — no maintenance needed. Refreshing now',
@@ -567,6 +648,15 @@ const I18N = {
     'wxmaint.crystal_note':     'Crystal-protected · recharge cycle extended',
     'wxmaint.instant_fix_title':'Instant Fix',
     'wxmaint.instant_fix_btn':  'Fix now for {n} Spirit',
+    // 2026-08-23 monetization model update: the default entrance for tier<3
+    // is now "maintain for spirit" (calls WuxingMaintenance.maintain(),
+    // not instantFix()); the paid instant-fix option only shows once
+    // tier===3 (health at 0%). See js/main-new.js::
+    // _wxmaintRedeemBlockHtml()/_wxMaintainSectionHtml() for the branching.
+    'wxmaint.maintain_title':      'Maintain for Spirit',
+    'wxmaint.maintain_btn':        'Maintain now, earn {n} Spirit',
+    'wxmaint.maintain_done_today': 'Already maintained today — come back tomorrow',
+    'wxmaint.instant_fix_alt_btn': "Don't want to wait? Fix now for {n} Spirit",
     // 2026-08-15 added: health bar copy, see js/main-new.js::_wxHealthBarHtml()
     'wxmaint.health_status':    'Health {pct}% · further decay in about {days} days',
     // 2026-08-16 addition: tier===3 (capped, worst tier) gets its own caption —
@@ -581,6 +671,17 @@ const I18N = {
 
     // ── Redeem: ④ Enshrine a Guardian Spirit (pure virtual purchase, no physical fulfillment) ──
     'products.success_shrine':  'Redeemed! This issue is now permanently secured and needs no further upkeep',
+
+    // ── Task panel: the two daily tasks added in this batch (2026-08-23
+    //    daily task rework) go through i18n lookup — see js/tasks.js::
+    //    TASK_DEFS.wuxing_upkeep/daily_liuri_read nameKey/descKey fields.
+    'tasks.wuxing_upkeep_name':     'Tend the Island',
+    'tasks.wuxing_upkeep_desc':     'Tended at least one Five-Element issue today (or the chart is already in balance)',
+    'tasks.daily_liuri_read_name':  'Read Today\'s Fortune',
+    'tasks.daily_liuri_read_desc':  'Check today\'s fortune',
+    // Shown when the server rejects a wuxing_upkeep claim (see
+    // js/tasks.js::_completeViaServer() failure branch)
+    'tasks.wuxing_upkeep_rejected': 'No Five-Element issue tended yet today — go drag-maintain one on the island first, then come back to claim',
 
     // ── Task panel: dynamic Five-Element maintenance cards (Phase 4) ──
     'tasks.wxmaint_section':        'Five-Element Maintenance',
