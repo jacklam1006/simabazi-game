@@ -345,6 +345,13 @@ const WuxingDrag = (() => {
         if (typeof WuxingScene !== 'undefined' && typeof WuxingScene.reflectTier === 'function') {
           WuxingScene.reflectTier(wx, direction, 1);
         }
+        // 2026-08-23：wuxingMaintainSuccess 事件（js/gameplay-tutorial.js
+        // 监听判定"用户完成了教学拖拽"用）已下沉到
+        // WuxingMaintenance.maintain() 内部统一派发（见该文件 maintain()
+        // 薄包装处注释）——这里不再重复派发，避免面板"维护一下"按钮那条
+        // 调用同一个 maintain() 的路径（js/main-new.js::_maintainWuxingIssue()）
+        // 收不到信号（qa-reviewer 2026-08-23 CONFIRMED①），以及本路径和面板
+        // 路径都走 maintain() 时双重派发。
         refresh();
       } else if (res && res.reason === 'daily_limit') {
         _toast(_t('wxmaint.drag_daily_limit'), true);

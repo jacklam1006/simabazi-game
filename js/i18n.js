@@ -224,6 +224,35 @@ const I18N = {
     'tutorial.skip_modal': '跳过引导，自由探索',
     'tutorial.hint_click': '点击命盘上高亮的标识',
 
+    // ──「认识命盘」引导常驻HUD入口（2026-08-23转正为正式生产环境入口，
+    //    qa-reviewer第三轮CONFIRMED③补齐——此前该按钮没有data-i18n，英文
+    //    界面下仍显示中文）──────────────────────────────────────────
+    'hud.tutorial_restart': '重玩引导',
+
+    // ── 玩法引导（js/gameplay-tutorial.js，2026-08-23新增）─────
+    'hud.gameplay_tutorial':     '玩法教学',
+    'tutorial.gameplay_cta_text':  '🎮 想知道怎么玩吗？',
+    'tutorial.gameplay_cta_start': '开始教学',
+    'tutorial.gameplay_cta_skip':  '以后再说',
+    // qa-reviewer第四轮PLAUSIBLE②修复：不再断言"命盘五行很均衡"——这条
+    // 降级分支只代表"没有tier2教学目标"，命盘完全可能还有tier3问题在场
+    // （只是免费拖拽已不适用），见 js/gameplay-tutorial.js::_showBalancedStep()
+    // 定义处注释。
+    'gameplay.balanced_msg':  '这次没有合适的问题可以演示拖拽维护，我们直接看看每日任务吧！',
+    'gameplay.balanced_next': '知道了 →',
+    'gameplay.hotspot_hint':  '👇 拖动下方工具到高亮的五行标记上试试',
+    'gameplay.success_msg':   '🎉 学会了！你刚刚赚了 {n} 灵气',
+    'gameplay.wait_fallback_msg': '今天这条已经打理过了，直接看看每日任务吧！',
+    // qa-reviewer第三轮PLAUSIBLE①新增：60秒超时兜底跟"每日限额已打理过"
+    // 是两种不同情况（超时可能只是用户还没搞懂怎么拖拽），不该复用限额
+    // 专属措辞，见 js/gameplay-tutorial.js::_onWaitTimeout() 定义处注释。
+    'gameplay.wait_timeout_msg': '没关系，随时可以自己试试，先看看每日任务吧！',
+    'gameplay.task_hint':     '每天都有任务和运势可以查看，继续赚灵气吧！',
+    'gameplay.task_done_btn': '知道了 ✓',
+    // qa-reviewer第三轮PLAUSIBLE②新增：高亮热点被点击但引导guard挡住面板
+    // 打开时的toast提示，避免用户误以为点击失效
+    'gameplay.click_blocked_toast': '请拖拽下方工具到这个标记上试试',
+
     // ── Auth 错误 ─────────────────────────────
     'auth_err.invalid':    '邮箱或密码错误',
     'auth_err.unconfirm':  '请先验证邮箱再登录',
@@ -579,6 +608,32 @@ const I18N = {
     'tutorial.skip_top':   'Skip ×',
     'tutorial.skip_modal': 'Skip Tutorial',
     'tutorial.hint_click': 'Tap the highlighted marker',
+
+    // ── Bazi Tutorial HUD entry i18n key (qa-reviewer round 3 CONFIRMED③) ──
+    'hud.tutorial_restart': 'Replay Tutorial',
+
+    // ── Gameplay Tutorial (js/gameplay-tutorial.js, added 2026-08-23) ──
+    'hud.gameplay_tutorial':     'How to Play',
+    'tutorial.gameplay_cta_text':  '🎮 Want to know how to play?',
+    'tutorial.gameplay_cta_start': 'Start Tutorial',
+    'tutorial.gameplay_cta_skip':  'Maybe Later',
+    // qa-reviewer round 4 PLAUSIBLE② — no longer asserts the chart is
+    // "well balanced": this fallback only means "no tier-2 teaching target
+    // found", the chart may still have tier-3 issues (just not eligible for
+    // free-drag demo). See js/gameplay-tutorial.js::_showBalancedStep().
+    'gameplay.balanced_msg':  "No suitable issue to demo right now — let's check the daily tasks instead!",
+    'gameplay.balanced_next': 'Got it →',
+    'gameplay.hotspot_hint':  '👇 Drag the tool below onto the highlighted marker',
+    'gameplay.success_msg':   '🎉 Nice! You just earned {n} Spirit',
+    'gameplay.wait_fallback_msg': "Looks like you've already tended this one today — let's check the daily tasks instead!",
+    // qa-reviewer round 3 PLAUSIBLE① — dedicated neutral copy for the 60s
+    // timeout fallback, distinct from the daily-limit-specific wording above
+    'gameplay.wait_timeout_msg': "No worries — feel free to try it yourself anytime. Let's check the daily tasks first!",
+    'gameplay.task_hint':     'Check tasks and daily fortune every day to keep earning Spirit!',
+    'gameplay.task_done_btn': 'Got it ✓',
+    // qa-reviewer round 3 PLAUSIBLE② — toast shown when the highlighted
+    // hotspot is clicked but blocked by the tutorial guard
+    'gameplay.click_blocked_toast': 'Try dragging the tool below onto this marker',
 
     // ── Auth Errors ───────────────────────────
     'auth_err.invalid':    'Incorrect email or password',

@@ -99,6 +99,25 @@
     .task-badge{position:absolute;top:-4px;right:-4px;width:14px;height:14px;border-radius:50%;background:#EB5757;font-size:9px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700}
     /* 2026-08-23"今日运势"HUD入口按钮——同款样式，跟#hud-task-btn并排 */
     #hud-liuri-btn{background:rgba(201,169,110,.12);border:1px solid rgba(201,169,110,.25);border-radius:16px;padding:4px 12px;color:#c9a96e;font-size:11px;letter-spacing:1px;cursor:pointer;white-space:nowrap}
+    /* 2026-08-23"玩法教学"HUD入口按钮（js/gameplay-tutorial.js）——同款样式 */
+    #hud-gameplay-btn{background:rgba(201,169,110,.12);border:1px solid rgba(201,169,110,.25);border-radius:16px;padding:4px 12px;color:#c9a96e;font-size:11px;letter-spacing:1px;cursor:pointer;white-space:nowrap}
+    /* HUD"引导未完成"呼吸提示——只要 js/main-new.js::_refreshTutorialHudGlow()
+       判定对应localStorage完成标记不存在就加这个class，柔和金色光晕，参照
+       #loading-orb的orb-pulse/#tutorial-hint-bar的hint-breathe同等柔和度，
+       不刺眼；完成后JS移除class，动画消失，按钮保留但恢复静态。 */
+    .hud-btn-glow{animation:hud-btn-pulse 2.4s ease-in-out infinite}
+    @keyframes hud-btn-pulse{
+      0%,100%{box-shadow:0 0 0 rgba(201,169,110,0)}
+      50%{box-shadow:0 0 14px rgba(201,169,110,.55)}
+    }
+    /* 玩法引导步骤⑤"引导指向每日任务入口"用——比上面的呼吸提示更明显一点
+       （主动引导中的强调，不是被动提醒），但仍是柔和金色调性，不刺眼。
+       js/gameplay-tutorial.js::_showTaskStep()/_cleanup() 加/removeClass。 */
+    .gt-hud-attn{animation:gt-hud-attn-pulse 1.1s ease-in-out infinite}
+    @keyframes gt-hud-attn-pulse{
+      0%,100%{box-shadow:0 0 0 rgba(201,169,110,0)}
+      50%{box-shadow:0 0 18px rgba(201,169,110,.75)}
+    }
     /* 音频开关按钮 */
     .audio-btn{width:28px;height:28px;border-radius:50%;background:rgba(201,169,110,.1);border:1px solid rgba(201,169,110,.2);color:rgba(201,169,110,.75);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s;line-height:1;padding:0}
     .audio-btn:hover{background:rgba(201,169,110,.2);border-color:rgba(201,169,110,.45)}
@@ -501,6 +520,17 @@
       40%{transform:translateX(5px);box-shadow:0 0 14px rgba(235,87,87,.85),0 0 4px #eb5757 inset}
       60%{transform:translateX(-4px);box-shadow:0 0 10px rgba(235,87,87,.6),0 0 3px #eb5757 inset}
       80%{transform:translateX(3px);box-shadow:0 0 6px rgba(235,87,87,.4)}
+    }
+    /* 玩法引导专属高亮（js/gameplay-tutorial.js 步骤③）——刻意不复用上面
+       .wx-drop-target-active（那是"拖拽正悬停在此"的实时命中反馈语义，用户
+       真的开始拖拽时若混用会造成两套视觉状态互相打架/混淆），独立class +
+       独立keyframe，常驻脉动直到用户完成这次教学拖拽或跳过。 */
+    .wx-marker.gt-target-highlight .wx-dot{
+      animation:gt-target-glow 1.3s ease-in-out infinite;
+    }
+    @keyframes gt-target-glow{
+      0%,100%{box-shadow:0 0 10px var(--wx-glow,rgba(201,169,110,.6))}
+      50%{box-shadow:0 0 26px var(--wx-glow,rgba(201,169,110,.95)),0 0 8px var(--wx-color,#c9a96e) inset}
     }
 
     /* 右侧分析面板 */
@@ -911,6 +941,114 @@
     }
     .tut-toast-show{opacity:1;transform:translateX(-50%) translateY(0)}
 
+    /* ══ 命盘引导 → 玩法引导衔接CTA（js/tutorial.js::_showGameplayCTA()，
+       2026-08-23新增）══ 可跳过的提示卡片，不是强制弹窗——独立于
+       #tutorial-overlay（此时已经_cleanup()隐藏），跟.tut-celebration/
+       .tut-toast同款"动态创建挂到body+定时/交互移除"写法。 */
+    .tut-gameplay-cta{
+      position:fixed;left:50%;bottom:90px;transform:translateX(-50%) translateY(16px);
+      z-index:900;width:min(320px,88vw);
+      background:rgba(8,8,20,.96);border:1px solid rgba(201,169,110,.32);
+      border-radius:16px;padding:16px 18px;
+      box-shadow:0 10px 40px rgba(0,0,0,.45);
+      opacity:0;pointer-events:none;transition:opacity .3s ease,transform .3s ease;
+    }
+    .tut-gameplay-cta.tut-gameplay-cta-show{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
+    .tut-gameplay-cta-text{font-size:13px;color:#e8e0d0;letter-spacing:.5px;margin-bottom:12px;text-align:center}
+    .tut-gameplay-cta-actions{display:flex;gap:10px}
+    .tut-gameplay-cta-actions button{flex:1;padding:10px;border-radius:10px;font-size:12px;letter-spacing:1px;cursor:pointer;font-family:inherit}
+    .tut-gameplay-cta-start{border:none;background:linear-gradient(135deg,#c9a96e,#a07840);color:#1a1000;font-weight:700}
+    .tut-gameplay-cta-start:hover{opacity:.88}
+    .tut-gameplay-cta-skip{border:1px solid rgba(255,255,255,.12);background:transparent;color:rgba(232,224,208,.45)}
+
+    /* ══ 玩法引导覆盖层（js/gameplay-tutorial.js，2026-08-23新增）══
+       跟 #tutorial-overlay 是两套独立DOM/状态，只是共用同一套视觉语言
+       （半透明背景+pointer-events:none容器+子元素各自开启，跳过按钮/
+       居中卡片Modal的位置/尺寸/圆角/配色跟命盘引导那套完全对齐，保证
+       两条引导流程视觉上是"同一个产品"，不是缝合的两套UI）。 */
+    #gt-overlay{position:fixed;inset:0;z-index:800;pointer-events:none;background:rgba(0,0,0,.38)}
+    #gt-overlay.hidden{display:none}
+    #gt-skip-btn{
+      position:absolute;top:60px;right:14px;pointer-events:auto;
+      background:rgba(8,8,20,.7);border:1px solid rgba(255,255,255,.15);
+      border-radius:20px;padding:6px 14px;color:rgba(232,224,208,.5);
+      font-size:11px;letter-spacing:1px;cursor:pointer;font-family:inherit;
+      transition:color .2s,border-color .2s;
+    }
+    #gt-skip-btn:hover{color:rgba(232,224,208,.8);border-color:rgba(255,255,255,.3)}
+    /* 步骤⑤专属挪位（qa-reviewer第六轮CONFIRMED修复）——#gt-skip-btn默认
+       top:60px;right:14px跟 #hud 右上角的 #hud-task-btn 所在行完全重叠
+       （#hud 是 top:48px+10px padding，#gt-overlay z-index 800 远高于
+       #hud 的 z-index 50），真机 elementFromPoint() 实测这块区域点击
+       永远命中 #gt-skip-btn，任务按钮被完全盖住——不管是不是步骤⑤（有没有
+       .gt-hud-attn高亮）。步骤⑤（_showTaskStep()）需要用户真的点到
+       #hud-task-btn，因此只在这一步把跳过按钮挪到左下角（水平上跟底部居中
+       的 #wx-maint-toolbar 明确分开，垂直上跟顶部 #hud 明确分开），跳过
+       功能本身不受影响；其它步骤不涉及点击HUD区域，维持原位置不改，缩小
+       改动范围。ID+class 组合选择器特异性高于上面纯ID的基础规则，也高于
+       移动端媒体查询里同样纯ID的 #gt-skip-btn 规则，因此在桌面/移动端都
+       生效，且移动端媒体查询里没有覆盖 position 相关属性，不会互相打架。 */
+    #gt-skip-btn.gt-skip-btn-clear{
+      top:auto; right:auto;
+      left:14px; bottom:calc(20px + env(safe-area-inset-bottom,0px));
+    }
+    #gt-hint-bar{
+      /* bottom:calc(86px+安全区)（2026-08-23 qa-reviewer第三轮PLAUSIBLE③
+         修复，此前是固定52px）——#wx-maint-toolbar固定占据屏幕底部约
+         20-72px（52px高度+bottom:20px+env(safe-area-inset-bottom)），旧值
+         52px会让这条提示条跟工具条重叠约20px，而提示条内容恰好是"拖动
+         下方工具"，视觉上正好盖住它说的"下方工具"。86px留出约14px间隙，
+         同样叠加env(safe-area-inset-bottom)保持这个间隙在有底部安全区
+         （刘海屏/Home指示条）的真机上不随安全区大小变化而重新重叠。 */
+      position:absolute;bottom:calc(86px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);
+      display:flex;align-items:center;gap:8px;max-width:86vw;
+      background:rgba(8,8,20,.88);border:1px solid rgba(201,169,110,.28);
+      border-radius:50px;padding:13px 22px;
+      font-size:13px;color:rgba(232,224,208,.82);letter-spacing:.5px;
+      text-align:center;pointer-events:none;white-space:nowrap;
+      animation:hint-breathe 2.2s ease-in-out infinite;
+    }
+    #gt-hint-bar.hidden{display:none}
+    /* 高亮环——每帧用 getBoundingClientRect() 跟踪目标热点(dotEl)的屏幕
+       坐标定位（js/gameplay-tutorial.js::_startRingTracking()），position:
+       fixed 不受 #gt-overlay 影响，z-index高于#gt-overlay的dim背景，
+       所以不会被那层半透明黑色压暗。 */
+    #gt-target-ring{
+      position:fixed;left:0;top:0;width:56px;height:56px;margin-left:-28px;margin-top:-28px;
+      border-radius:50%;border:2px solid rgba(201,169,110,.85);
+      box-shadow:0 0 20px rgba(201,169,110,.5);
+      pointer-events:none;z-index:801;
+      animation:gt-ring-pulse 1.3s ease-in-out infinite;
+    }
+    #gt-target-ring.hidden{display:none}
+    @keyframes gt-ring-pulse{
+      0%,100%{transform:scale(1);opacity:.75}
+      50%{transform:scale(1.25);opacity:1}
+    }
+    /* 居中卡片——"五行均衡"提示 / "学会了"成功提示 / 任务入口引导确认，
+       三个阶段共用同一套DOM（内容/按钮文案由JS按阶段替换），跟
+       #tutorial-modal同款视觉规格但DOM独立，不共享状态。 */
+    #gt-modal{
+      position:absolute;top:50%;left:50%;
+      transform:translate(-50%,-50%) scale(0.94);
+      opacity:0;pointer-events:none;
+      width:min(380px,88vw);
+      background:rgba(8,8,20,.97);
+      border:1px solid rgba(201,169,110,.22);
+      border-radius:20px;padding:26px 22px 20px;
+      text-align:center;
+      transition:opacity .26s ease,transform .26s ease;
+    }
+    #gt-modal.gt-modal-show{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
+    #gt-modal-content{font-size:13px;color:rgba(232,224,208,.85);line-height:1.9;margin-bottom:18px}
+    #gt-modal-btn{
+      width:100%;padding:12px;border:none;border-radius:12px;
+      background:linear-gradient(135deg,#c9a96e,#a07840);
+      color:#1a1000;font-size:13px;font-weight:700;letter-spacing:2px;
+      cursor:pointer;font-family:inherit;transition:opacity .2s;
+    }
+    #gt-modal-btn:hover{opacity:.88}
+
     /* ══ 调试面板 ══ */
     #debug-panel{position:fixed;bottom:80px;right:8px;z-index:9500}
     #debug-panel.hidden{display:none}
@@ -1081,6 +1219,26 @@
       justify-content:center;
     }
     #tutorial-skip-btn{ padding:8px 14px; min-height:36px; display:flex; align-items:center; }
+
+    /* #gt-hint-bar（js/gameplay-tutorial.js底部提示条）：跟#tutorial-hint-bar
+       是完全独立的两套DOM（见该元素CSS定义处头部注释），但共用同一套
+       "left:50%+translateX(-50%)+white-space:nowrap"基础规则，因此在窄屏下
+       会重蹈#tutorial-hint-bar 2026-08-11修过的同一个坑——shrink-to-fit
+       可用宽度只有包含块的50%，max-width:86vw根本没机会生效，长文案（尤其
+       英文"👇 Drag the tool below onto the highlighted marker"）被截断到
+       屏幕外。2026-08-23 qa-reviewer第三轮CONFIRMED①修复：写法照抄
+       #tutorial-hint-bar同款override（left/right对称留白撑开包含块+去掉
+       translateX+允许换行）。 */
+    #gt-hint-bar{
+      left:6vw; right:6vw; transform:none;
+      max-width:88vw;
+      padding:11px 18px;
+      font-size:12.5px;
+      white-space:normal;
+      text-align:center;
+      justify-content:center;
+    }
+    #gt-skip-btn{ padding:8px 14px; min-height:36px; display:flex; align-items:center; }
 
     /* 2026-08-23 qa-reviewer复查修复（CONFIRMED②）：新增的"今日运势"
        #hud-liuri-btn 把"任务"#hud-task-btn 挤出375px手机屏幕外——#hud-right
@@ -1273,6 +1431,22 @@
   </div>
 </div>
 
+<!-- ══ 玩法引导覆盖层（js/gameplay-tutorial.js，2026-08-23新增）══
+     独立于命盘引导 #tutorial-overlay——教真实玩法机制：拖拽维护五行热点+
+     每日任务入口。两套引导互斥不会同时激活，但DOM/状态各自独立管理，
+     样式定义见上方 index.html CSS「玩法引导覆盖层」区块。 -->
+<div id="gt-overlay" class="hidden">
+  <button id="gt-skip-btn" onclick="GameplayTutorial.skip()" data-i18n="tutorial.skip_top">跳过引导 ×</button>
+  <div id="gt-hint-bar" class="hidden"></div>
+  <div id="gt-modal">
+    <div id="gt-modal-content"></div>
+    <button id="gt-modal-btn"></button>
+  </div>
+</div>
+<!-- 高亮环：跟踪目标五行热点屏幕坐标，独立于#gt-overlay（position:fixed
+     自身定位，不受父级影响），由 js/gameplay-tutorial.js 直接控制显隐 -->
+<div id="gt-target-ring" class="hidden"></div>
+
 <!-- ══ 调试面板（测试版专用）══ -->
 <div id="debug-panel" class="hidden">
   <button id="debug-toggle-btn" onclick="App._debug().toggle()">🐛</button>
@@ -1370,8 +1544,16 @@
       <div id="hud-spirit">✦ 0 灵气</div>
       <button class="audio-btn" id="btn-bgm" title="背景音乐" onclick="App.toggleBgm(this)">♪</button>
       <button class="audio-btn" id="btn-sfx" title="音效"     onclick="App.toggleSfx(this)">🔔</button>
-      <!-- 测试模式：重玩引导按钮（醒目样式，方便测试） -->
-      <button id="hud-tutorial-restart" onclick="App.restartTutorial()" style="background:rgba(201,169,110,.18);border:1px solid rgba(201,169,110,.5);border-radius:10px;padding:4px 10px;color:#c9a96e;font-size:11px;letter-spacing:.5px;cursor:pointer;white-space:nowrap">🧭 重玩引导</button>
+      <!-- 「认识命盘」引导常驻入口（2026-08-23转正为正式生产环境入口，不再
+           是测试专属）——任何时候点击都可重玩，未完成过时持续柔和呼吸提示
+           （.hud-btn-glow，由 js/main-new.js::_refreshTutorialHudGlow() 按
+           localStorage 完成标记动态加/removeClass），完成后动画消失但按钮
+           不消失。 -->
+      <button id="hud-tutorial-restart" onclick="App.restartTutorial()" style="background:rgba(201,169,110,.18);border:1px solid rgba(201,169,110,.5);border-radius:10px;padding:4px 10px;color:#c9a96e;font-size:11px;letter-spacing:.5px;cursor:pointer;white-space:nowrap">🧭 <span data-i18n="hud.tutorial_restart">重玩引导</span></button>
+      <!-- 「怎么玩」玩法引导常驻入口（js/gameplay-tutorial.js，2026-08-23
+           新增）——教真实游戏机制：五行拖拽维护+每日任务入口，跟上面的
+           命盘引导是两条独立流程/独立持久化标记，同款呼吸提示惯例。 -->
+      <button id="hud-gameplay-btn" onclick="App.startGameplayTutorial()">🎮 <span data-i18n="hud.gameplay_tutorial">玩法教学</span></button>
       <button id="hud-liuri-btn" onclick="App.showLiuri()">
         <span data-i18n="hud.liuri">今日运势</span>
       </button>
@@ -1504,6 +1686,11 @@
 <script src="js/bazi-analysis.js"></script>
 <script src="js/analysis.js"></script>
 <script src="js/tutorial.js"></script>
+<!-- gameplay-tutorial.js 依赖 WuxingScene/WuxingIssues/WuxingMaintenance
+     （均已在上方加载完毕）+ typeof防御引用 Tutorial/IslandLoader，运行时
+     调用，不要求脚本加载顺序排在 tutorial.js 之前/之后（跟 wuxing-drag.js
+     头部注释同一原则），紧邻 tutorial.js 之后只是逻辑分组，方便阅读。 -->
+<script src="js/gameplay-tutorial.js"></script>
 <script src="js/tasks.js"></script>
 <script src="js/main-new.js"></script>
 <script src="js/settings.js"></script>

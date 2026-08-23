@@ -394,7 +394,59 @@ const WuxingMaintenance = (() => {
    * 本来就已经用 `result && typeof result.then === 'function'` 做了双重兼容
    * 处理，不需要改。
    */
+  // ── 公开：maintain() 薄包装——事件广播（2026-08-23新增）──────────────
+  // 真正的维护逻辑在 _maintainImpl()（原 maintain() 函数体，未改一行）。这里
+  // 只加一层"结果广播"：无论调用方是 js/wuxing-drag.js（拖拽命中）还是
+  // js/main-new.js::_maintainWuxingIssue()（面板"维护一下，赚N灵气"按钮），
+  // 两条路径都唯一收敛到这一个函数，在这里广播一次就能同时覆盖两条路径——
+  // 不需要在每个调用方各自记得发事件（qa-reviewer 2026-08-23 CONFIRMED①指出
+  // 面板路径漏发事件导致 js/gameplay-tutorial.js 收不到完成信号永久卡死，
+  // 根因就是"两条路径各自维护一份事件派发"这个模式本身不可靠，下沉到这里
+  // 才是治本）。
+  //   成功 → 'wuxingMaintainSuccess' { wx, direction, spiritEarned }
+  //   失败 → 'wuxingMaintainFailed'  { wx, direction, reason }
+  // 事件形状与 js/wuxing-drag.js 此前自行派发的 wuxingMaintainSuccess 完全
+  // 一致（spiritEarned 字段名不变），下游监听方（js/gameplay-tutorial.js）
+  // 不需要跟着改。新增的 wuxingMaintainFailed 供 gameplay-tutorial.js 在
+  // "等待拖拽"步骤命中每日限额等失败原因时，不必死等超时也能立即给出兜底
+  // 反馈（见该文件 _listenForSuccess() 内一并注册的失败监听 + _onMaintainFailure()）。
   async function maintain(baziData, wx, direction, severity) {
+    // 2026-08-23 qa-reviewer第三轮PLAUSIBLE⑤修复：此前 try/catch 只包住了
+    // dispatchEvent 那部分，如果 `await _maintainImpl(...)` 本身 reject
+    // （抛异常），maintain() 会直接 reject、既不发 wuxingMaintainSuccess
+    // 也不发 wuxingMaintainFailed，js/gameplay-tutorial.js 只能干等60秒
+    // 超时兜底才能恢复。实际触发概率低（_maintainImpl 内部唯一的await已经
+    // 被2026-08-22的修复包在try/catch里返回{error}不会真的throw），但既然
+    // 这个包装层自称是"唯一的事件广播点"，异常路径也应该广播失败信号——
+    // 改成把 _maintainImpl 也纳入try，catch里补发失败事件后重新throw，
+    // 保持"reject就是reject"的原有调用方契约不变（不吞异常，只是在异常
+    // 冒泡之前补一次广播）。
+    let result;
+    try {
+      result = await _maintainImpl(baziData, wx, direction, severity);
+    } catch (e) {
+      try {
+        window.dispatchEvent(new CustomEvent('wuxingMaintainFailed', {
+          detail: { wx, direction, reason: 'exception' },
+        }));
+      } catch (e2) { /* 广播失败不应该掩盖原始异常 */ }
+      throw e;
+    }
+    try {
+      if (result && result.ok) {
+        window.dispatchEvent(new CustomEvent('wuxingMaintainSuccess', {
+          detail: { wx, direction, spiritEarned: result.spiritEarned },
+        }));
+      } else {
+        window.dispatchEvent(new CustomEvent('wuxingMaintainFailed', {
+          detail: { wx, direction, reason: result ? result.reason : 'unknown' },
+        }));
+      }
+    } catch (e) { /* 广播失败不应该影响维护本身已经成功/失败的结果 */ }
+    return result;
+  }
+
+  async function _maintainImpl(baziData, wx, direction, severity) {
     const baziKey = _baziKeyOf(baziData);
     if (!baziKey || !wx || !_validDirection(direction)) return { ok: false, reason: 'invalid_params' };
 
