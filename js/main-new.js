@@ -103,6 +103,23 @@ const App = (() => {
       ['task-panel','zone-panel','report-modal','liuri-modal','product-lightbox'].forEach(p => {
         document.getElementById(p)?.classList.remove('open');
       });
+      // 2026-08-23 qa-reviewer CONFIRMED③修复：js/gameplay-tutorial.js 的
+      // DOM覆盖层（#gt-overlay/#gt-modal内嵌其中/#gt-target-ring）不是用
+      // 上面这套 'open' class 控制显隐的，是 'hidden' class（#gt-target-ring
+      // 是独立于 #gt-overlay 的兄弟节点、position:fixed 自身定位，不会随
+      // #gt-overlay 一起隐藏，需要单独清理），照抄上面的写法会漏清。同时
+      // 必须调用 GameplayTutorial.forceStop() 重置其内部 _active 标记——
+      // 否则玩法引导进行中换屏（比如设置面板"修改出生信息"）后，DOM虽然
+      // 隐藏了，但 _active 仍卡在 true，本次会话内HUD「玩法教学」按钮再也
+      // 无法重新触发（start() 开头 `if (!baziData || _active) return;` 会
+      // 早退），只能刷新页面恢复。forceStop() 内部本身也会隐藏这几个DOM，
+      // 这里显式再隐藏一次是双重保险（forceStop() 在 !_active 时是no-op，
+      // 不会重复清理出问题）。
+      if (typeof GameplayTutorial !== 'undefined' && typeof GameplayTutorial.forceStop === 'function') {
+        GameplayTutorial.forceStop();
+      }
+      document.getElementById('gt-overlay')?.classList.add('hidden');
+      document.getElementById('gt-target-ring')?.classList.add('hidden');
     }
   }
 
@@ -764,6 +781,12 @@ const App = (() => {
       : false;
     Debug.log(`用户状态：${_isNewUser ? '新用户' : '旧用户'}`);
 
+    // HUD"重玩引导"/"玩法教学"两个按钮的呼吸提示动画状态——依赖 _baziData/
+    // _gender（命盘引导按hash判断完成与否），每次岛屿就绪（含切换到新命盘）
+    // 都要重算一次；DOMContentLoaded 时也会调用一次兜底初始状态，见文件
+    // 底部 _refreshTutorialHudGlow() 定义处注释。
+    _refreshTutorialHudGlow();
+
     // 填充报告（根据新老用户决定是否附加"探索"按钮）
     const reportOpts = _isNewUser ? {
       isNewUser:      true,
@@ -833,6 +856,26 @@ const App = (() => {
   // ── 新用户：开始引导 ─────────────────────────────────────
   function _startTutorial() {
     closeReport();
+    // 2026-08-23 qa-reviewer第四轮CONFIRMED（C-A）修复：命盘引导的第三个
+    // 入口——报告弹窗"开始探索我的命盘 →"按钮（js/analysis.js约743行渲染，
+    // 由 _onIslandReady()/restartTutorial() 里的 reportOpts.onStartExplore
+    // 绑定到这里）此前完全没有跟玩法引导互斥的守卫。restartTutorial()/
+    // startGameplayTutorial()两处qa-reviewer第三轮已经加过同款互斥（见那两处
+    // 定义处注释），唯独这条路径漏了——真机复现：玩法引导进行中，点岛屿
+    // 底部常驻的"查看完整报告"（#gt-overlay是pointer-events:none，点得到），
+    // 报告在其上打开，再点报告里"开始探索我的命盘→"，命盘引导会跟玩法引导
+    // 同时Active，两层z-index:800遮罩叠加，且玩法引导后续_showTaskStep()/
+    // _cleanup()会无条件setControlsEnabled(true)，把命盘引导锁的相机控制
+    // 误开。
+    // 采用方案B（forceStop()而非早退）：用户点"开始探索"是明确选择要走
+    // 命盘引导，简单早退会让按钮看起来没反应、体验差；forceStop()是"不
+    // 标记完成、纯清理"语义（不写gameplay_tutorial_done），玩法引导正常
+    // 让位。showReport()现在也会在打开报告这一步调用一次forceStop()（见
+    // 该函数定义处注释，避免引导UI糊在报告上），这里再调用一次是防御性
+    // 收尾——forceStop()对已停止状态是no-op，双重调用无副作用。
+    if (typeof GameplayTutorial !== 'undefined' && typeof GameplayTutorial.forceStop === 'function') {
+      GameplayTutorial.forceStop();
+    }
     if (typeof Tutorial !== 'undefined') {
       Debug.log('Tutorial.start()');
       Tutorial.start(_baziData, _gender);
@@ -859,9 +902,20 @@ const App = (() => {
     Debug.log('用户跳过引导，进入自由模式');
   }
 
-  // ── 公开：重置并重玩引导（测试模式 HUD 按钮）────────────
+  // ── 公开：重置并重玩「认识命盘」引导（2026-08-23转正为正式生产环境
+  //    入口——此前注释写"测试模式"，现在 #hud-tutorial-restart 是所有用户
+  //    随时可点的常驻HUD入口，不再是测试专属；未完成过时按钮持续柔和呼吸
+  //    提示，完成后动画消失但按钮不消失，仍可随时点击重玩，见
+  //    _refreshTutorialHudGlow() 定义处注释）────────────────────────
   function restartTutorial() {
     if (!_baziData) return;
+    // 2026-08-23 qa-reviewer第三轮 CONFIRMED②修复：玩法引导（GameplayTutorial）
+    // 进行中时不打断——此前完全没有守卫，可以在#gt-overlay半透明遮罩之上
+    // 再叠一层#tutorial-overlay，两层800层级遮罩叠加、且会打断玩法引导内部
+    // 的相机锁定/监听器状态但不清理它们（GameplayTutorial自己的_cleanup()
+    // 不会被这条路径触发），造成状态残留。守卫写法同 _openZonePanel() 里
+    // 已有的同款互斥判断。
+    if (typeof GameplayTutorial !== 'undefined' && typeof GameplayTutorial.isActive === 'function' && GameplayTutorial.isActive()) return;
     // 清除 localStorage 引导完成标记（让 isDone() 返回 false）
     try {
       const p = _baziData.pillars || {};
@@ -888,6 +942,59 @@ const App = (() => {
     Analysis.buildReport(_baziData, document.getElementById('report-body'), reportOpts);
     showReport();
     Debug.log('引导重置，报告重新展示');
+    // 引导标记被清除，HUD按钮应该立刻恢复呼吸提示——这里没有经过
+    // Tutorial.skip()/_complete() 那条会自动广播 'tutorialDone' 事件的路径
+    // （见 js/tutorial.js::_markDone()），手动清除hash后需要手动刷新一次。
+    _refreshTutorialHudGlow();
+  }
+
+  // ── 公开：启动「怎么玩」玩法引导（2026-08-23新增）───────────────
+  // HUD「🎮 玩法教学」按钮 onclick 用。任意时候可手动重玩，不受
+  // GameplayTutorial.isDone() 全局完成标记限制——跟上面 restartTutorial()
+  // 同一UX惯例：已完成不影响随时手动重玩。
+  function startGameplayTutorial() {
+    if (!_baziData) return;
+    // 2026-08-23 qa-reviewer第三轮 CONFIRMED②修复：命盘引导（Tutorial）
+    // 进行中时不进入——此前完全没有守卫，两套引导的#tutorial-overlay/
+    // #gt-overlay（同为z-index:800）会叠在一起，且GameplayTutorial结束时
+    // 无条件调用IslandLoader.setControlsEnabled(true)，会把命盘引导特意
+    // 锁定的相机控制重新打开；如果这次玩法引导走"五行均衡"降级分支还会
+    // 错误地把gameplay_tutorial_done标记成已完成——即便用户根本没有主动
+    // 选择开始玩法引导。静默忽略这次点击（不打扰命盘引导正在进行的用户，
+    // 命盘引导完成后CTA本来就会问用户是否要继续玩法引导，用户随时可以
+    // 再点HUD按钮补开）。
+    if (typeof Tutorial !== 'undefined' && Tutorial.isActive()) return;
+    if (typeof GameplayTutorial !== 'undefined' && typeof GameplayTutorial.start === 'function') {
+      GameplayTutorial.start(_baziData);
+    }
+  }
+
+  // ── HUD"重玩引导"/"玩法教学"两个按钮的呼吸提示动画（2026-08-23新增）──
+  // 只要对应 localStorage 完成标记不存在，按钮持续柔和呼吸光晕
+  // （.hud-btn-glow，纯CSS keyframe，见 index.html 对应样式定义处注释）；
+  // 一旦真正完成过一次（不管从报告按钮走完、还是从HUD按钮重玩走完），
+  // 动画消失，按钮保留但恢复静态样式，用户仍可随时点击重玩。
+  // 调用时机：①DOMContentLoaded 时兜底初始化一次（此时 _baziData 还是
+  // null，命盘引导按钮先按"未完成"处理，等 _onIslandReady() 里真正算出
+  // hash 后会立刻被下面②覆盖成准确状态）；②_onIslandReady()（含切换到
+  // 新命盘）里每次重算；③监听 tutorialDone/gameplayTutorialDone 两个事件
+  // （js/tutorial.js::_markDone()、js/gameplay-tutorial.js::_markDone()
+  // 各自广播）实时刷新，不需要轮询。
+  function _refreshTutorialHudGlow() {
+    const baziBtn = document.getElementById('hud-tutorial-restart');
+    if (baziBtn) {
+      const baziDone = (typeof Tutorial !== 'undefined' && _baziData)
+        ? Tutorial.isDone(_baziData, _gender)
+        : true; // 命盘数据还没就绪时先不呼吸，避免闪一下又灭
+      baziBtn.classList.toggle('hud-btn-glow', !baziDone);
+    }
+    const gameplayBtn = document.getElementById('hud-gameplay-btn');
+    if (gameplayBtn) {
+      const gameplayDone = (typeof GameplayTutorial !== 'undefined' && typeof GameplayTutorial.isDone === 'function')
+        ? GameplayTutorial.isDone()
+        : true;
+      gameplayBtn.classList.toggle('hud-btn-glow', !gameplayDone);
+    }
   }
 
   function _refreshSpirit() {
@@ -1007,6 +1114,22 @@ const App = (() => {
   }
 
   function showReport() {
+    // 2026-08-23 qa-reviewer第四轮CONFIRMED（C-A）关联修复：报告是独立的
+    // 全屏内容展示层（#report-modal z-index:600），比玩法引导覆盖层
+    // （#gt-overlay及其子元素gt-modal/gt-target-ring/gt-hint-bar，
+    // z-index:800/801）低——若玩法引导正处于hotspot/waiting阶段，打开
+    // 报告后引导的高亮环/提示条会视觉穿透叠在报告内容之上，看起来像"报告
+    // 没打开成功"；此外报告里"开始探索我的命盘→"按钮会触发_startTutorial()
+    // 进而启动命盘引导（该函数自己也已经加了同款forceStop()兜底，见其
+    // 定义处注释）。这里在打开报告这个动作本身就结束玩法引导（不是"报告
+    // 本身是引导"，而是报告这类全屏内容展示会遮挡/打断玩法引导的可见提示，
+    // 与其让它在报告背后静默继续、造成上述视觉穿透与后续潜在双活状态，
+    // 不如在用户主动打开报告时就让玩法引导让位）。forceStop()是"不标记
+    // 完成、纯清理"语义，不会误写gameplay_tutorial_done，用户随时可以再点
+    // HUD「🎮 玩法教学」重新开始。
+    if (typeof GameplayTutorial !== 'undefined' && typeof GameplayTutorial.forceStop === 'function') {
+      GameplayTutorial.forceStop();
+    }
     document.getElementById('report-modal')?.classList.add('open');
     document.getElementById('auth-bar')?.classList.add('hidden');
     AudioManager.playSfx('report_open');
@@ -1746,6 +1869,23 @@ const App = (() => {
     // 引导激活期间，标签点击由 Tutorial 接管，此处直接返回（"查看完整详解"
     // 走 force=true 绕开这道 guard）
     if (!force && typeof Tutorial !== 'undefined' && Tutorial.isActive()) return;
+    // 2026-08-23 qa-reviewer CONFIRMED①修复：玩法引导（GameplayTutorial）
+    // 进行中同理要挡住面板打开——它高亮的正是一个五行维护热点，引导预期的
+    // 操作是"拖拽工具到热点"，不是"点热点打开面板→点面板里的按钮"。之前
+    // 没挡，用户点高亮热点会正常打开面板，点面板"维护一下，赚N灵气"按钮
+    // 也能维护成功、灵气到账，但走的是引导完全没监听的另一条路径，导致
+    // 引导永远收不到完成信号、卡在"等待拖拽"步骤，且当天免费额度已被这次
+    // 面板维护用掉，用户再回去拖拽会被拒绝，引导教的操作变得永远做不成功。
+    // 不区分 force：GameplayTutorial 自己不使用 force 参数（那是 Tutorial
+    // "查看完整详解"按钮专属的绕过通道，语义与 GameplayTutorial 无关）。
+    if (typeof GameplayTutorial !== 'undefined' && typeof GameplayTutorial.isActive === 'function' && GameplayTutorial.isActive()) {
+      // qa-reviewer第三轮PLAUSIBLE②修复：guard挡住面板打开之前，给用户一个
+      // 明确的"点了但需要换个操作"反馈（摇晃+toast），而不是让用户以为点击
+      // 失效——只在点的正是当前引导目标热点时才提示，见
+      // GameplayTutorial.notifyBlockedClick() 定义处注释。
+      if (typeof GameplayTutorial.notifyBlockedClick === 'function') GameplayTutorial.notifyBlockedClick(zoneKey);
+      return;
+    }
 
     const panel   = document.getElementById('zone-panel');
     const content = document.getElementById('zone-panel-content');
@@ -1854,6 +1994,14 @@ const App = (() => {
       // 灵气文字
       _refreshSpirit();
     });
+
+    // ── 引导完成状态刷新：命盘引导/玩法引导任一完成时，HUD对应按钮的
+    //    呼吸提示动画应立即消失（见 _refreshTutorialHudGlow() 定义处注释）。
+    //    先兜底跑一次（此时 _baziData 通常还是 null，命盘引导按钮按"未完成"
+    //    处理），_onIslandReady() 里真正拿到命盘数据后会再刷新一次准确状态。
+    window.addEventListener('tutorialDone', _refreshTutorialHudGlow);
+    window.addEventListener('gameplayTutorialDone', _refreshTutorialHudGlow);
+    _refreshTutorialHudGlow();
   });
 
   // ── 公开接口 ──────────────────────────────────────────────
@@ -1864,7 +2012,8 @@ const App = (() => {
     toggleBaziTable, toggleTaskPanel,
     closeZonePanel, showReport, closeReport,
     toggleBgm, toggleSfx,
-    restartTutorial,   // 测试模式 HUD 用
+    restartTutorial,   // HUD"重玩引导"按钮用（2026-08-23转正为正式生产环境入口）
+    startGameplayTutorial, // HUD"玩法教学"按钮用（2026-08-23新增）
     viewTutorialDetail, // 引导Modal"查看完整详解"按钮用
     redeemWuxingProduct: _redeemWuxingProduct, // wxmaint面板"兑换"按钮 onclick 用
     instantFixWuxingIssue: _instantFixWuxingIssue, // wxmaint面板"②瞬间调理"按钮 onclick 用

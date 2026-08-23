@@ -224,6 +224,10 @@ const Tutorial = (() => {
     setTimeout(() => {
       _cleanup();
       _showToast('✦ 命盘探索完成！随时点击标识深入了解 ✦');
+      // 2026-08-23新增：命盘引导（"认识命盘"）→ 玩法引导（"怎么玩"）衔接。
+      // 可跳过CTA，不是强制弹窗——不点/关掉完全不影响正常使用，见
+      // _showGameplayCTA() 定义处注释。
+      _showGameplayCTA();
     }, 900);
   }
 
@@ -231,6 +235,52 @@ const Tutorial = (() => {
     if (_baziHash) {
       try { localStorage.setItem('tutorial_done_' + _baziHash, '1'); } catch(e) {}
     }
+    // 2026-08-23新增：供 js/main-new.js 监听刷新 HUD"重玩引导"按钮的呼吸
+    // 动画（完成/跳过后都应该停止呼吸提示，两条路径都会走到这里，同一处
+    // 广播即可覆盖两种情形，不需要分别在 _complete()/skip() 里各发一次）。
+    window.dispatchEvent(new CustomEvent('tutorialDone'));
+  }
+
+  // ── 玩法引导衔接CTA（2026-08-23新增）─────────────────────
+  // 命盘引导完成后的可跳过提示卡片，独立于 #tutorial-overlay（此时已经
+  // _cleanup() 隐藏），直接挂到 document.body——跟 _showCelebration()/
+  // _showToast() 同款"动态创建+定时移除"写法。点"开始教学"才调用
+  // GameplayTutorial.start()，不点/点"以后再说"/10s无操作自动消失都不
+  // 影响正常使用。已经完成过玩法引导（全局标记，见 gameplay-tutorial.js
+  // 头部注释）的用户不再重复打扰，直接跳过不显示。
+  function _showGameplayCTA() {
+    if (typeof GameplayTutorial === 'undefined' || typeof GameplayTutorial.start !== 'function') return;
+    if (typeof GameplayTutorial.isDone === 'function' && GameplayTutorial.isDone()) return;
+
+    var t = (key, fallback) => (typeof Lang !== 'undefined') ? Lang.t(key) : fallback;
+
+    var el = document.createElement('div');
+    el.className = 'tut-gameplay-cta';
+    el.innerHTML =
+      '<div class="tut-gameplay-cta-text">' + t('tutorial.gameplay_cta_text', '🎮 想知道怎么玩吗？') + '</div>' +
+      '<div class="tut-gameplay-cta-actions">' +
+        '<button class="tut-gameplay-cta-start">' + t('tutorial.gameplay_cta_start', '开始教学') + '</button>' +
+        '<button class="tut-gameplay-cta-skip">' + t('tutorial.gameplay_cta_skip', '以后再说') + '</button>' +
+      '</div>';
+    document.body.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('tut-gameplay-cta-show'));
+
+    var autoDismissTimer = setTimeout(_dismiss, 10000);
+    function _dismiss() {
+      clearTimeout(autoDismissTimer);
+      el.classList.remove('tut-gameplay-cta-show');
+      setTimeout(() => el.remove(), 300);
+    }
+    el.querySelector('.tut-gameplay-cta-start').addEventListener('click', () => {
+      _dismiss();
+      // 2026-08-24 qa-reviewer第五轮PLAUSIBLE修复：CTA展示的10秒窗口内，
+      // 用户理论上可以重玩命盘引导（HUD🧭→报告→"开始探索"）重新把Tutorial
+      // 激活，此时点这个按钮会让两套引导同时Active——跟main-new.js里
+      // startGameplayTutorial()已有的同款守卫保持一致，这里补上。
+      if (typeof Tutorial !== 'undefined' && Tutorial.isActive && Tutorial.isActive()) return;
+      GameplayTutorial.start(_baziData);
+    });
+    el.querySelector('.tut-gameplay-cta-skip').addEventListener('click', _dismiss);
   }
 
   function _cleanup() {
