@@ -96,7 +96,11 @@ const App = (() => {
       document.getElementById(s)?.classList.toggle('hidden', s !== id);
     });
     if (id !== 'screen-island') {
-      ['task-panel','zone-panel','report-modal'].forEach(p => {
+      // 2026-08-23 qa-reviewer复查修复：新增的 #liuri-modal（今日运势弹层）
+      // 和 #product-lightbox（商品大图弹层）离岛时也要跟随既有的
+      // task-panel/zone-panel/report-modal 一并自动关闭，否则切回表单页/
+      // 加载页后再进岛，可能会看到上一次命盘残留打开的弹层。
+      ['task-panel','zone-panel','report-modal','liuri-modal','product-lightbox'].forEach(p => {
         document.getElementById(p)?.classList.remove('open');
       });
     }
@@ -1006,8 +1010,10 @@ const App = (() => {
     document.getElementById('report-modal')?.classList.add('open');
     document.getElementById('auth-bar')?.classList.add('hidden');
     AudioManager.playSfx('report_open');
-    // 完成"研读命理"任务
-    Tasks.complete('daily_read_analysis', _baziData);
+    // 2026-08-23 每日任务重构：daily_read_analysis 已被 daily_liuri_read
+    // 取代（见 js/tasks.js::TASK_DEFS 定义处注释）——"研读命理"完整报告本身
+    // 不再挂每日任务，新的"阅读流日"任务改为在 _showLiuri()（"今日运势"
+    // 面板打开时）触发，不在这里。
     _refreshTaskUI();
     _refreshSpirit();
   }
@@ -1016,6 +1022,123 @@ const App = (() => {
     document.getElementById('report-modal')?.classList.remove('open');
     document.getElementById('auth-bar')?.classList.remove('hidden');
     AudioManager.playSfx('panel_close');
+  }
+
+  // ── "今日运势"（流日AI分析，2026-08-23新增）─────────────────────────────
+  // 独立于"AI深析"完整报告（showReport()/report-modal）——是每日任务系统用
+  // 的轻量AI生成步骤，走独立端点 POST /liuri-reading（见
+  // island_service/main.py LiuriRequest/generate_liuri_reading()），不共享
+  // 缓存、不影响六步深析任何既有逻辑。BaziEngine.getLiuri()/
+  // getLiuriRelations() 用当前用户本地时间的year/month/day（不是UTC——
+  // 刻意设计，见该端点上方注释：流日干支本来就该是"用户此刻本地是哪一
+  // 天"，服务端另算UTC日期会在时区偏移窗口内错位）。
+  //
+  // _liuriToken：跟 _zonePanelToken 同一套竞态防御模式——fetch回调到达时若
+  // 用户已经关闭/重新打开过面板，令牌不一致则静默丢弃，不覆盖新内容。
+  let _liuriToken = 0;
+
+  function _showLiuri() {
+    const modal = document.getElementById('liuri-modal');
+    const body  = document.getElementById('liuri-body');
+    if (!modal || !body) return;
+    const myToken = ++_liuriToken;
+
+    modal.classList.add('open');
+    document.getElementById('auth-bar')?.classList.add('hidden');
+    AudioManager.playSfx('report_open');
+    body.innerHTML = `<div class="liuri-loading">${_wxT('liuri.loading')}</div>`;
+
+    // 打开即视为"已读"——完成"阅读流日"每日任务。Tasks.complete() 内部已有
+    // isDone()短路+服务端claim_task()幂等去重（见 js/tasks.js 该函数定义处
+    // 注释），重复打开本面板不会重复发奖，不需要在这里自己再判断一次
+    // "今天是否已经读过"。跟改造前 showReport() 对 daily_read_analysis 的
+    // 既有触发时机一致：打开面板那一刻触发，不等待下面的网络请求返回。
+    if (_baziData && typeof Tasks !== 'undefined' && typeof Tasks.complete === 'function') {
+      Tasks.complete('daily_liuri_read', _baziData).then(() => {
+        _refreshTaskUI();
+        _refreshSpirit();
+      });
+    }
+
+    if (!_baziData || typeof BaziEngine === 'undefined' || typeof BaziEngine.getLiuri !== 'function') {
+      body.innerHTML = `<div class="liuri-error">${_wxT('liuri.error')}</div>`;
+      return;
+    }
+
+    const now   = new Date();
+    const liuri = BaziEngine.getLiuri(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    if (!liuri || liuri.error) {
+      // BaziEngine._liuri() 计算失败时显式返回 error:true（刻意不兜底成一个
+      // "看起来合法"的假甲子日，见该函数定义处注释）——这里必须尊重这个
+      // 信号，不能把null/undefined的gan/zhi悄悄传给后端。
+      body.innerHTML = `<div class="liuri-error">${_wxT('liuri.error')}</div>`;
+      return;
+    }
+    const relations = (typeof BaziEngine.getLiuriRelations === 'function')
+      ? BaziEngine.getLiuriRelations(_baziData, liuri) : { shishen: '', relations: [] };
+
+    const base = (window.ISLAND_API_BASE || CONFIG.ISLAND_API_BASE || 'https://simabazi-island.onrender.com');
+    fetch(base + '/liuri-reading', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        bazi_data:     _baziData,
+        liuri,
+        relations,
+        gender:        _gender || '男',
+        birth_year:    (_birthInfo && _birthInfo.year) || 0,
+        force_refresh: false,
+      }),
+    }).then(resp => {
+      if (!resp.ok) throw new Error('backend ' + resp.status);
+      return resp.json();
+    }).then(data => {
+      if (myToken !== _liuriToken) return; // 用户已切走/关闭面板，静默丢弃
+      if (!data || !data.reading) {
+        body.innerHTML = `<div class="liuri-error">${_wxT('liuri.error')}</div>`;
+        return;
+      }
+      body.innerHTML = _renderLiuriHtml(liuri, relations, data);
+    }).catch(() => {
+      if (myToken !== _liuriToken) return;
+      body.innerHTML = `<div class="liuri-error">${_wxT('liuri.error')}</div>`;
+    });
+  }
+
+  // 渲染"今日运势"面板内容——复用 report-modal 既有的 .report-summary/
+  // .report-section 系列CSS类（视觉风格与完整报告一致，不新起一套样式），
+  // 参考本项目里其它文字内容展示面板的既有风格。
+  function _renderLiuriHtml(liuri, relations, data) {
+    const ganzhi   = `${liuri.gan || ''}${liuri.zhi || ''}`;
+    const shishen  = relations && relations.shishen ? relations.shishen : '';
+    const relList  = (relations && relations.relations) || [];
+    const relHtml  = relList.length
+      ? `<ul class="liuri-relations-list">${relList.map(r => `<li>${r.desc}</li>`).join('')}</ul>`
+      : `<div class="liuri-no-relations">${_wxT('liuri.no_relations')}</div>`;
+    return `
+      <div class="report-summary">
+        <div class="report-summary-dm">
+          <span class="report-summary-char">${ganzhi}</span>
+          <div class="report-summary-meta">
+            <div class="report-summary-label">${_wxT('liuri.ganzhi_label')}</div>
+            ${shishen ? `<div class="report-summary-sub">${_wxT('liuri.shishen_label')}：${shishen}</div>` : ''}
+          </div>
+        </div>
+        <div class="report-summary-desc">${data.reading}</div>
+      </div>
+      <div class="report-section">
+        <div class="report-section-head"><span class="r-icon">☯</span>${_wxT('liuri.relations_label')}</div>
+        <div class="report-section-body">${relHtml}</div>
+      </div>
+      <div class="liuri-disclaimer">${_wxT('liuri.disclaimer')}</div>
+    `;
+  }
+
+  function _closeLiuri() {
+    document.getElementById('liuri-modal')?.classList.remove('open');
+    document.getElementById('auth-bar')?.classList.remove('hidden');
+    AudioManager.playSfx('panel_close');
+    _liuriToken++; // 使任何仍在途的fetch回调失效，不再原地写入已关闭的面板
   }
 
   // "zone-panel 会话"令牌：每次 _openZonePanel() 打开一个新面板时自增。
@@ -1131,6 +1254,125 @@ const App = (() => {
     return '💎';
   }
 
+  // ── "今日是否已经免费维护过"判定（2026-08-23新增，供_wxMaintainSectionHtml()
+  //    渲染面板HTML时提前判断，避免展示一个会被服务端拒绝的按钮）─────────
+  // 2026-08-23 qa-reviewer复查修复（CONFIRMED④）：此前这里用
+  // getState().lastMaintainedAt 的UTC日期是否等于今天UTC日期做近似判断，
+  // 注释里承认是"偏保守的近似"——但实测发现这个近似会导致真正的误判而不
+  // 只是"少一次机会"：lastMaintainedAt 是"最近一次任意类型维护动作"的
+  // 时间戳，兑换水晶（setOwnership(...,'crystal',...)）/瞬间调理
+  // （instantFix()）都会推进它。用户今天如果做过这两者之一，面板会把
+  // "维护赚灵气"主按钮误判成"今日已维护"直接禁用——而这时候 tier 也已经被
+  // 打回1（`tier>1`为false），连"不想等"的付费瞬间调理备选按钮都不会出现，
+  // 用户看到的是一个纯禁用、什么都做不了的死格子，即便他的免费维护额度
+  // 其实一次都没用过。
+  // 修复：WuxingMaintenance.getState() 现在额外暴露了 lastFreeMaintainUTCDate
+  // （maintain() 真正读来判定每日一次上限的闸门字段本身，不再是替代品），
+  // 这里改成直接比对这个字段是否等于今天的UTC日期字符串，不再用
+  // lastMaintainedAt 做这层判断。
+  function _wxTodayUTCDateStr() {
+    return new Date().toISOString().slice(0, 10);
+  }
+  function _wxFreeMaintainUsedToday(state) {
+    return !!(state && state.lastFreeMaintainUTCDate === _wxTodayUTCDateStr());
+  }
+
+  // ── "维护赚灵气"区块（2026-08-23经济模型改造新增）：tier<3时的默认调理
+  //    入口，调用 WuxingMaintenance.maintain()（不是instantFix()）——见
+  //    App.maintainWuxingIssue() 定义处注释。今日免费维护额度已用完时（见上方
+  //    _wxFreeMaintainUsedToday()）改为禁用态提示，tier>1时额外提供一个
+  //    "不想等？花N灵气立即调理"的次要按钮，作为可选备选（不是默认强制
+  //    路径，tier===1时没有真正需要调理的问题，不提供这个备选）──────────
+  function _wxMaintainSectionHtml(wx, direction, severity, tier, state) {
+    const sevArg = Number(severity) || 0;
+    const maintainedToday = _wxFreeMaintainUsedToday(state);
+
+    if (!maintainedToday) {
+      const reward = (typeof WuxingMaintenance.maintainReward === 'function')
+        ? WuxingMaintenance.maintainReward(tier, severity) : 0;
+      const btnHtml = `<button class="trait-redeem-btn" onclick="App.maintainWuxingIssue('${wx}','${direction}',${sevArg}, this)">${_wxT('wxmaint.maintain_btn', { n: reward })}</button>`;
+      return _wxSection(_wxT('wxmaint.maintain_title'), btnHtml);
+    }
+
+    // 今日已维护：主按钮禁用态提示；tier>1时额外给一个"不想等"的瞬间调理
+    // 备选（tier===1时没有真正糟糕的问题需要花钱调理，不提供这个备选）。
+    let html = `<button class="trait-redeem-btn disabled" disabled>${_wxT('wxmaint.maintain_done_today')}</button>`;
+    if (tier > 1) {
+      const spirit = UserState.getSpirit() || 0;
+      const cost   = (typeof WuxingMaintenance.instantFixCost === 'function')
+        ? WuxingMaintenance.instantFixCost(tier, severity) : 0;
+      const enough = spirit >= cost;
+      html += enough
+        ? `<button class="trait-redeem-btn secondary" onclick="App.instantFixWuxingIssue('${wx}','${direction}',${sevArg}, this)">${_wxT('wxmaint.instant_fix_alt_btn', { n: cost })}</button>`
+        : `<button class="trait-redeem-btn disabled" disabled>${_wxT('wxmaint.insufficient_btn', { n: Math.max(cost - spirit, 0) })}</button>`;
+    }
+    return _wxSection(_wxT('wxmaint.maintain_title'), html);
+  }
+
+  // ── "瞬间调理"专属区块（tier===3时唯一展示的调理入口，见
+  //    _wxmaintRedeemBlockHtml() 顶部注释）——跟改造前的②区块HTML/逻辑
+  //    完全一致，只是从内联代码抽成命名函数，供tier===3分支单独调用 ──────
+  function _wxInstantFixOnlySectionHtml(wx, direction, severity, tier) {
+    const spirit = UserState.getSpirit() || 0;
+    const cost   = (typeof WuxingMaintenance.instantFixCost === 'function')
+      ? WuxingMaintenance.instantFixCost(tier, severity) : 0;
+    const enough = spirit >= cost;
+    const sevArg = Number(severity) || 0;
+    const btnHtml = enough
+      ? `<button class="trait-redeem-btn" onclick="App.instantFixWuxingIssue('${wx}','${direction}',${sevArg}, this)">${_wxT('wxmaint.instant_fix_btn', { n: cost })}</button>`
+      : `<button class="trait-redeem-btn disabled" disabled>${_wxT('wxmaint.insufficient_btn', { n: Math.max(cost - spirit, 0) })}</button>`;
+    return _wxSection(_wxT('wxmaint.instant_fix_title'), btnHtml);
+  }
+
+  // ── 商品卡"为什么推荐这个"一句话理由（2026-08-23图文详情改造新增）──────
+  // 基于 js/products.js::RESTRAIN_SOURCE 同一份相克映射（不重新推导）：
+  // nourish方向的issue，商品五行(p.wx)等于issue的wx本身，用"同气相求"话术；
+  // restrain方向的issue，商品五行是"克制issue.wx的那个五行"，用"以克制衡"
+  // 话术。shrine_generic没有p.wx（不分五行），不生成理由行，卡片上就不展示
+  // 这一句（该商品本身在_wxmaintRedeemBlockHtml()里也走的是独立文案不依赖
+  // 这里）。
+  function _wxProductReasonText(issueWx, direction, product) {
+    if (!product || !product.wx) return '';
+    if (direction === 'nourish') {
+      return _wxT('products.reason_nourish', { wx: issueWx });
+    }
+    if (direction === 'restrain') {
+      return _wxT('products.reason_restrain', { wx: issueWx, srcWx: product.wx });
+    }
+    return '';
+  }
+
+  // ── 商品大图弹层（2026-08-23图文详情+点击放大改造新增）：点击卡片缩略图
+  //    弹出对应商品的1400px大图 + 讲解长文案（js/products.js::
+  //    PRODUCT_DEFS[i].blurb，产品成分/使用/摆放建议的真实信息，见该文件
+  //    定义处注释）。纯展示型弹层，不复用zone-panel（那套是"五行问题详情"
+  //    语义，商品图文详情是完全独立的展示内容，混进同一个面板容易在竞态
+  //    刷新时把两种内容搞混）——用一个独立的轻量 #product-lightbox
+  //    fixed层，与 #report-modal 同级挂在 body 下（见 index.html 对应
+  //    注释），点击遮罩或关闭按钮关闭。──────────────────────────────
+  function _openProductImage(productId) {
+    if (typeof Products === 'undefined' || typeof Products.getProducts !== 'function') return;
+    const product = Products.getProducts().find(p => p && p.id === productId);
+    if (!product || !product.img) return;
+    const box   = document.getElementById('product-lightbox');
+    const img   = document.getElementById('product-lightbox-img');
+    const cap   = document.getElementById('product-lightbox-caption');
+    if (!box || !img) return;
+    const lang = (typeof Lang !== 'undefined' && typeof Lang.getLang === 'function') ? Lang.getLang() : 'zh';
+    const name = (product.name && (product.name[lang] || product.name.zh)) || product.id;
+    img.src = `assets/products/full/${product.img}.jpg`;
+    img.alt = name;
+    if (cap) {
+      const blurb = (product.blurb && product.blurb.zh) || '';
+      cap.innerHTML = `<div class="product-lightbox-name">${name}</div>${blurb ? `<div class="product-lightbox-blurb">${blurb}</div>` : ''}`;
+    }
+    box.classList.add('open');
+    AudioManager.playSfx('panel_close'); // 复用既有的轻量"面板开合"音效，没有为这个新弹层专门做一条新音效
+  }
+  function _closeProductImage() {
+    document.getElementById('product-lightbox')?.classList.remove('open');
+  }
+
   // 构建 #wxmaint-redeem-slot 内嵌HTML；issue 形状同 extra：
   // {wx, direction, severity, title, narrative, action_hint}。
   // 副作用：记下 _lastWxmaintCtx 供 App.redeemWuxingProduct()/
@@ -1139,16 +1381,25 @@ const App = (() => {
   // 在文档里也标注了"纯函数"但内部一样有这层缓存副作用，是这套zone-panel
   // 渲染管线里的既有模式，不是本次新引入的例外）。
   //
-  // 第四阶段"五行经营机制"改造：状态判断从读 UserState.isWuxingIssueResolved()
-  // （第三阶段"兑换=永久resolve"二元语义）改成读
-  // WuxingMaintenance.getState(...).tier/.ownershipTier（3档tier+可持续衰减）。
-  // 四种状态分支：
+  // 2026-08-23 经济模型改造：调理入口从"tier>1时只展示付费瞬间调理"改成
+  // "tier<3（健康度未归零）时默认展示免费维护赚灵气，只有tier===3（健康度
+  // 真正到0%）才展示付费瞬间调理"——呼应产品定位"愿意花时间的靠免费维护
+  // 攒灵气，愿意花钱的出钱换省心"，付费选项此时是"我不想等"的备选，不是
+  // 默认强制路径。同时tier===3时免费拖拽维护也应该失效（js/wuxing-drag.js
+  // 领域，本文件面板逻辑与该前提保持一致——tier===3时不再暴露"维护赚灵气"
+  // 选项）。
+  //
+  // 状态判断从读 UserState.isWuxingIssueResolved()（第三阶段"兑换=永久
+  // resolve"二元语义）改成读 WuxingMaintenance.getState(...).tier/
+  // .ownershipTier（3档tier+可持续衰减）。四种状态分支：
   //   ownershipTier==='shrine' → "已巩固"静态徽标，不展示任何操作按钮（彻底
   //     退出维护循环，唯一的终态）；
-  //   tier===1 且非crystal态 → 只展示"状态良好"提示，没有任何维护紧迫感；
-  //   其余情况（tier>1，或ownershipTier==='crystal'即便当前tier恰好是1）→
-  //     展示②瞬间调理（仅tier>1时）+③④商品卡（已是crystal态时不再重复展示
-  //     水晶选项，只保留可以"更进一步"升级的神龛）。
+  //   tier<3 → 展示"维护赚灵气"入口（今日已维护过则展示禁用态+可选的
+  //     "不想等"瞬间调理备选，仅tier>1时才有意义——tier1没有真正需要调理
+  //     的问题）；
+  //   tier===3 → 只展示付费"瞬间调理"，不展示维护入口；
+  //   商品卡（③④）：tier>1 或 ownershipTier==='crystal' 时展示（tier===1
+  //     且非crystal态没有消费引导必要，避免命盘状态良好时还硬塞商品卡片）。
   function _wxmaintRedeemBlockHtml(baziData, issue) {
     issue = issue || {};
     const wx = issue.wx, direction = issue.direction;
@@ -1169,49 +1420,36 @@ const App = (() => {
       return _wxSection(_wxT('wxmaint.progress_label'), _wxBadge(_wxT('wxmaint.shrined_badge') + ' ✅', 'good') + _wxHealthBarHtml(state));
     }
 
-    // tier===1 且非水晶态：没有维护紧迫感，不展示任何兑换/调理入口——避免
-    // 在用户命盘状态本就良好时还硬塞商品卡片制造不必要的消费引导。仍然展示
-    // 健康度进度条（此时应接近满格），让用户能提前感知"还有多久会开始恶化"，
-    // 不用等真的跳档才知道——这正是本轮迭代要解决的"离散跳变缺乏互动感"问题。
-    if (tier === 1 && ownershipTier !== 'crystal') {
-      return _wxSection(_wxT('wxmaint.progress_label'), _wxBadge(_wxT('wxmaint.good_status'), 'good') + _wxHealthBarHtml(state));
-    }
-
     const sections = [];
 
-    // 水晶庇护中提示——③已购但问题仍会衰减，只是周期拉长到6天、维护动作
-    // 换皮成"消磁"（拖拽UI本身由 js/wuxing-drag.js 负责，不在本面板内）。
+    // 进度/状态徽标区块——三种口径：crystal态展示"庇护中"、tier1非crystal态
+    // 展示"状态良好"、其余（tier>1）只展示进度条本身，不套一个"状态徽标"
+    // （沿用改造前的既有取舍，见下方各分支注释）。
     if (ownershipTier === 'crystal') {
+      // 水晶庇护中提示——③已购但问题仍会衰减，只是周期拉长到6天、维护动作
+      // 换皮成"消磁"（拖拽UI本身由 js/wuxing-drag.js 负责，不在本面板内）。
       sections.push(_wxSection(_wxT('wxmaint.progress_label'), _wxBadge('💎 ' + _wxT('wxmaint.crystal_note'), 'good') + _wxHealthBarHtml(state)));
+    } else if (tier === 1) {
+      sections.push(_wxSection(_wxT('wxmaint.progress_label'), _wxBadge(_wxT('wxmaint.good_status'), 'good') + _wxHealthBarHtml(state)));
     } else {
-      // tier>1 且非crystal态：此前完全没有"改善进度"区块，用户只能看到瞬间
-      // 调理/兑换商品卡，看不到量化的健康度/倒计时——这正是本轮迭代要补的
-      // 缺口，单独补一个进度区块（不依赖上面crystal分支复用同一个_wxSection
-      // 调用，因为badge文案不同，没有第三种"状态徽标"适合套在这里，直接
-      // 展示进度条本身）。
       sections.push(_wxSection(_wxT('wxmaint.progress_label'), _wxHealthBarHtml(state)));
     }
 
-    // ② 瞬间调理：仅 tier>1 时显示，价格用 WuxingMaintenance.instantFixCost()
-    // 预览（跟 instantFix() 内部实际扣费公式是同一个函数，不会出现"面板显示
-    // 的价格"和"实际扣的钱"不一致）。
-    if (tier > 1) {
-      const spirit = UserState.getSpirit() || 0;
-      const cost   = (typeof WuxingMaintenance.instantFixCost === 'function')
-        ? WuxingMaintenance.instantFixCost(tier, issue.severity) : 0;
-      const enough = spirit >= cost;
-      const sevArg = Number(issue.severity) || 0;
-      const btnHtml = enough
-        ? `<button class="trait-redeem-btn" onclick="App.instantFixWuxingIssue('${wx}','${direction}',${sevArg}, this)">${_wxT('wxmaint.instant_fix_btn', { n: cost })}</button>`
-        : `<button class="trait-redeem-btn disabled" disabled>${_wxT('wxmaint.insufficient_btn', { n: Math.max(cost - spirit, 0) })}</button>`;
-      sections.push(_wxSection(_wxT('wxmaint.instant_fix_title'), btnHtml));
+    // 调理入口：tier<3展示"维护赚灵气"（免费，每日一次），tier===3展示付费
+    // "瞬间调理"（见 _wxMaintainSectionHtml()/_wxInstantFixOnlySectionHtml()
+    // 定义处注释）。
+    if (tier < 3) {
+      sections.push(_wxMaintainSectionHtml(wx, direction, issue.severity, tier, state));
+    } else {
+      sections.push(_wxInstantFixOnlySectionHtml(wx, direction, issue.severity, tier));
     }
 
-    // ③④ 商品卡：已经是crystal态时不再重复展示水晶选项（避免同一issue买了
-    // 第二次水晶除了多花灵气没有任何额外效果），只保留神龛（可以从crystal
-    // 态"更进一步"升级到永久巩固）；shrine分支在上面已经提前return，走不到
-    // 这里，不需要再过滤。
-    //
+    // ③④ 商品卡：tier===1且非crystal态没有消费引导必要（命盘状态良好，
+    // 避免硬塞商品卡片），tier>1或已是crystal态（可以"更进一步"升级到
+    // 神龛）才展示。已经是crystal态时不再重复展示水晶选项（避免同一issue
+    // 买了第二次水晶除了多花灵气没有任何额外效果），只保留神龛；shrine分支
+    // 在上面已经提前return，走不到这里，不需要再过滤。
+    if (tier > 1 || ownershipTier === 'crystal') {
     // 2026-08-23 五行专属水晶15款SKU改造：改用 Products.getProductsFor(wx,
     // direction) 而不是 Products.getProducts()——现在共15款crystal，颜色
     // 与(wx,direction)一一对应（见 js/products.js::getProductsFor()
@@ -1263,11 +1501,21 @@ const App = (() => {
 
       const priceLoadingLabel = _wxT('products.price_loading');
 
+      // 2026-08-23 图文详情+点击放大改造：卡片新增缩略图（点击弹出大图，
+      // 见 _openProductLightbox()）+ 一句动态生成的"为什么推荐"理由（基于
+      // 该商品五行与当前issue(wx,direction)的相生相克关系，见
+      // _wxProductReasonText() 定义处注释）。产品讲解长文案（成分/使用/
+      // 摆放建议，见 js/products.js::PRODUCT_DEFS[i].blurb）放进点击缩略图
+      // 弹出的大图弹层里展示，不塞进本就紧凑的卡片列表。
       const cardsHtml = visibleProducts.map(p => {
         const name = (p.name && (p.name[lang] || p.name.zh)) || p.id || '';
         const cost = (typeof Products.costFor === 'function' ? Number(Products.costFor(p, _profileForPricing)) : Number(p.spiritCostMYR)) || 0;
         const enough2 = spirit2 >= cost;
         const icon = _wxProductIcon(p);
+        const reason = _wxProductReasonText(wx, direction, p);
+        const imgHtml = p.img
+          ? `<img class="trait-product-thumb" src="assets/products/thumb/${p.img}.jpg" alt="${name}" loading="lazy" onclick="App.openProductImage('${String(p.id).replace(/'/g, "\\'")}')">`
+          : `<div class="trait-product-icon">${icon}</div>`;
         // pending时价格数字尚不可信——不展示可能错误的具体数字，按钮也一并
         // 禁用（enough2/差额提示同样依赖这个尚未确认的cost，一起先不展示，
         // 等下面后台补拉的getProfile()完成后原地刷新即可拿到准确值）。
@@ -1279,9 +1527,10 @@ const App = (() => {
         const priceHtml = pricePending ? priceLoadingLabel : `${cost} ${spiritLabel}`;
         return `
           <div class="trait-product-card">
-            <div class="trait-product-icon">${icon}</div>
+            ${imgHtml}
             <div class="trait-product-info">
               <div class="trait-product-name">${name}</div>
+              ${reason ? `<div class="trait-product-reason">${reason}</div>` : ''}
               <div class="trait-product-price">${priceHtml}</div>
             </div>
             ${btnHtml}
@@ -1289,6 +1538,7 @@ const App = (() => {
       }).join('');
 
       sections.push(_wxSection(_wxT('wxmaint.redeem_now'), `<div class="trait-product-list">${cardsHtml}</div>`));
+    }
     }
 
     return sections.join('');
@@ -1370,6 +1620,53 @@ const App = (() => {
       // 灵气被其它标签页/操作消耗掉"这类极端时序。
       btnEl.disabled = false;
       btnEl.textContent = originalText || _wxT('wxmaint.instant_fix_btn', { n: 0 });
+    }
+  }
+
+  // ── "维护赚灵气"按钮 onclick（2026-08-23经济模型改造新增）：调用
+  //    WuxingMaintenance.maintain()（不是instantFix()）——免费、每日一次，
+  //    成功后拿到 maintainReward(tier,severity) 算出的灵气奖励。写法完全
+  //    照抄 _instantFixWuxingIssue() 的既有风格（快照 _lastWxmaintCtx、
+  //    按钮loading态、成功后走同一个 _refreshWxmaintPanel() 竞态守卫原地
+  //    刷新、3D视觉立即切到档位1），只是换成调用 maintain()。失败原因
+  //    （daily_limit/daily_total_limit等）的用户可读文案映射已经在
+  //    js/wuxing-maintenance.js::_mapServerError() 里处理好，本函数不需要
+  //    重新解析——渲染面板时已经用 _wxFreeMaintainUsedToday() 提前判断过
+  //    "今日免费额度是否已用"，正常UI路径下不会点到一个注定失败的按钮，
+  //    这里的失败分支
+  //    主要覆盖"面板开着挂机很久、期间在别的设备/标签页已经维护过"这类
+  //    极端时序，同 _instantFixWuxingIssue() 对应分支的既有取舍一致。
+  async function _maintainWuxingIssue(wx, direction, severity, btnEl) {
+    if (typeof WuxingMaintenance === 'undefined' || typeof WuxingMaintenance.maintain !== 'function') return;
+    if (!_lastWxmaintCtx) return;
+
+    const ctxAtClick = _lastWxmaintCtx;
+    const { baziData } = ctxAtClick;
+    const originalText = btnEl ? btnEl.textContent : '';
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = _wxT('wxmaint.redeeming');
+    }
+
+    let result = null;
+    try {
+      result = await WuxingMaintenance.maintain(baziData, wx, direction, severity);
+    } catch (e) {
+      result = null;
+    }
+
+    if (result && result.ok) {
+      if (typeof WuxingScene !== 'undefined' && typeof WuxingScene.reflectTier === 'function') {
+        WuxingScene.reflectTier(wx, direction, 1);
+      }
+      _refreshWxmaintPanel(ctxAtClick);
+    } else if (btnEl) {
+      // 今日已维护过/达到每日总量上限等：还原按钮文案，让用户看到的不是
+      // 卡死在"处理中…"——具体失败原因的用户可读提示由更上层调用方决定是否
+      // 展示toast（跟 _instantFixWuxingIssue() 失败分支同一取舍，本函数不
+      // 单独弹toast，靠原地刷新面板本身的下一次渲染呈现正确状态）。
+      btnEl.disabled = false;
+      btnEl.textContent = originalText || _wxT('wxmaint.maintain_btn', { n: 0 });
     }
   }
 
@@ -1571,6 +1868,11 @@ const App = (() => {
     viewTutorialDetail, // 引导Modal"查看完整详解"按钮用
     redeemWuxingProduct: _redeemWuxingProduct, // wxmaint面板"兑换"按钮 onclick 用
     instantFixWuxingIssue: _instantFixWuxingIssue, // wxmaint面板"②瞬间调理"按钮 onclick 用
+    maintainWuxingIssue: _maintainWuxingIssue, // wxmaint面板"维护赚灵气"按钮 onclick 用（2026-08-23新增）
+    openProductImage: _openProductImage,   // 商品卡缩略图点击 onclick 用（2026-08-23图文详情改造新增）
+    closeProductImage: _closeProductImage, // 商品大图弹层关闭按钮/遮罩 onclick 用
+    showLiuri: _showLiuri,   // HUD"今日运势"按钮 onclick 用（2026-08-23新增）
+    closeLiuri: _closeLiuri, // 今日运势弹层关闭按钮 onclick 用
     // js/tasks.js::hydrateFromServer() 换设备/token刷新时静默追平任务状态后，
     // 用于刷新任务面板内容+未完成徽标数字。typeof防御与其它跨模块调用点
     // （如 _highlightWuxingTarget() 里的 App.toggleTaskPanel）同款风格。

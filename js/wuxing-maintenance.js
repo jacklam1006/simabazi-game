@@ -244,8 +244,21 @@ const WuxingMaintenance = (() => {
 
   /**
    * WuxingMaintenance.getState(baziData, wx, direction, severity)
-   * → { tier, baseTier, ownershipTier, lastMaintainedAt, createdAt, healthPercent, daysUntilDecay }
+   * → { tier, baseTier, ownershipTier, lastMaintainedAt, createdAt, healthPercent,
+   *     daysUntilDecay, lastFreeMaintainUTCDate }
    * 不存在记录时懒创建默认记录（baseTier由severity算出）并持久化。
+   *
+   * lastFreeMaintainUTCDate（2026-08-23 qa-reviewer复查修复新增，纯追加
+   * 字段，不影响既有 tier/ownershipTier 等冻结契约字段的行为）：'YYYY-MM-DD'
+   * (UTC) | null，就是 rec.lastFreeMaintainUTCDate 原样透出——maintain() 判定
+   * "今日免费额度是否已用"的真正闸门字段（见该函数 `if (rec.
+   * lastFreeMaintainUTCDate === today) return { ok:false, reason:'daily_limit' }`
+   * 这行）。之前UI层（js/main-new.js::_wxmaintRedeemBlockHtml()）没有别的
+   * 途径拿到这个字段，只能借用语义不同的 lastMaintainedAt（"最近一次任意
+   * 类型维护动作"的时间戳，兑换水晶/瞬间调理也会推进它）做"今日免费额度是否
+   * 已用"的近似判断，误把"今天买过水晶/瞬间调理过"误判成"今日免费维护已用"，
+   * 面板会显示一个连付费备选按钮都不出现的纯禁用死格子。现在直接暴露真正
+   * 的闸门字段，UI层改读这个，不再用 lastMaintainedAt 做这层判断。
    * 本函数现在是纯读取（不再需要像修复前那样为了"记住已跨越过首次周期"而
    * 写回localStorage——见 _computeTier() 定义处的CONFIRMED修复说明），
    * 唯一的写入只发生在 _getOrCreateRecord() 首次创建记录时。
@@ -323,12 +336,13 @@ const WuxingMaintenance = (() => {
     }
     return {
       tier,
-      baseTier:         rec.baseTier,
-      ownershipTier:    rec.ownershipTier,
-      lastMaintainedAt: rec.lastMaintainedAt,
-      createdAt:        rec.createdAt,
+      baseTier:                rec.baseTier,
+      ownershipTier:           rec.ownershipTier,
+      lastMaintainedAt:        rec.lastMaintainedAt,
+      createdAt:               rec.createdAt,
       healthPercent,
       daysUntilDecay,
+      lastFreeMaintainUTCDate: rec.lastFreeMaintainUTCDate,
     };
   }
 

@@ -13,20 +13,57 @@ const Tasks = (() => {
   // ── 任务定义表 ────────────────────────────────────────────
   const TASK_DEFS = {
     // 每日任务（每天重置）
+    // 2026-08-23 每日任务重构：daily_checkin 灵气从10调小到5；新增
+    // wuxing_upkeep（维护岛屿）+ daily_liuri_read（阅读流日，替换原
+    // daily_read_analysis——旧key/旧触发点已删除，不保留向后兼容）。三项
+    // 合计 5+8+12=25，是用户明确要求的每日封顶；daily_share 不计入封顶，
+    // 独立存在，spirit不变。
+    //
+    // wuxing_upkeep 的领取条件判定（"当前命盘是否有待维护的地方，若有是否
+    // 已经真实维护过至少一处"）不在前端做——服务端 claim_task() SQL函数
+    // （backend-service领域，supabase_setup.sql）已经补上 task_id=
+    // 'wuxing_upkeep' 的特判分支，权威判定+真正拒绝在服务端完成，前端只是
+    // 按现有 complete()/claim_task() 既有调用模式发起请求，不重新发明一套
+    // 判定逻辑（避免又出现一次"两处独立实现同一判定容易失去同步"）。
+    //
+    // 2026-08-23 跨agent接口细节：claim_task() 服务端签名新增了
+    // `p_bazi_key TEXT DEFAULT NULL`，且明确要求 task_id='wuxing_upkeep' 时
+    // 必须传（不传会被服务端 RAISE EXCEPTION 拒绝）——具体是在
+    // _completeViaServer() 里判断 taskId==='wuxing_upkeep' 时算出 baziKey
+    // 传给 AuthManager.claimTask(taskId, baziKey)，其余task_id不传（继续走
+    // 服务端 DEFAULT NULL 的向后兼容路径），见该函数定义处注释。
     daily_checkin: {
       type    : 'daily',
       name    : '每日登岛',
       desc    : '登入命盘查看今日运势',
       icon    : '🏝️',
-      spirit  : 10,
+      spirit  : 5,
       unlock  : null,
     },
-    daily_read_analysis: {
+    // 2026-08-23 qa-reviewer复查修复（i18n遗漏）：这两条是本批新增文案，
+    // CLAUDE.md规则7要求zh/en同步——daily_checkin/daily_share等历史条目
+    // 硬编码中文是既有欠账（不在本次修复范围），但新增条目补上
+    // nameKey/descKey，通过 getAllStatus()（面板渲染）/_showToast()（成就
+    // 弹窗）里新增的解析逻辑查表；name/desc 字段保留中文兜底，供 Lang 未
+    // 加载时的防御性回退用（同文件其它 Lang.t() 调用点的既有写法）。
+    wuxing_upkeep: {
       type    : 'daily',
-      name    : '研读命理',
-      desc    : '阅读一篇分析内容',
-      icon    : '📖',
-      spirit  : 15,
+      name    : '维护岛屿',
+      desc    : '今日打理过至少一处五行问题（或命盘已安泰）',
+      nameKey : 'tasks.wuxing_upkeep_name',
+      descKey : 'tasks.wuxing_upkeep_desc',
+      icon    : '🌿',
+      spirit  : 8,
+      unlock  : null,
+    },
+    daily_liuri_read: {
+      type    : 'daily',
+      name    : '阅读流日',
+      desc    : '查看今日运势',
+      nameKey : 'tasks.daily_liuri_read_name',
+      descKey : 'tasks.daily_liuri_read_desc',
+      icon    : '🔮',
+      spirit  : 12,
       unlock  : null,
     },
     daily_share: {
@@ -187,7 +224,19 @@ const Tasks = (() => {
   // 使用，跳过 isDone() 短路，见该函数定义处注释）——避免两处各自维护一份
   // 容易失去同步的重复实现。
   async function _completeViaServer(taskId, def, baziData) {
-    const result = await AuthManager.claimTask(taskId);
+    // 2026-08-23 跨agent接口细节（backend-service同步扩展了 claim_task() 的
+    // SQL签名）：task_id='wuxing_upkeep' 时服务端要求必传 p_bazi_key（用于
+    // 判定"这张命盘今天是否至少真实维护过一处五行问题"），不传会被服务端
+    // RAISE EXCEPTION 拒绝；其余task_id继续走服务端 `p_bazi_key TEXT
+    // DEFAULT NULL` 的向后兼容路径，不需要传——这里只在wuxing_upkeep这一个
+    // 分支算 baziKey，复用 UserState.baziKey() 唯一实现（不新写一份哈希
+    // 逻辑），baziData 缺失/计算失败时静默传 undefined，让服务端自己按
+    // "缺少命盘标识"报错（正常调用路径下 baziData 不会缺失——wuxing_upkeep
+    // 卡片只在已生成岛屿的任务面板里出现）。
+    const baziKey = (taskId === 'wuxing_upkeep' && typeof UserState !== 'undefined' && typeof UserState.baziKey === 'function' && baziData)
+      ? (() => { try { return UserState.baziKey(baziData) || undefined; } catch (e) { return undefined; } })()
+      : undefined;
+    const result = await AuthManager.claimTask(taskId, baziKey);
     if (result.error) {
       console.warn('[Tasks] claimTask失败:', result.error);
       // 2026-08-22 第八轮遗留PLAUSIBLE③配套自愈修复：如果拒绝原因是"这个
@@ -198,6 +247,17 @@ const Tasks = (() => {
       // 不满足/网络失败）维持原有行为：不在本地补发，避免绕过服务端判定。
       if (String(result.error).includes('已领取过')) {
         _syncTaskDoneLocally(taskId);
+      } else if (taskId === 'wuxing_upkeep') {
+        // 2026-08-23 qa-reviewer复查修复（CONFIRMED①）：wuxing_upkeep被服务端
+        // 按设计拒绝时（最常见原因见 supabase_setup.sql claim_task() 里
+        // "今日尚未维护任何五行问题，暂时无法领取"这条RAISE EXCEPTION），此前
+        // 这里只有console.warn，renderPanel()重渲染出一模一样的卡片——用户
+        // 体验是"点了完全没反应"，也没有任何文案告诉他"先去岛上拖拽维护一处
+        // 再来领"。复用同文件已有的 _wxToast() 给出明确指引，不用裸的
+        // console.warn打发。不区分服务端具体拒绝原因用统一文案——该任务除了
+        // "今日尚未维护"外目前没有其它已知会命中此分支的拒绝理由。
+        const msg = (typeof Lang !== 'undefined') ? Lang.t('tasks.wuxing_upkeep_rejected') : '今天还没有维护过五行问题哦，去岛上拖拽处理一处再来领取吧';
+        _wxToast(msg);
       }
       return false;
     }
@@ -355,11 +415,28 @@ const Tasks = (() => {
     }
   }
 
+  // ── 解析 TASK_DEFS 条目的展示名/描述（2026-08-23 i18n遗漏修复新增）────
+  // 本批新增的 wuxing_upkeep/daily_liuri_read 带了 nameKey/descKey（见
+  // TASK_DEFS 定义处注释），其余历史条目没有——没有key时原样回退到
+  // def.name/def.desc（历史硬编码中文，既有欠账不在本次修复范围）。集中在
+  // 这一处解析，getAllStatus()（面板卡片）和 _showToast()（成就弹窗，见
+  // _unlockAndCelebrate()）两个消费点共用，避免各自实现一份容易失去同步。
+  function _taskName(def) {
+    if (def && def.nameKey && typeof Lang !== 'undefined') return Lang.t(def.nameKey);
+    return (def && def.name) || '';
+  }
+  function _taskDesc(def) {
+    if (def && def.descKey && typeof Lang !== 'undefined') return Lang.t(def.descKey);
+    return (def && def.desc) || '';
+  }
+
   // ── 获取当前所有任务状态（用于UI渲染）────────────────────
   function getAllStatus() {
     return Object.entries(TASK_DEFS).map(([id, def]) => ({
       id,
       ...def,
+      name : _taskName(def),
+      desc : _taskDesc(def),
       done : isDone(id),
     }));
   }
@@ -604,11 +681,14 @@ const Tasks = (() => {
       opacity:0;transition:all .3s ease;min-width:240px;
     `;
     const line = rewardLine !== undefined ? rewardLine : `+${def.spirit} 灵气值${def.unlock ? ' · 解锁新装饰' : ''}`;
+    // 2026-08-23 i18n遗漏修复：这里此前直接用 def.name（TASK_DEFS里的裸中文
+    // 字段），本批新增的 wuxing_upkeep/daily_liuri_read 完成时会在英文模式下
+    // 也弹出中文成就弹窗——改用 _taskName() 统一解析入口（同 getAllStatus()）。
     toast.innerHTML = `
       <span style="font-size:24px">${def.icon}</span>
       <div>
         <div style="font-size:11px;color:#c9a96e;letter-spacing:2px;margin-bottom:2px">任务完成</div>
-        <div style="font-size:13px;color:#e8e0d0;font-weight:600">${def.name}</div>
+        <div style="font-size:13px;color:#e8e0d0;font-weight:600">${_taskName(def)}</div>
         <div style="font-size:11px;color:rgba(232,224,208,.5);margin-top:2px">${line}</div>
       </div>
     `;

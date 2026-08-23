@@ -82,22 +82,60 @@ const Products = (() => {
   // （island-decorations.js::DECOR_DEFS 的 crystal_{element}_{tier} 系列，
   // frontend-3d 领域，本次改造随附新增），兑换哪个SKU就摆哪个造型，不需要
   // 像下面shrine那样按wx/direction动态换算。
+  // 2026-08-23 图文详情+点击放大改造：新增 img/blurb 两个纯展示字段，
+  // 由 js/main-new.js::_wxmaintRedeemBlockHtml()（卡片缩略图）/
+  // _openProductImage()（点击缩略图弹出的大图+讲解文案）消费，不参与任何
+  // 兑换/扣款逻辑，删掉也不影响 redeem() 主流程。
+  //   img：对应 assets/products/thumb/{img}.jpg（520px缩略图）与
+  //     assets/products/full/{img}.jpg（1400px大图）的文件名（不含扩展名）
+  //     ——业务方提供的真实商品照片，命名跟 product id 本身对不上（如
+  //     cluster_s/cluster_l 对应素材文件名是 cluster1/cluster2，potted只有
+  //     一个SKU但素材有多张同款不同角度/信息图，这里固定选其中一张作为
+  //     该SKU的代表图），因此单独一个字段做映射，不复用decorId/id。
+  //     cluster1→_s/cluster2→_l 是"两张真实素材照片只在文件名数字上区分、
+  //     没有其它可靠线索"情况下的合理假设（业务侧报价单本身按小/大两档
+  //     报价，2张照片对应2档），如果后续业务方确认这个映射反了，只需要
+  //     调整这里的img值，不影响其它任何逻辑。shrine_generic没有对应实拍
+  //     照片（纯虚拟商品），img留undefined，UI层据此回退成emoji图标
+  //     （见 _wxProductIcon()）。
+  //   blurb.zh：真实商品图文详情里提炼出的成分/尺寸/适用场景，来自业务方
+  //     提供的原始商品图（/Users/linyu/Desktop/simabazi-game/product/wuxing/
+  //     目录，不在本仓库内，图文由总agent逐张查看后转录为文字，如实反映
+  //     图中信息，不编造图中没有的内容）。cluster类商品原始素材只有纯白/
+  //     纯色背景的产品实拍照，没有任何文字性商品信息，blurb故意留空
+  //     （UI层判断为空时不展示"为什么推荐"以外的详情段落，不是遗漏）。
+  //     刻意只做中文——见本文件底部关于双语取舍的说明。
+  //     2026-08-23 qa-reviewer复查修复：shrine_generic 没有 img（纯虚拟
+  //     商品，见上方说明），而 js/main-new.js::_openProductImage() 开头
+  //     `if (!product || !product.img) return;` 短路、卡片渲染层
+  //     （同文件 visibleProducts.map(...)）在没有img时也只渲染不可点击的
+  //     emoji图标（.trait-product-icon），不是可点击的
+  //     <img class="trait-product-thumb">——shrine_generic此前带的blurb
+  //     因此永远没有入口能展示出来，是一段打不开的死内容。项目里目前也没有
+  //     任何"神龛/请神仙"主题的素材图可以补（assets/products/{thumb,full}/
+  //     下全部是水晶实拍照），硬塞一张不相关的水晶图会误导用户，索性删掉
+  //     这段无法触达的blurb，不留死内容。
   const PRODUCT_DEFS = [
-    { id: 'crystal_gold_cluster_s', decorId: 'crystal_gold_cluster_s', kind: 'crystal', wx: '金', name: { zh: '白水晶簇(小)', en: 'Clear Quartz Cluster (S)' }, spiritCostCNY: 99,  spiritCostMYR: 68  },
-    { id: 'crystal_gold_cluster_l', decorId: 'crystal_gold_cluster_l', kind: 'crystal', wx: '金', name: { zh: '白水晶簇(大)', en: 'Clear Quartz Cluster (L)' }, spiritCostCNY: 180, spiritCostMYR: 108 },
-    { id: 'crystal_gold_potted',    decorId: 'crystal_gold_potted',    kind: 'crystal', wx: '金', name: { zh: '琼英翠微',     en: 'Luminous Jade Grove' },       spiritCostCNY: 728, spiritCostMYR: 468 },
-    { id: 'crystal_wood_cluster_s',  decorId: 'crystal_wood_cluster_s',  kind: 'crystal', wx: '木', name: { zh: '绿水晶簇(小)', en: 'Green Quartz Cluster (S)' }, spiritCostCNY: 99,  spiritCostMYR: 68  },
-    { id: 'crystal_wood_cluster_l',  decorId: 'crystal_wood_cluster_l',  kind: 'crystal', wx: '木', name: { zh: '绿水晶簇(大)', en: 'Green Quartz Cluster (L)' }, spiritCostCNY: 180, spiritCostMYR: 108 },
-    { id: 'crystal_wood_potted',     decorId: 'crystal_wood_potted',     kind: 'crystal', wx: '木', name: { zh: '幽谷晶翠',     en: 'Emerald Valley Garden' },     spiritCostCNY: 728, spiritCostMYR: 468 },
-    { id: 'crystal_water_cluster_s', decorId: 'crystal_water_cluster_s', kind: 'crystal', wx: '水', name: { zh: '蓝水晶簇(小)', en: 'Blue Quartz Cluster (S)' },  spiritCostCNY: 158, spiritCostMYR: 98  },
-    { id: 'crystal_water_cluster_l', decorId: 'crystal_water_cluster_l', kind: 'crystal', wx: '水', name: { zh: '蓝水晶簇(大)', en: 'Blue Quartz Cluster (L)' },  spiritCostCNY: 298, spiritCostMYR: 188 },
-    { id: 'crystal_water_potted',    decorId: 'crystal_water_potted',    kind: 'crystal', wx: '水', name: { zh: '冰晶莲韵',     en: 'Frost Lotus Garden' },        spiritCostCNY: 788, spiritCostMYR: 488 },
-    { id: 'crystal_fire_cluster_s',  decorId: 'crystal_fire_cluster_s',  kind: 'crystal', wx: '火', name: { zh: '紫水晶簇(小)', en: 'Amethyst Cluster (S)' },     spiritCostCNY: 228, spiritCostMYR: 138 },
-    { id: 'crystal_fire_cluster_l',  decorId: 'crystal_fire_cluster_l',  kind: 'crystal', wx: '火', name: { zh: '紫水晶簇(大)', en: 'Amethyst Cluster (L)' },     spiritCostCNY: 438, spiritCostMYR: 268 },
-    { id: 'crystal_fire_potted',     decorId: 'crystal_fire_potted',     kind: 'crystal', wx: '火', name: { zh: '紫梦流光',     en: 'Amethyst Dreamlight Garden' }, spiritCostCNY: 628, spiritCostMYR: 388 },
-    { id: 'crystal_earth_cluster_s', decorId: 'crystal_earth_cluster_s', kind: 'crystal', wx: '土', name: { zh: '黄水晶簇(小)', en: 'Citrine Cluster (S)' },      spiritCostCNY: 99,  spiritCostMYR: 68  },
-    { id: 'crystal_earth_cluster_l', decorId: 'crystal_earth_cluster_l', kind: 'crystal', wx: '土', name: { zh: '黄水晶簇(大)', en: 'Citrine Cluster (L)' },      spiritCostCNY: 180, spiritCostMYR: 108 },
-    { id: 'crystal_earth_potted',    decorId: 'crystal_earth_potted',    kind: 'crystal', wx: '土', name: { zh: '金耀晶植',     en: 'Golden Radiance Garden' },    spiritCostCNY: 528, spiritCostMYR: 328 },
+    { id: 'crystal_gold_cluster_s', decorId: 'crystal_gold_cluster_s', kind: 'crystal', wx: '金', name: { zh: '白水晶簇(小)', en: 'Clear Quartz Cluster (S)' }, spiritCostCNY: 99,  spiritCostMYR: 68,  img: 'goldcluster1' },
+    { id: 'crystal_gold_cluster_l', decorId: 'crystal_gold_cluster_l', kind: 'crystal', wx: '金', name: { zh: '白水晶簇(大)', en: 'Clear Quartz Cluster (L)' }, spiritCostCNY: 180, spiritCostMYR: 108, img: 'goldcluster2' },
+    { id: 'crystal_gold_potted',    decorId: 'crystal_gold_potted',    kind: 'crystal', wx: '金', name: { zh: '琼英翠微',     en: 'Luminous Jade Grove' },       spiritCostCNY: 728, spiritCostMYR: 468, img: 'goldpotted1',
+      blurb: { zh: '天然白水晶原石水晶簇，搭配苔藓底座与干花点缀，长约22cm×宽10cm×高10cm，适合客厅、书房、玄关、卧室等场景摆放。' } },
+    { id: 'crystal_wood_cluster_s',  decorId: 'crystal_wood_cluster_s',  kind: 'crystal', wx: '木', name: { zh: '绿水晶簇(小)', en: 'Green Quartz Cluster (S)' }, spiritCostCNY: 99,  spiritCostMYR: 68,  img: 'woodcluster1' },
+    { id: 'crystal_wood_cluster_l',  decorId: 'crystal_wood_cluster_l',  kind: 'crystal', wx: '木', name: { zh: '绿水晶簇(大)', en: 'Green Quartz Cluster (L)' }, spiritCostCNY: 180, spiritCostMYR: 108, img: 'woodcluster2' },
+    { id: 'crystal_wood_potted',     decorId: 'crystal_wood_potted',     kind: 'crystal', wx: '木', name: { zh: '幽谷晶翠',     en: 'Emerald Valley Garden' },     spiritCostCNY: 728, spiritCostMYR: 468, img: 'woodpotted1',
+      blurb: { zh: '由烟晶簇、绿萤石原石、水晶碎石铺面与仿真绿植手工搭配而成，高脚陶盆造型，直径约18cm、高约13cm，适合书房、茶室等安静角落摆放。' } },
+    { id: 'crystal_water_cluster_s', decorId: 'crystal_water_cluster_s', kind: 'crystal', wx: '水', name: { zh: '蓝水晶簇(小)', en: 'Blue Quartz Cluster (S)' },  spiritCostCNY: 158, spiritCostMYR: 98,  img: 'watercluster1' },
+    { id: 'crystal_water_cluster_l', decorId: 'crystal_water_cluster_l', kind: 'crystal', wx: '水', name: { zh: '蓝水晶簇(大)', en: 'Blue Quartz Cluster (L)' },  spiritCostCNY: 298, spiritCostMYR: 188, img: 'watercluster2' },
+    { id: 'crystal_water_potted',    decorId: 'crystal_water_potted',    kind: 'crystal', wx: '水', name: { zh: '冰晶莲韵',     en: 'Frost Lotus Garden' },        spiritCostCNY: 788, spiritCostMYR: 488, img: 'waterpotted1',
+      blurb: { zh: '蓝水晶簇搭配陶瓷高足底座与永生花材，直径15cm×高15cm，适合客厅茶几、玄关柜台、卧室床头、书房书桌摆放。' } },
+    { id: 'crystal_fire_cluster_s',  decorId: 'crystal_fire_cluster_s',  kind: 'crystal', wx: '火', name: { zh: '紫水晶簇(小)', en: 'Amethyst Cluster (S)' },     spiritCostCNY: 228, spiritCostMYR: 138, img: 'firecluster1' },
+    { id: 'crystal_fire_cluster_l',  decorId: 'crystal_fire_cluster_l',  kind: 'crystal', wx: '火', name: { zh: '紫水晶簇(大)', en: 'Amethyst Cluster (L)' },     spiritCostCNY: 438, spiritCostMYR: 268, img: 'firecluster2' },
+    { id: 'crystal_fire_potted',     decorId: 'crystal_fire_potted',     kind: 'crystal', wx: '火', name: { zh: '紫梦流光',     en: 'Amethyst Dreamlight Garden' }, spiritCostCNY: 628, spiritCostMYR: 388, img: 'firepotted1',
+      blurb: { zh: '天然水晶原石、紫水晶与粉水晶组合，火山岩纹理陶盆底座，直径15cm×高15cm，适合玄关、客厅、卧室、书房、办公桌摆放。' } },
+    { id: 'crystal_earth_cluster_s', decorId: 'crystal_earth_cluster_s', kind: 'crystal', wx: '土', name: { zh: '黄水晶簇(小)', en: 'Citrine Cluster (S)' },      spiritCostCNY: 99,  spiritCostMYR: 68,  img: 'earthcluster1' },
+    { id: 'crystal_earth_cluster_l', decorId: 'crystal_earth_cluster_l', kind: 'crystal', wx: '土', name: { zh: '黄水晶簇(大)', en: 'Citrine Cluster (L)' },      spiritCostCNY: 180, spiritCostMYR: 108, img: 'earthcluster2' },
+    { id: 'crystal_earth_potted',    decorId: 'crystal_earth_potted',    kind: 'crystal', wx: '土', name: { zh: '金耀晶植',     en: 'Golden Radiance Garden' },    spiritCostCNY: 528, spiritCostMYR: 328, img: 'earthpotted1',
+      blurb: { zh: '黄水晶、黑曜石与橄榄石组合，搭配玻璃高脚支架，直径12cm×高15cm，适合办公室、客厅、卧室、书房摆放。' } },
     // decorId 故意为 null——跟上面15款crystal不同，shrine没有一个静态、
     // 兑换哪个wx/direction都一样的3D装饰位可以指向。真实要挂载的3D造型是
     // 按 wx/direction 动态生成的 `wxmaint_shrine_{wx}_{direction}`（frontend-3d
@@ -459,5 +497,17 @@ const Products = (() => {
     return true;
   }
 
+  // 2026-08-23 图文详情双语取舍说明（CLAUDE.md"i18n完整性"要求的是"用户
+  // 可见文案"，不是不加区分的"任何文案"）：本次新增的商品讲解长文案
+  // （PRODUCT_DEFS[i].blurb，成分/尺寸/适用场景）刻意只做中文——素材来源
+  // （业务方提供的商品图）本身是中文商品详情图，文案是从图中信息转录/
+  // 提炼而来，翻译成英文需要独立的一轮内容判断（不是机械替换），且目前
+  // 产品面向的马来西亚市场华人用户比例高、中文详情本身可读；UI chrome
+  // 级别的文案（"为什么推荐这个"标题、五行相生相克那句动态理由等）已经在
+  // js/i18n.js 补齐中英文——这部分不受影响，双语完整。大图弹层的关闭按钮
+  // 沿用本项目里 #zone-panel-close/#task-panel-close/#report-close 等既有
+  // 关闭按钮的一贯写法（纯"×"符号图标，不挂文字/title，不需要i18n）。这是
+  // 明确的范围取舍，不是遗漏，未来若产品决定商品详情也要双语，需要单独
+  // 一轮针对性翻译校对，不建议机器直译长文案。
   return { getProducts, getProductsFor, redeem, isCNYRegion: _isCNYRegion, costFor: _costFor };
 })();
