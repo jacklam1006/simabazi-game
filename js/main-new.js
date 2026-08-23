@@ -1116,12 +1116,18 @@ const App = (() => {
       <div class="wxmaint-health-caption">${caption}</div>`;
   }
 
+  // 2026-08-23 五行专属水晶15款SKU改造：旧4款通用商品（amethyst/rose/
+  // obsidian/basin/clear）已被移除，改按新的 crystal_{element}_{tier} 命名
+  // 匹配对应颜色的emoji；shrine_generic不含这几个element关键字，落到默认
+  // 分支——不特意为shrine挑图标，跟改造前"未匹配到关键字统一用💎兜底"
+  // 保持同一行为，不引入视觉变化。
   function _wxProductIcon(product) {
     const key = ((product && (product.decorId || product.id)) || '').toLowerCase();
-    if (key.includes('amethyst')) return '🔮';
-    if (key.includes('rose'))     return '💗';
-    if (key.includes('obsidian')) return '⚫';
-    if (key.includes('water') || key.includes('basin') || key.includes('clear')) return '💧';
+    if (key.includes('gold'))  return '⚪';
+    if (key.includes('wood'))  return '🟢';
+    if (key.includes('water')) return '🔵';
+    if (key.includes('fire'))  return '🟣';
+    if (key.includes('earth')) return '🟡';
     return '💎';
   }
 
@@ -1205,8 +1211,16 @@ const App = (() => {
     // 第二次水晶除了多花灵气没有任何额外效果），只保留神龛（可以从crystal
     // 态"更进一步"升级到永久巩固）；shrine分支在上面已经提前return，走不到
     // 这里，不需要再过滤。
+    //
+    // 2026-08-23 五行专属水晶15款SKU改造：改用 Products.getProductsFor(wx,
+    // direction) 而不是 Products.getProducts()——现在共15款crystal，颜色
+    // 与(wx,direction)一一对应（见 js/products.js::getProductsFor()
+    // 头部注释的相克映射），如果继续用 getProducts() 会把全部15款不分青红
+    // 皂白展示给每一个五行问题，绝大多数点了会被服务端拒绝。getProductsFor()
+    // 内部已保证只返回颜色匹配的水晶（同色三档全给，供用户自选档位）+
+    // shrine_generic，不需要在这里额外按wx过滤。
     let products = [];
-    try { products = Products.getProducts() || []; } catch (e) { products = []; }
+    try { products = (Products.getProductsFor ? Products.getProductsFor(wx, direction) : Products.getProducts()) || []; } catch (e) { products = []; }
     const visibleProducts = products.filter(p => p && !(p.kind === 'crystal' && ownershipTier === 'crystal'));
 
     if (visibleProducts.length) {
@@ -1214,21 +1228,61 @@ const App = (() => {
       const spirit2      = UserState.getSpirit() || 0;
       const spiritLabel  = _wxT('products.spirit_label');
       const redeemLabel  = _wxT('products.redeem_btn');
+      // 2026-08-23 分地区定价改造：spiritCost 拆成 spiritCostCNY/spiritCostMYR，
+      // 这里是同步渲染HTML的纯函数管线（见 _wxmaintRedeemBlockHtml() 定义处
+      // 注释），不适合每次打开面板都异步现查一次phone_code——用
+      // AuthManager.getCachedProfile() 同步读取最近一次登录时预热的缓存，
+      // 未登录/缓存未预热时 Products.costFor() 兜底按MYR价展示（见该函数
+      // 定义处注释，纯UI展示预估，不影响真正扣款金额）。
+      const _profileForPricing = (typeof AuthManager !== 'undefined' && typeof AuthManager.getCachedProfile === 'function')
+        ? AuthManager.getCachedProfile() : null;
+
+      // 2026-08-23 qa-reviewer复查修复：`_profileForPricing` 为 null 有两种
+      //含义——①未登录（不存在phone_code概念，MYR兜底就是最终展示，永远
+      // 不会再变，不需要loading态）②已登录但 getProfile() 网络请求还没来得
+      // 及返回（`_onAuthChange()` 里 `_refreshUserInfoDisplay()` 预热的窗口
+      // 期很窄但真实存在）——这种情况下如果直接按MYR价展示，+86用户会短暂
+      // 看到马币低价，跟真正会扣的人民币价不一致（服务端权威扣款，不会
+      // 多扣/少扣，纯粹是展示口径困惑）。用 AuthManager.isProfilePending()
+      // 精确区分这两种null，只在②号情况展示价格loading占位，①号情况仍然
+      // 直接展示MYR兜底价（未登录用户能看到本面板——见 App.js::_revealIsland()
+      // 里未登录用户先看岛屿、稍后才弹注册提示的既有流程，不阻断展示）。
+      const pricePending = (typeof AuthManager !== 'undefined' && typeof AuthManager.isProfilePending === 'function')
+        ? AuthManager.isProfilePending() : false;
+
+      // pending期间后台补拉一次真实profile，拿到后原地刷新本面板——复用
+      // _refreshWxmaintPanel() 既有的 `ctxAtClick.token !== _zonePanelToken`
+      // 竞态守卫（见 _lastWxmaintCtx 声明处注释），用户在请求返回前已经切走/
+      // 关闭面板时静默丢弃，不会用过期数据覆盖新内容。isProfilePending()
+      // 在请求完成（不管结果是否真拿到profile这一行）后恒为false，不会
+      // 反复触发，见 js/auth.js::isProfilePending() 定义处注释。
+      if (pricePending && typeof AuthManager !== 'undefined' && typeof AuthManager.getProfile === 'function') {
+        const ctxForRefresh = _lastWxmaintCtx;
+        AuthManager.getProfile().then(() => { _refreshWxmaintPanel(ctxForRefresh); }).catch(() => {});
+      }
+
+      const priceLoadingLabel = _wxT('products.price_loading');
 
       const cardsHtml = visibleProducts.map(p => {
         const name = (p.name && (p.name[lang] || p.name.zh)) || p.id || '';
-        const cost = Number(p.spiritCost) || 0;
+        const cost = (typeof Products.costFor === 'function' ? Number(Products.costFor(p, _profileForPricing)) : Number(p.spiritCostMYR)) || 0;
         const enough2 = spirit2 >= cost;
         const icon = _wxProductIcon(p);
-        const btnHtml = enough2
-          ? `<button class="trait-redeem-btn" onclick="App.redeemWuxingProduct('${String(p.id).replace(/'/g, "\\'")}', this)">${redeemLabel}</button>`
-          : `<button class="trait-redeem-btn disabled" disabled>${_wxT('wxmaint.insufficient_btn', { n: Math.max(cost - spirit2, 0) })}</button>`;
+        // pending时价格数字尚不可信——不展示可能错误的具体数字，按钮也一并
+        // 禁用（enough2/差额提示同样依赖这个尚未确认的cost，一起先不展示，
+        // 等下面后台补拉的getProfile()完成后原地刷新即可拿到准确值）。
+        const btnHtml = pricePending
+          ? `<button class="trait-redeem-btn disabled" disabled>${priceLoadingLabel}</button>`
+          : (enough2
+            ? `<button class="trait-redeem-btn" onclick="App.redeemWuxingProduct('${String(p.id).replace(/'/g, "\\'")}', this)">${redeemLabel}</button>`
+            : `<button class="trait-redeem-btn disabled" disabled>${_wxT('wxmaint.insufficient_btn', { n: Math.max(cost - spirit2, 0) })}</button>`);
+        const priceHtml = pricePending ? priceLoadingLabel : `${cost} ${spiritLabel}`;
         return `
           <div class="trait-product-card">
             <div class="trait-product-icon">${icon}</div>
             <div class="trait-product-info">
               <div class="trait-product-name">${name}</div>
-              <div class="trait-product-price">${cost} ${spiritLabel}</div>
+              <div class="trait-product-price">${priceHtml}</div>
             </div>
             ${btnHtml}
           </div>`;

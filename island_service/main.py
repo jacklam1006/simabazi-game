@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from bazi_prompt import generate_island_prompt, generate_tripo_short_prompt
 from gemini_enhance import enhance_island_prompt
-from gemini_analysis import analyze_bazi
+from gemini_analysis import analyze_bazi, generate_liuri_reading
 from gemini_image import generate_island_image
 from tripo_client import submit_image_to_3d, submit_text_to_3d, get_task_status
 from supabase_storage import download_glb, upload_glb
@@ -134,6 +134,22 @@ class AnalyzeRequest(BaseModel):
     birth_year: int = 0
     force_refresh: bool = False  # true 时跳过后端文件缓存，强制重新走六步AI深析流水线
                                   # （设置面板"轻量刷新AI深析"用，见 gemini_analysis.py::analyze_bazi()）
+
+class LiuriRequest(BaseModel):
+    # "今日运势"（流日）——2026-08-23新增，独立于六步深析（/analyze-bazi），
+    # 不共享缓存、不共享端点。bazi_data/gender/birth_year跟 AnalyzeRequest
+    # 同一套字段含义（命盘本身）；liuri/relations是前端
+    # js/bazi-engine.js::BaziEngine.getLiuri()/getLiuriRelations() 已经算好
+    # 的确定性数据（今天的流日干支 + 流日跟命盘四柱的十神/冲合刑害关系），
+    # 后端只消费不重算，见 gemini_analysis.py::generate_liuri_reading() 顶部
+    # 注释。
+    bazi_data: dict
+    liuri: dict
+    relations: dict = {}
+    gender: str = '男'
+    birth_year: int = 0
+    force_refresh: bool = False  # true 时跳过当日缓存，强制重新生成（同一天内刷新用）
+
 
 class NotifyRedemptionRequest(BaseModel):
     # 2026-08-12 第二阶段"灵气兑换水晶"：`redemption_requests`表才是权威数据
@@ -402,6 +418,38 @@ async def analyze_bazi_endpoint(req: AnalyzeRequest):
     # 必须 await；见 gemini_analysis.py::analyze_bazi()
     # 顶部注释——同步直接调用会导致内部 asyncio.gather 语义失效/在某些路径下报错。
     result = await analyze_bazi(req.bazi_data, req.gender, req.birth_year, req.force_refresh)
+    if result.get('error') == 'no_api_key':
+        raise HTTPException(status_code=503, detail="AI analysis service not configured")
+    return result
+
+
+# ── 端点：今日运势（流日）──────────────────────────────────────
+# 2026-08-23新增，独立于上面的"AI深析"（六步命理框架），是每日任务系统用的
+# 轻量AI生成步骤：不共享缓存、不影响六步深析任何既有逻辑。缓存维度是"命盘
+# hash + 流日干支字符串"（见 gemini_analysis.py::_liuri_cache_key()顶部
+# 注释），同一命盘同一流日干支重复请求会命中缓存即时返回，干支不同（跨天）
+# 必定重新生成。
+#
+# 2026-08-23 当天时区错位bug修复：缓存维度最初是"命盘hash + 服务端UTC
+# 日期"，但流日干支本来就是前端按用户本地时间算好、随请求体传入的权威值，
+# 服务端另算UTC日期会在UTC+8等时区的本地时间00:00-08:00窗口内跟前端"今天"
+# 错位，返回文不对题的内容。完整根因与修复见 gemini_analysis.py 对应函数
+# 注释、claude-docs/已知问题与修复记录.md对应日期条目。
+@app.post("/liuri-reading")
+async def liuri_reading_endpoint(req: LiuriRequest):
+    """
+    调用 Gemini 生成"今日运势"简短文字（100-150字左右）。
+    请求体：{ bazi_data, liuri, relations, gender, birth_year, force_refresh }
+      - liuri: BaziEngine.getLiuri(year, month, day) 的输出——`gan`/`zhi`
+        必须是合法的60甲子组合，非法值会被拒绝（见 gemini_analysis.py::
+        _is_valid_ganzhi()），不会悄悄生成垃圾缓存。
+      - relations: BaziEngine.getLiuriRelations(baziData, liuri) 的输出
+    返回：{ hash, ganzhi, reading, from_cache } 或
+          { hash, ganzhi, reading: null, error }
+    """
+    result = await generate_liuri_reading(
+        req.bazi_data, req.liuri, req.relations, req.gender, req.birth_year, req.force_refresh
+    )
     if result.get('error') == 'no_api_key':
         raise HTTPException(status_code=503, detail="AI analysis service not configured")
     return result

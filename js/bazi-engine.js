@@ -450,66 +450,81 @@ class BaziEngine {
     return t;
   }
 
+  // 冲/六合/六害/六破/三刑·子卯这五种"两支即可判定"的pairwise关系判定表 +
+  // 单对判定逻辑，2026-08-23提升为类级共享静态方法——原先只在 _interactions()
+  // 内部定义，供新增的 _liuriRelations()（流日 vs 命盘四柱的地支关系）复用
+  // 同一套判定表，而不是各自维护一份容易分叉的副本（同类教训见本文件历史：
+  // HE_LIU/CHONG_MEANING 曾因手写key顺序与.sort()实际输出不一致而永久miss，
+  // 详见已知问题记录）。三合/三会/三刑三支局/自刑（需要"三支皆现"或"同一
+  // 地支在同一组柱子里重复出现"的整组上下文判定）不在此列，仍只属于
+  // _interactions() 内部四柱专属逻辑，_liuriRelations() 不消费。
+  static _pairZhiTables() {
+    const pairKey = BaziEngine._pairKey;
+    const buildPairTable = BaziEngine._buildPairTable;
+    return {
+      CHONG: {子:'午',丑:'未',寅:'申',卯:'酉',辰:'戌',巳:'亥',午:'子',未:'丑',申:'寅',酉:'卯',戌:'辰',亥:'巳'},
+      CHONG_MEANING: buildPairTable([
+        ['子','午','情绪起伏·感情不稳'], ['丑','未','事业变动·财务波折'],
+        ['寅','申','驿马奔波·意外多'], ['卯','酉','是非口舌·婚姻摩擦'],
+        ['辰','戌','刑伤官非·需注意健康'], ['巳','亥','精神压力·漂泊感'],
+      ]),
+      // 六合（化五行）：entries的a,b书写顺序沿用命理习惯，key一律由pairKey()生成，
+      // 与pairwise查表用的 key=[a,b].sort().join('') 保持完全一致的排序算法
+      HE_LIU: buildPairTable([
+        ['子','丑','土'], ['寅','亥','木'], ['卯','戌','火'], ['辰','酉','金'], ['巳','申','水'], ['午','未','火土'],
+      ]),
+      XING_LIU_KEY: pairKey('子','卯'), // 无礼之刑，走pairwise排序key查表
+      XING_LIU_MEANING: '失礼冒犯、家庭不睦',
+      HAI: buildPairTable([
+        ['子','未','破财耗神·六亲缘薄'], ['丑','午','怨恨嫉妒·争执不断'], ['寅','巳','计较猜忌·招是惹非'],
+        ['卯','辰','不合难容·暗中妨碍'], ['申','亥','无恩带累·反目成仇'], ['酉','戌','争斗嫉妒·怨怼纠缠'],
+      ]),
+      // 六破（注意：寅亥、巳申与六合表重叠，"既合又破"是真实存在的双重关系，两个判断各自独立成if，不互相跳过）
+      PO: buildPairTable([
+        ['子','酉','破财损物·计划受阻'], ['丑','辰','根基动摇·反复破败'], ['寅','亥','合中带破·外和内耗'],
+        ['卯','午','虚耗破损·难成之事'], ['巳','申','合中带破·外和内耗'], ['未','戌','破财耗损·根基不稳'],
+      ]),
+    };
+  }
+
+  // 单对地支(a,b)的冲/合/三刑子卯/害/破判定——返回该对命中的全部关系（可能
+  // 命中0~多条，如寅亥"既合又破"）。type是关系类型，verb是desc文案里的动词
+  // （三刑的动词是"刑"而不是类型名"三刑"本身，其余类型名与动词相同）。
+  static _pairwiseZhiRelations(a, b) {
+    const T = BaziEngine._pairZhiTables();
+    const key = BaziEngine._pairKey(a, b);
+    const out = [];
+    if (T.CHONG[a] === b) out.push({ type:'冲', verb:'冲', meaning: T.CHONG_MEANING[key] || '变动较大' });
+    if (T.HE_LIU[key]) out.push({ type:'合', verb:'合', meaning: `化${T.HE_LIU[key]}` });
+    if (key === T.XING_LIU_KEY) out.push({ type:'三刑', verb:'刑', meaning: `无礼之刑，${T.XING_LIU_MEANING}` });
+    if (T.HAI[key]) out.push({ type:'害', verb:'害', meaning: T.HAI[key] });
+    if (T.PO[key]) out.push({ type:'破', verb:'破', meaning: T.PO[key] });
+    return out;
+  }
+
   static _interactions(zhis) {
     const results = [];
     const labels = ['年支','月支','日支','时支'];
     const labelsEN = ['year','month','day','hour'];
-    const CHONG = {子:'午',丑:'未',寅:'申',卯:'酉',辰:'戌',巳:'亥',午:'子',未:'丑',申:'寅',酉:'卯',戌:'辰',亥:'巳'};
     const HE_SAN = [['申','子','辰','水局'],['寅','午','戌','火局'],['巳','酉','丑','金局'],['亥','卯','未','木局']];
     // 三会（同一季度相邻三月，气最纯，比跨季度的三合更集中）
     const HE_HUI = [['寅','卯','辰','东方木'],['巳','午','未','南方火'],['申','酉','戌','西方金'],['亥','子','丑','北方水']];
-    // 三刑：寅巳申/丑戌未需三支皆现；子卯只需两支同现，仍归类"三刑"
+    // 三刑：寅巳申/丑戌未需三支皆现；子卯只需两支同现，仍归类"三刑"（子卯判定
+    // 已下沉到 _pairwiseZhiRelations() 共享逻辑里，这里只保留三支皆现的两组）
     const XING_SAN = [['寅','巳','申','无恩之刑','恩将仇报、官非诉讼'],['丑','戌','未','恃势之刑','倚势逞强、六亲缘薄']];
-    const XING_LIU_MEANING = '失礼冒犯、家庭不睦';
     // 自刑：同一地支在四柱中重复出现≥2次
     const ZI_XING_MEANING = {辰:'自我拉扯·反复纠结', 午:'急躁耗神·情绪反复', 酉:'挑剔纠结·人际内耗', 亥:'多疑纠结·精神内耗'};
-    // pairKey：与下方pairwise查表用的 [a,b].sort().join('') 完全一致的key生成方式，
-    // 避免手写表时按"命理习惯书写顺序"敲错字符顺序导致查表永远miss。
-    // 所有pairwise表（冲/六合/六害/六破/三刑子卯）一律通过pairKey()/buildPairTable()生成key，
-    // 不再手写猜顺序——2026-08-16修复前HE_LIU曾直接手写'子丑'/'寅亥'等书写顺序key，
-    // 与.sort()实际输出不一致导致这两对六合永远无法命中；同日修复CHONG_MEANING同样的坑
-    // （子午→'午子'、辰戌→'戌辰'、巳亥→'亥巳'，三对按书写顺序手写的key与.sort()实际
-    // 输出不一致，永远miss回退到'变动较大'兜底文案），详见已知问题记录。
-    const pairKey = BaziEngine._pairKey;
-    const buildPairTable = BaziEngine._buildPairTable;
-    const CHONG_MEANING = buildPairTable([
-      ['子','午','情绪起伏·感情不稳'], ['丑','未','事业变动·财务波折'],
-      ['寅','申','驿马奔波·意外多'], ['卯','酉','是非口舌·婚姻摩擦'],
-      ['辰','戌','刑伤官非·需注意健康'], ['巳','亥','精神压力·漂泊感'],
-    ]);
-    // 六合（化五行）：entries的a,b书写顺序沿用命理习惯，key一律由pairKey()生成，
-    // 与下方pairwise循环里 key=[a,b].sort().join('') 保持完全一致的排序算法
-    const HE_LIU = buildPairTable([
-      ['子','丑','土'], ['寅','亥','木'], ['卯','戌','火'], ['辰','酉','金'], ['巳','申','水'], ['午','未','火土'],
-    ]);
-    const XING_LIU_KEY = pairKey('子','卯'); // 无礼之刑，走pairwise排序key查表
-    // 六害
-    const HAI = buildPairTable([
-      ['子','未','破财耗神·六亲缘薄'], ['丑','午','怨恨嫉妒·争执不断'], ['寅','巳','计较猜忌·招是惹非'],
-      ['卯','辰','不合难容·暗中妨碍'], ['申','亥','无恩带累·反目成仇'], ['酉','戌','争斗嫉妒·怨怼纠缠'],
-    ]);
-    // 六破（注意：寅亥、巳申与六合表重叠，"既合又破"是真实存在的双重关系，两个判断各自独立成if，不互相跳过）
-    const PO = buildPairTable([
-      ['子','酉','破财损物·计划受阻'], ['丑','辰','根基动摇·反复破败'], ['寅','亥','合中带破·外和内耗'],
-      ['卯','午','虚耗破损·难成之事'], ['巳','申','合中带破·外和内耗'], ['未','戌','破财耗损·根基不稳'],
-    ]);
 
     for (let i=0; i<4; i++) {
       for (let j=i+1; j<4; j++) {
         const a=zhis[i], b=zhis[j];
-        const key=pairKey(a,b);
-        // 冲
-        if (CHONG[a]===b) {
-          results.push({type:'冲', desc:`${labels[i]}${a} 冲 ${labels[j]}${b}（${CHONG_MEANING[key]||'变动较大'}）`, pillars:[labelsEN[i],labelsEN[j]]});
+        for (const rel of BaziEngine._pairwiseZhiRelations(a, b)) {
+          results.push({
+            type: rel.type,
+            desc: `${labels[i]}${a} ${rel.verb} ${labels[j]}${b}（${rel.meaning}）`,
+            pillars: [labelsEN[i], labelsEN[j]],
+          });
         }
-        // 六合
-        if (HE_LIU[key]) results.push({type:'合',desc:`${labels[i]}${a} 合 ${labels[j]}${b}（化${HE_LIU[key]}）`, pillars:[labelsEN[i],labelsEN[j]]});
-        // 三刑·子卯（无礼之刑，仅需两支同现）
-        if (key===XING_LIU_KEY) results.push({type:'三刑',desc:`${labels[i]}${a} 刑 ${labels[j]}${b}（无礼之刑，${XING_LIU_MEANING}）`, pillars:[labelsEN[i],labelsEN[j]]});
-        // 六害
-        if (HAI[key]) results.push({type:'害',desc:`${labels[i]}${a} 害 ${labels[j]}${b}（${HAI[key]}）`, pillars:[labelsEN[i],labelsEN[j]]});
-        // 六破
-        if (PO[key]) results.push({type:'破',desc:`${labels[i]}${a} 破 ${labels[j]}${b}（${PO[key]}）`, pillars:[labelsEN[i],labelsEN[j]]});
       }
     }
     // triadPillars：给"三支皆现"型关系（三合/三会/三刑三支局）找出实际命中的柱位——
@@ -641,6 +656,118 @@ class BaziEngine {
       return { year, month, gan: bazi.getMonthGan(), zhi: bazi.getMonthZhi(),
                wx: BaziEngine.STEM_WX[bazi.getMonthGan()] };
     } catch(e) { return { year, month, gan:'甲', zhi:'子', wx:'木' }; }
+  }
+
+  /* ══════════════════════════════════════════════════════════
+   * 流日（2026-08-23新增，"今日运势"功能用）
+   *
+   * 与 _liunianByYear()/_liuyue() 同一套 lunar-javascript 接口，往下再算
+   * 一层日柱。**刻意不接入 calculate() 主流程**：流年/流月都是"以当前
+   * 系统时间为准，重新计算即会得到不同结果"的动态量，但它们目前是
+   * calculate() 返回值的一部分——calculate() 的结果本身是按"出生信息"
+   * 缓存的（js/bazi-analysis.js 等消费方假设"同一出生信息 → 命盘计算结果
+   * 永久有效，可长期复用缓存"）。流日粒度是"天"，如果也塞进 calculate()
+   * 的返回值，会让这份按出生信息缓存的命盘对象在每天午夜就产生新的"正确
+   * 答案"，与"命盘计算结果永久有效"这个既有缓存假设直接冲突（流年/流月
+   * 目前的粒度分别是"年"/"月"，冲突频率低很多，历史遗留、这次不一并处理）。
+   * 因此单独导出一个静态方法，供"今日运势"这个新功能按需调用，不改变
+   * calculate() 的返回值结构或行为。
+   *
+   * 对外接口（跟随本文件既有约定：`calculate()` 是唯一不带下划线前缀的公开
+   * 入口，其余 `_xxx` 方法是内部实现）：
+   *   const liuri = BaziEngine.getLiuri(year, month, day)
+   *   const rel   = BaziEngine.getLiuriRelations(baziData, liuri)
+   * ══════════════════════════════════════════════════════════ */
+
+  static getLiuri(year, month, day) {
+    return BaziEngine._liuri(year, month, day);
+  }
+
+  static getLiuriRelations(baziData, liuri) {
+    return BaziEngine._liuriRelations(baziData, liuri);
+  }
+
+  static _liuri(year, month, day) {
+    try {
+      const solar = Solar.fromYmd(year, month, day);
+      const lunar = solar.getLunar();
+      const bazi  = lunar.getEightChar();
+      const gan = bazi.getDayGan();
+      const zhi = bazi.getDayZhi();
+      return {
+        year, month, day, gan, zhi,
+        wx: BaziEngine.STEM_WX[gan], yang: BaziEngine.STEM_YANG[gan] ?? 1,
+        branchWx: BaziEngine.BRANCH_WX[zhi], branchYang: BaziEngine.BRANCH_YANG[zhi] ?? 1,
+      };
+    } catch(e) {
+      // 刻意不走 _liuyue() 那种"兜底成一个真实存在的甲子/甲子日"的写法：
+      // 甲子本身是合法干支组合，后端 _is_valid_ganzhi() 这类"格式校验"拦不住
+      // 一个看起来正常、实际是假的兜底值——一旦真的走到这个catch分支（比如
+      // lunar-javascript 计算失败），会把"计算失败"悄悄伪装成"今天是甲子日"，
+      // 静默生成并被后端永久缓存一份假的每日运势内容，且没有任何报错信号。
+      // 改为返回 gan/zhi 为 null 并显式标记 error:true，调用方（未来接入前端
+      // UI时）必须显式检查 liuri.error，失败时优雅降级（如隐藏"今日运势"
+      // 入口或提示"暂时无法获取"），不能把它当成一个可直接展示的正常结果。
+      console.warn('[BaziEngine] 流日计算失败', e);
+      return { year, month, day, gan:null, zhi:null, wx:null, yang:null, branchWx:null, branchYang:null, error:true };
+    }
+  }
+
+  /* ══════════════════════════════════════════════════════════
+   * 流日 vs 命盘四柱的关系判定（"今日运势"功能用）
+   *
+   * 只判定"流日 vs 命盘四柱"这一种关系，边界上刻意排除两类情况：
+   *   1) 流日跟"自己"的关系——没有意义，不判定。
+   *   2) 流日跟流年/流月的关系——不在本次"今日运势"需求范围内，不判定
+   *      （流年/流月本身有各自独立的动态时间维度，流日与它们的互动关系是
+   *      另一个话题，超出本函数职责）。
+   * 只处理"流日 vs 四柱"这4对pairwise比较，复用 _pairwiseZhiRelations()
+   * （与 _interactions() 四柱内部两两比较共用同一份冲/合/三刑子卯/害/破
+   * 判定表，避免同一套命理规则表出现两份实现产生分歧风险）。
+   *
+   * 刻意不做的事（记录取舍，不是遗漏）：
+   *   - 不判定三合/三会/三刑三支局（寅巳申、丑戌未）——这些需要"三支皆现"
+   *     的整组上下文判定，流日与命盘四柱中任意两支组成三合/三会局在传统
+   *     命理里确实存在，但复杂度和"今日运势"这种轻量级每日提醒的产品定位
+   *     不匹配，留给未来如有需要再单独扩展，不在本次范围内。
+   *   - 不判定自刑——自刑是"同一地支在命盘内部重复出现≥2次"的判定，流日
+   *     地支与命盘四柱某支相同这件事本身不构成命理上的"自刑"（自刑判定的
+   *     是命盘固有结构，不是流日与命盘的互动关系）。
+   * ══════════════════════════════════════════════════════════ */
+
+  static _liuriRelations(baziData, liuri) {
+    // 2026-08-23 qa-reviewer发现：_liuri() 计算失败时会显式返回
+    // { gan:null, zhi:null, error:true }（见上面 _liuri() 注释里的取舍说明——
+    // 刻意不兜底成一个"看起来合法"的甲子日），但本函数当时没有检查这个
+    // 标记，直接拿 liuri.gan 传进 _shishen()。_shishen() 内部
+    // `STEM_WX[target]||'土'` 这个防御性兜底会把 target=null 悄悄当成
+    // 土行处理，算出一个"偏财/正财"之类看起来完全正常的十神结果——跟
+    // "今天真的没有特殊关系"这种合法结果无法区分，等于在下游又重新引入了
+    // 上面 _liuri() 才刚修复掉的同一类"用看似合法的假值掩盖真实计算失败"
+    // 问题。必须在最开头就挡住，不能让 null 有机会流到 _shishen()。
+    if (!liuri || liuri.error || !liuri.gan || !liuri.zhi) {
+      return { shishen: '', relations: [], error: true };
+    }
+    const p = (baziData && baziData.pillars) || {};
+    const dm = (baziData && baziData.dayMaster) || '';
+    const labelsCN = { year:'年支', month:'月支', day:'日支', hour:'时支' };
+    const cols = ['year','month','day','hour'];
+    const relations = [];
+    for (const col of cols) {
+      const zhi = (p[col] || {}).branch;
+      if (!zhi) continue;
+      for (const rel of BaziEngine._pairwiseZhiRelations(liuri.zhi, zhi)) {
+        relations.push({
+          type: rel.type,
+          desc: `流日${liuri.zhi} ${rel.verb} ${labelsCN[col]}${zhi}（${rel.meaning}）`,
+          pillar: col,
+        });
+      }
+    }
+    return {
+      shishen: dm ? BaziEngine._shishen(dm, liuri.gan) : '',
+      relations,
+    };
   }
 
   /* ══════════════════════════════════════════════════════════

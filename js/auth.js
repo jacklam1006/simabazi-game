@@ -41,6 +41,47 @@ const COUNTRY_CODES = [
 const AuthManager = (() => {
   let _sb   = null;
   let _user = null;
+  // 2026-08-23 五行专属水晶15款SKU分地区定价改造新增：getProfile()每次都是
+  // 一次真实网络请求（数据库权威价格由 phone_code 决定用哪个货币列，见
+  // supabase_setup.sql::redeem_wuxing_product()），但 js/main-new.js::
+  // _wxmaintRedeemBlockHtml() / js/analysis.js::buildTraitPanel() 这类价格
+  // 展示函数是既有代码里明确标注的"纯函数、同步渲染HTML"管线（面板打开/
+  // 兑换成功后原地刷新都直接同步拼字符串塞进innerHTML，没有await），把
+  // 整条渲染链改成异步来在每次打开面板时都现查一次phone_code，属于跟这次
+  // 价格展示需求不成比例的大范围重构、且会在每次点击五行问题热点时新增一次
+  // 网络往返导致面板打开有可感知延迟。改用轻量内存缓存：getProfile()每次
+  // 成功拿到数据后顺手缓存一份，getCachedProfile()提供同步读取（未登录/
+  // 尚未拉取过时返回null，价格展示统一按"未知区域按RM兜底"处理，见
+  // js/products.js::_isCNYRegion()）。缓存粒度足够——登录后
+  // _refreshUserInfoDisplay()会在_onAuthChange()里立即调用一次getProfile()
+  // 预热缓存，用户从登录到点开某个五行问题面板之间必然有交互间隔，实际
+  // 命中缓存的概率很高；即使冷启动时缓存恰好还是null，也只是暂时按RM价格
+  // 展示（预估价，不影响真正扣款——扣款价格永远由服务端RPC按彼时最新
+  // phone_code权威计算，见redeem_wuxing_product()注释），不是安全问题。
+  let _profileCache = null;
+
+  // 2026-08-23 qa-reviewer复查发现的展示层问题修复：`_profileCache` 为
+  // null 有两种完全不同的含义——①"还没来得及查"（登录后 getProfile() 网络
+  // 请求尚未返回，窗口期很窄但真实存在）②"未登录，压根没有profile这个概念"。
+  // js/products.js::_costFor() 对两者一视同仁按MYR价兜底展示，会导致情况①
+  // 下 +86 用户短暂看到马币低价（服务端权威扣款永远按真实phone_code计算，
+  // 不会多扣/少扣，但展示的价格和真正会扣的价格对不上，造成困惑）。
+  // `_profileFetchDone` 只标记"针对当前登录会话，至少完整跑完过一次
+  // getProfile()"（不管结果是否真的查到了profile这一行）——区分"还在查"
+  // 和"已经查完（哪怕结果是空）"，避免调用方拿到空结果后误判仍在等待、
+  // 反复重新发起请求导致死循环（见下方 isProfilePending() 与
+  // js/main-new.js::_wxmaintRedeemBlockHtml() 消费处注释）。
+  // 2026-08-23 qa-reviewer复查订正：这个标记只应反映"已登录状态下是否
+  // 完成过一次真实查询"——未登录场景下调用getProfile()不再触碰这个标记
+  // （isProfilePending()本身已用!!_user短路，未登录恒返回false，不依赖
+  // 这个标记），避免"未登录时调用过一次getProfile()"这个动作把标记提前
+  // 设成true、导致该用户后续真正登录后isProfilePending()误判成"已经查过
+  // 了"而跳过pending态。
+  let _profileFetchDone = false;
+  // getProfile() 请求去重：五行维护面板每次重渲染都可能在pending期间重复
+  // 调用 getProfile()（见 isProfilePending() 触发的自动补拉逻辑），同一会话
+  // 内已有请求在途时直接复用同一个Promise，不重复发起网络请求。
+  let _profileFetchPromise = null;
 
   // ── 初始化 ─────────────────────────────────────────────
   function init() {
@@ -63,6 +104,20 @@ const AuthManager = (() => {
 
     _sb.auth.onAuthStateChange((event, session) => {
       _user = session?.user ?? null;
+      // 会话失效不止来自显式logout()（如token过期/其它标签页登出），一并
+      // 清缓存 + 重置fetchDone标记（未登录状态下isProfilePending()恒为
+      // false，这个标记此时不生效，重置只是为了下次真正登录时能重新触发
+      // 一轮干净的"还在查"状态，而不是沿用上一个账号遗留的true）。
+      // 2026-08-23 qa-reviewer复查发现：仅重置_profileCache/_profileFetchDone
+      // 不够——_profileFetchPromise（getProfile()请求去重用的in-flight
+      // Promise）如果不一并置null，A登出后紧接着B登录，B调用getProfile()
+      // 时`if (_profileFetchPromise) return _profileFetchPromise;`会直接把
+      // A那个还没resolve的旧请求原样返回给B，resolve后B拿到的是A的profile
+      // 数据（phone_code/display_name等）。这里与_profileCache同批重置，
+      // 确保下一次getProfile()调用（不论是B登录后触发，还是本账号真登出后
+      // 访客态下的调用）永远发起一个全新请求，不会误用上一个账号遗留的
+      // in-flight Promise。
+      if (!_user) { _profileCache = null; _profileFetchDone = false; _profileFetchPromise = null; }
       AuthUI._onAuthChange(_user);
     });
 
@@ -111,6 +166,7 @@ const AuthManager = (() => {
     if (!_sb) return;
     await _sb.auth.signOut();
     _user = null;
+    _profileCache = null;
     AuthUI._onAuthChange(null);
     // 清除 main-new.js 里记录的当前岛屿id，防止退出登录后仍残留上一个账号的
     // 岛屿id（风险很低——RLS+user_id过滤已能防止跨账号误写，报告也只能从会设置
@@ -130,11 +186,47 @@ const AuthManager = (() => {
   }
 
   // ── 读取用户资料 ────────────────────────────────────────
+  // 2026-08-23 补充请求去重：pending期间重复调用（见 _profileFetchPromise
+  // 声明处注释）复用同一个in-flight Promise，不重复打网络请求。
+  // 2026-08-23 qa-reviewer复查修复两处边界问题：
+  // ①未登录分支不再触碰 _profileFetchDone——这个标记只应该反映"已登录状态
+  // 下是否完成过一次真实查询"，isProfilePending()本身已经用!!_user短路
+  // （未登录恒返回false，不依赖这个标记），未登录时调用一次getProfile()
+  // 不该把标记设成true。否则该用户后续真正登录后，isProfilePending()会
+  // 因为这个陈旧的true误判成"已经查过了"，跳过loading占位/后台补拉，复现
+  // 上一轮已修的"展示价与实扣价不一致"问题。
+  // ②即便_profileFetchPromise本身已经在onAuthStateChange的登出分支里被
+  // 重置为null（见上方注释），仍额外做一层身份校验兜底：发起请求那一刻
+  // 记下_user.id，resolve回来时如果当前_user.id已经不是发起时那个id
+  // （中途登出，或登出又登录了另一个账号），不写入_profileCache——避免
+  // 任何时序窗口下过期数据污染当前会话/访客态。
   async function getProfile() {
-    if (!_sb || !_user) return null;
-    const { data } = await _sb.from('profiles').select('*').eq('id', _user.id).maybeSingle();
-    return data;
+    if (!_sb || !_user) { _profileCache = null; return null; }
+    if (_profileFetchPromise) return _profileFetchPromise;
+    const _requestUserId = _user.id;
+    _profileFetchPromise = _sb.from('profiles').select('*').eq('id', _requestUserId).maybeSingle()
+      .then(({ data }) => {
+        if (_user?.id === _requestUserId) {
+          _profileCache = data || null;
+          _profileFetchDone = true;
+        }
+        return data;
+      })
+      .finally(() => { _profileFetchPromise = null; });
+    return _profileFetchPromise;
   }
+
+  // ── 同步读取最近一次 getProfile() 缓存的资料（见上方 _profileCache 声明处
+  //    注释）——未登录/尚未拉取过时返回 null，调用方自行决定兜底行为。
+  function getCachedProfile() { return _profileCache; }
+
+  // ── 同步判断"当前是否还在等一次真正的getProfile()网络请求返回"────────
+  // true 仅当：已登录 且 本次会话内还没有完整跑完过一次 getProfile()（不管
+  // 那次结果是否真的查到了profile这一行——查完就是查完，不会因为结果是空
+  // 就永远停留在pending，避免调用方据此触发的自动补拉逻辑死循环，见
+  // js/main-new.js::_wxmaintRedeemBlockHtml() 消费处注释）。未登录时恒为
+  // false——不存在"还没查到"，直接按兜底价格展示是唯一合理选择。
+  function isProfilePending() { return !!_user && !_profileFetchDone; }
 
   // ── 更新用户资料（目前仅昵称，供设置面板调用）──────────
   // 权限分两层，缺一不可：RLS 只管"能不能改这一行"(USING/WITH CHECK auth.uid()=id)，
@@ -594,7 +686,7 @@ const AuthManager = (() => {
 
   return {
     init, login, register, registerWithProfile,
-    logout, sendPasswordReset, getProfile, updateProfile,
+    logout, sendPasswordReset, getProfile, getCachedProfile, isProfilePending, updateProfile,
     saveIsland, updateIslandAnalysis, updateIslandBaziData, getMyIslands, checkEmailExists,
     getSpiritBalance, adminSetSpiritBalance, createRedemptionRequest,
     claimDailyCheckin, claimTask, getTaskCompletions, wuxingFreeMaintain, wuxingInstantFix, redeemWuxingProduct,
